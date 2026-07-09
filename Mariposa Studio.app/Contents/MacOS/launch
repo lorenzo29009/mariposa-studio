@@ -6,6 +6,16 @@ STUDIO_DIR="$(dirname "$APP_PATH")"
 cd "$STUDIO_DIR"
 
 if [ ! -x "$STUDIO_DIR/venv/bin/python" ]; then
+    # This copy isn't installed — but the installer relocates installs out of
+    # Desktop/Documents/Downloads into ~/Applications, so a finished install
+    # may exist there (e.g. the user re-downloaded the zip). Hand off to it
+    # instead of telling them to reinstall something they already installed.
+    for ALT in "$HOME/Applications/$(basename "$STUDIO_DIR")" "$HOME/Applications"/Mariposa*Studio*; do
+        if [ "$ALT" != "$STUDIO_DIR" ] && [ -x "$ALT/venv/bin/python" ]; then
+            cd "$ALT"
+            exec "$ALT/venv/bin/python" "$ALT/src/studio.py"
+        fi
+    done
     /usr/bin/osascript <<EOF
 display dialog "Mariposa Studio isn't installed yet.\n\nPlease run install-mac.command (right-click → Open) from the Mariposa Studio folder first." buttons {"OK"} default button "OK" with icon stop with title "Mariposa Studio"
 EOF
@@ -24,8 +34,8 @@ fi
 # of this protection versus prior releases, so gate the check on that — older
 # macOS versions don't reproduce this failure and shouldn't be bothered by it.
 # The installer (install-mac.command) auto-relocates out of these folders on
-# first install (also Tahoe-gated), so this should only fire if the folder
-# was moved back after.
+# first install (on every macOS version), so this should only fire if the
+# folder was moved back after.
 MACOS_MAJOR="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
 case "$MACOS_MAJOR" in ''|*[!0-9]*) MACOS_MAJOR=0 ;; esac
 

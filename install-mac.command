@@ -2,47 +2,56 @@
 set -e
 cd "$(dirname "$0")"
 
-# ---- Auto-relocate out of Desktop/Documents/Downloads (macOS 26+ TCC trap) --
+# ---- Auto-relocate out of Desktop/Documents/Downloads (macOS TCC trap) -----
 # macOS's "Files and Folders" privacy protection covers ~/Desktop, ~/Documents,
 # and ~/Downloads for double-clicked, unsigned apps — regardless of whether
 # iCloud sync is even on. A Finder launch of Mariposa Studio.app from inside
 # one of those folders gets denied read access to its own venv ("Operation not
-# permitted"), so it looks broken. Terminal (running this installer right now)
-# already holds that grant, which is exactly why install succeeds here but a
-# later double-click can fail. Confirmed live (2026-07-01) on macOS 26.5.2
-# (Tahoe): Tahoe tightened enforcement of this protection versus prior
-# releases, so this reproduces there but not on older macOS — gate on that so
-# we don't relocate anyone's folder on a version where the bug doesn't exist.
-MACOS_MAJOR="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
-case "$MACOS_MAJOR" in ''|*[!0-9]*) MACOS_MAJOR=0 ;; esac
-
-if [ "$MACOS_MAJOR" -ge 26 ]; then
-    case "$(pwd)" in
-        "$HOME/Desktop"/*|"$HOME/Documents"/*|"$HOME/Downloads"/*|"$HOME/Library/Mobile Documents"/*)
-            NAME="$(basename "$(pwd)")"
-            TARGET="$HOME/Applications/$NAME"
-            if [ -e "$TARGET" ]; then
-                echo ""
-                echo "!! This folder is inside Desktop/Documents/Downloads, which macOS 26+ blocks"
-                echo "   double-clicked apps from reading. Wanted to move it to:"
-                echo "     $TARGET"
-                echo "   ...but that already exists. Move or remove it, then re-run this installer."
-                exit 1
-            fi
-            echo ""
-            echo ">> This folder is inside Desktop/Documents/Downloads. macOS 26+ blocks"
-            echo "   double-clicked apps from reading their own files there, so this"
-            echo "   installer is moving the whole folder to:"
-            echo "     $TARGET"
-            mkdir -p "$HOME/Applications"
-            mv "$(pwd)" "$TARGET"
-            # Leave a Finder alias behind so double-click habits still work.
-            osascript -e 'tell application "Finder" to make alias file to (POSIX file "'"$TARGET"'") at desktop' >/dev/null 2>&1 || true
-            echo ">> Continuing installation from the new location..."
-            exec "$TARGET/install-mac.command"
-            ;;
-    esac
-fi
+# permitted") on macOS 26 (Tahoe), and older releases still gate those folders
+# behind per-app permission prompts a user can decline. Terminal (running this
+# installer right now) already holds that grant, which is exactly why install
+# succeeds here but a later double-click can fail. Relocating to
+# ~/Applications sidesteps the whole class of failures on every macOS version,
+# so do it unconditionally.
+#
+# If the target already exists (a previous half-finished attempt, or the user
+# re-downloaded the zip), NEVER dead-end — overlay this download onto the
+# existing copy and continue installing there. Field-confirmed (2026-07-09,
+# macOS 15.2): the old "move or remove it, then re-run this installer" exit
+# stranded a user with a stale copy in ~/Applications and no way forward.
+case "$(pwd)" in
+    "$HOME/Desktop"/*|"$HOME/Documents"/*|"$HOME/Downloads"/*|"$HOME/Library/Mobile Documents"/*)
+        SRC="$(pwd)"
+        NAME="$(basename "$SRC")"
+        TARGET="$HOME/Applications/$NAME"
+        mkdir -p "$HOME/Applications"
+        echo ""
+        echo ">> This folder is inside Desktop/Documents/Downloads, where macOS"
+        echo "   restricts double-clicked apps from reading their own files, so this"
+        echo "   installer is moving the whole folder to:"
+        echo "     $TARGET"
+        if [ -e "$TARGET" ] && [ ! -d "$TARGET" ]; then
+            rm -f "$TARGET"
+        fi
+        if [ -d "$TARGET" ]; then
+            echo ">> A copy from an earlier attempt already exists there — updating it"
+            echo "   with this download and continuing the install in place..."
+            # ditto merges directories: files from this download overwrite the
+            # old copy, while files that only exist in the old copy (a saved
+            # tools/captions-de/.env, exports/) are preserved. The venv is
+            # rebuilt from scratch further down, so its state doesn't matter.
+            ditto "$SRC" "$TARGET"
+            cd "$TARGET"
+            rm -rf "$SRC" 2>/dev/null || true
+        else
+            mv "$SRC" "$TARGET"
+        fi
+        # Leave a Finder alias behind so double-click habits still work.
+        osascript -e 'tell application "Finder" to make alias file to (POSIX file "'"$TARGET"'") at desktop' >/dev/null 2>&1 || true
+        echo ">> Continuing installation from the new location..."
+        exec "$TARGET/install-mac.command"
+        ;;
+esac
 
 clear
 cat <<'BANNER'
