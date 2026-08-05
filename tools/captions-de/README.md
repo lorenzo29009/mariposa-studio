@@ -1,6 +1,11 @@
-# Captions DE — German caption generator
+# Captions — TikTok caption generator
 
-Turns a German video into a TikTok-style `.srt` subtitle file ready for CapCut.
+Turns a video into a TikTok-style `.srt` subtitle file ready for CapCut.
+German is the default; Polish, French and Italian are supported too — in the
+Mariposa Studio app pick the language in the Captions tool, or on the command
+line pass `--language pl|fr|it` to `caption.py`. Each language gets its own
+transcription, caption rules and product spelling (Conversol for FR/IT,
+Przetwornik for PL — configured in `.env`).
 
 Works on **macOS** and **Windows**. No coding required.
 

@@ -1,0 +1,38 @@
+# Clips confirmed in production: the calibration for the speech clock.
+#
+# Every row is a clip that was actually shot and delivered, so its copy is known
+# to fit that clip length. The slot is therefore a *bracket*, not a measurement:
+#
+#     the copy needs more than the slot below it   (else it would have been shot shorter)
+#     the copy fits inside ceiling(slot)           (else it would have been shot longer)
+#
+# scripts/fit_clock.py renders every row with each available TTS engine and fits
+# the single scale factor K (engine pace -> this talent's pace) that puts the most
+# rows in their own bracket. Add rows as clips are confirmed and re-run it; the
+# short slots are the thin ones (see the note at the bottom).
+#
+# Format: slot,language,text        — '#' starts a comment, blank lines ignored.
+slot,language,text
+8,German,"Wenn du dich da wiedererkennst, dann musst du deinem Körper jeden Tag mindestens fünfundfünfzig Mikrogramm Selehn und fünfzig Milligramm Glutation geben."
+10,German,"An der Stelle möchte ich auch nochmal eine Warnung aussprechen. Denn wenn du nichts dagegen machst, dann wird deine Thyroxin-Dosis einfach immer weiter erhöht. Während deine Symptome bleiben oder sogar noch schlimmer werden."
+10,German,"Damit es bei dir gar nicht erst so weit kommt, brauchst du also genau diese Nährstoff-Kombination – und zwar jeden Tag. Es gibt mehrere Präparate, die das haben aber ich empfehle immer den Umwandler von miavòla."
+10,German,"Nach der Einnahme setzt an zwei Stellen an: Erstens regeneriert er die Leber mit Mariendistel, Artischocke und Löwenzahnwurzel. Das sind Pflanzenstoffe, die seit Jahrhunderten für die Leber genutzt werden."
+10,German,"Wenn dir das alles bekannt vorkommt, dann sieh dir den Umwandler an. Und wenn du skeptisch bist, es gibt eine neunzig-Tage-Geld-zurück-Garantie. Du kannst ihn also ganz ohne Risiko drei Monate lang testen."
+10,German,"Deine Haare werden dünner oder fallen sogar aus? Und du hast Wassereinlagerungen in den Händen und Füßen? Das sind alles Anzeichen dafür, dass deine Schilddrüsenmedikamente nicht richtig wirken."
+8,German,"Du denkst, deine Müdigkeit kommt vom Alter? Falsch. Deine Schilddrüse ist falsch eingestellt. Es spricht nur niemand darüber."
+8,German,"Du denkst, deine Stimmungsschwankungen kommen von den Wechseljahren? Falsch! Sie kommen von deiner Schilddrüsenunterfunktion. Das sagt die nur keiner."
+8,German,"Das ist auch deine Schilddrüse. Deine Haare werden dünner oder fallen sogar aus? Und du hast Wassereinlagerungen in den Händen und Füßen?"
+6,German,"Wahrscheinlich hat dir dein Arzt gesagt, dass deine Blutwerte in Ordnung sind."
+6,German,"Das sind alles Anzeichen dafür, dass deine Schilddrüsenmedikamente nicht richtig wirken."
+10,German,"Deine Müdigkeit kommt auch nicht von zu wenig Schlaf. Das ist nämlich auch deine Schilddrüse. Und dein Gewicht? Obwohl du dich gut ernährst und bewegst nimmst du zu? Das ist auch deine Schilddrüse."
+8,German,"Denn bei fast dreißig Prozent der Betroffenen wirkt L-Thyroxin nicht richtig. Oft wird das, je älter man wird, sogar noch schlechter."
+#
+# Thin spots, worth filling as clips get confirmed:
+#
+#   4s   no rows at all — the short end of the fit is unconstrained.
+#   6s   both rows hold only ~4.1s and ~4.5s of speech, i.e. they were shot with
+#        air to spare. They bound K from above but barely from below. One *tight*
+#        6s clip (copy that only just fits) is worth more than five loose ones.
+#
+# A row whose copy visibly overruns on camera does not belong here. This file is
+# the definition of "fits", so a bad clip in it moves every length in every build.

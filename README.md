@@ -10,15 +10,15 @@ inside this folder — nothing else needs to sit next to it.
 
 ## Install (one-time)
 
-**One installer per OS sets up everything** — Python, ffmpeg, the app venv,
-WhisperX (German Captions) and your Gemini API key — then opens the app. New
+**One installer per OS sets up everything** — Python, ffmpeg, eSpeak NG, the app
+venv, WhisperX (German Captions) and your Gemini API key — then opens the app. New
 teammate, clean machine, one run. WhisperX is the slow part (~3 GB, 10–15 min);
 the installer checks you have enough disk space first.
 
 ### macOS
 1. Right-click `install-mac.command` → **Open** (once, so macOS lets it run).
-2. It installs Homebrew + Python (3.10–3.13) if missing, ffmpeg, the `./venv/`,
-   the icon, WhisperX, and asks for your Gemini key. It then clears the download
+2. It installs Homebrew + Python (3.10–3.13) if missing, ffmpeg, eSpeak NG, the
+   `./venv/`, the icon, WhisperX, and asks for your Gemini key. It then clears the download
    quarantine so **`Mariposa Studio.app`** runs in place (otherwise macOS
    "translocates" the unsigned app and it can't find its `venv`) and launches it.
 
@@ -27,7 +27,8 @@ the installer checks you have enough disk space first.
    `scripts/install-windows.ps1` (PowerShell, no winget dependency).
 2. It finds Python via PATH / the `py` launcher / the registry; if none, it
    downloads Python 3.12 from python.org and installs it silently. ffmpeg comes
-   from winget if present, else a static build it downloads and puts on PATH.
+   from winget if present, else a static build it downloads and puts on PATH;
+   eSpeak NG comes from winget.
    Then the venv, WhisperX, your Gemini key, a **Desktop / Start-Menu shortcut
    with the app icon** (right-click → *Pin to taskbar*), and it launches the app.
 
@@ -58,12 +59,17 @@ The Python app lives in **`src/`** (run as scripts — flat sibling imports, no
 package): `studio.py` is the thin entrypoint (`MainWindow` + `main()`); the
 implementation is split into `core.py` (paths, `.env` and platform helpers),
 `widgets.py` (reusable widgets), `tool_pages.py`, `camera_page.py`,
-`animator_page.py`, and `launcher.py`. The design system is `src/design.py`.
+`animator_page.py`, `script_packer.py` (the Animator's Qt-free scene logic),
+`speech_clock.py` (how long a line takes to say — measured with an offline speech
+synthesiser rather than predicted from the text), and `launcher.py`. The design
+system is `src/design.py`.
 The bundled tools are in `tools/`, brand assets in `brand/`, docs in `docs/`.
 (For a fuller map aimed at contributors, see [CLAUDE.md](CLAUDE.md).)
 
 After any code change, confirm the app still launches with the headless smoke
 test: `QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/smoketest.py`.
+The Animator's scene logic and its speech clock have offline tests of their own:
+`./venv/bin/python scripts/test_packer.py` and `scripts/test_clock.py`.
 
 ## Design & brand
 

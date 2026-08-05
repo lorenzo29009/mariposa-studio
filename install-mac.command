@@ -65,6 +65,7 @@ the app and all 4 bundled tools:
   • Homebrew (if missing)
   • Python 3.12 (only if no 3.10–3.13 is found)
   • ffmpeg               (Flow Cropper + Captions)
+  • eSpeak NG            (Script Animator clip lengths)
   • A local virtualenv in ./venv (PySide6-Essentials,
     opencv) for the app + Extract Frame
   • WhisperX in ~/whisperx (~3 GB; German Captions)
@@ -177,6 +178,18 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
     brew install ffmpeg
 else
     echo ">> ffmpeg already installed."
+fi
+
+# ---- eSpeak NG (the Script Animator measures clip lengths with it) -------
+# The Animator works without it, but it then *estimates* how long each line
+# takes to say instead of measuring it, and says so on screen. Small (~5 MB)
+# and the same engine the Windows installer fetches, so both platforms agree.
+if ! command -v espeak-ng >/dev/null 2>&1; then
+    echo ""
+    echo ">> Installing eSpeak NG (Script Animator clip lengths)..."
+    brew install espeak-ng
+else
+    echo ">> eSpeak NG already installed."
 fi
 
 # ---- Recreate the app venv -----------------------------------------------

@@ -150,6 +150,10 @@ APP_TAGLINES = {
     "animator": "Turn a script into Veo prompts, shot by shot.",
 }
 
+# Tools whose tile is visible but not yet openable: they show the "In
+# development" overlay on hover and ignore clicks. Empty = everything ships.
+IN_DEV_TOOLS: set[str] = set()
+
 
 class _DevOverlay(QWidget):
     """Semi-transparent 'In development' overlay shown on tile hover."""
@@ -185,8 +189,7 @@ class AppIcon(QFrame):
         super().__init__()
         self.key = key
         self.available = available
-        # "animator" is visually live but not yet usable — show an in-dev overlay.
-        self._in_dev = (key == "animator")
+        self._in_dev = key in IN_DEV_TOOLS
         self.setObjectName("Tile")
         self.setFixedSize(292, 158)
         self.setCursor(Qt.PointingHandCursor if (available and not self._in_dev)
@@ -312,7 +315,7 @@ class LauncherPage(QWidget):
         for i, (label, key, _cls, available) in enumerate(specs, start=1):
             ic = AppIcon(label, key, available)
             ic.clicked.connect(lambda idx=i, av=available, k=key:
-                               on_open(idx) if (av and k != "animator") else None)
+                               on_open(idx) if (av and k not in IN_DEV_TOOLS) else None)
             r, c = divmod(i - 1, 3)
             _last_row = r
             grid.addWidget(ic, r, c)

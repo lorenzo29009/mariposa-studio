@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-Generate TikTok-style German captions (SRT) from a video file.
+Generate TikTok-style captions (SRT) from a video file.
+German is the default; Polish, French, Italian (plus English and Spanish)
+are selected with --language and adapt transcription, prompts, brand
+spelling and the formatting safety nets to that language.
 
 Usage:
     python caption.py video.mp4
     python caption.py video.mp4 --out custom_name.srt
+    python caption.py video.mp4 --language pl     # Polish (also: fr, it, en, es)
     python caption.py video.mp4 --no-ai           # skip Gemini, use heuristic only
     python caption.py video.mp4 --model medium    # use smaller Whisper model
 """
@@ -236,7 +240,11 @@ _SOFT_HYPHEN_RE = re.compile(r"(?<=\w)-\n?([a-zäöüß])")
 def join_soft_hyphens(text: str) -> str:
     """Undo a model-inserted compound line-break hyphen so a word that fits one
     line is shown WHOLE (no mid-line hyphen). Auto-hyphenation only exists to
-    break a word ACROSS two lines, never to show a hyphen inside one line."""
+    break a word ACROSS two lines, never to show a hyphen inside one line.
+    German-only: other languages never auto-hyphenate, and their real lowercase
+    hyphens ("est-ce que", "quatre-vingts", "biało-czerwony") must survive."""
+    if ACTIVE_LANG != "de":
+        return text
     return _SOFT_HYPHEN_RE.sub(r"\1", text)
 
 
@@ -271,7 +279,10 @@ def drop_midline_hyphens(text: str) -> str:
     """Collapse a soft compound hyphen that packing left mid-line (both halves on
     one visible line) back into the whole word. End-of-line hyphens — the half
     before a "\\n" — are kept, since there the hyphen really does break the word
-    across the two lines."""
+    across the two lines. German-only, like join_soft_hyphens — other languages'
+    lowercase hyphens are real spelling, never soft breaks."""
+    if ACTIVE_LANG != "de":
+        return text
     return "\n".join(_MIDLINE_HYPHEN_RE.sub(r"\1", ln) for ln in text.split("\n"))
 
 
@@ -283,7 +294,7 @@ def strip_punct(w: str) -> str:
 
 def clean_for_output(w: str) -> str:
     # Allow Unicode word characters + the punctuation we want to preserve.
-    # ¿¡ kept for Spanish; everything else common across DE/EN/ES/FR/IT.
+    # ¿¡ kept for Spanish; everything else common across DE/EN/ES/FR/IT/PL.
     return re.sub(r'[^\w\'\-?%/&"¿¡]', "", w, flags=re.UNICODE)
 
 
@@ -576,6 +587,24 @@ LANGUAGE_META = {
             "Standard Italian capitalization: capitalize proper nouns and "
             "sentence starts only. Days, months, nationalities and languages "
             "stay lowercase. Don't capitalize words randomly."
+        ),
+        "punctuation_extra": "",
+    },
+    "pl": {
+        "name": "Polish",
+        "aux_examples": '"będzie działać", "została zbadana", "jest robione", "byłam zmęczona"',
+        "modal_examples": '"może iść", "powinnaś wiedzieć", "muszę skończyć", "chcę schudnąć"',
+        "neg_examples": '"nigdy nie miałam", "nie pomyślałam", "żadnych efektów", "nic więcej"',
+        "prep_examples": '"u lekarza", "dla osób z", "w mieście", "po badaniach"',
+        "art_examples": '"ten problem", "moja lekarka", "te leki", "każdy poranek"',
+        "idiom_examples": '"Brain Fog", "L-tyroksyna", "fun fact"',
+        "conjunctions": "i, ale, albo, więc, bo, że, kiedy, jeśli, chociaż",
+        "list_example": '"zimne ręce, mgła mózgowa, wypadanie włosów"',
+        "capitalization": (
+            "Standard Polish capitalization: capitalize proper nouns and "
+            "sentence starts only. Days, months, languages and adjectives of "
+            "nationality stay lowercase. The polite forms Pan/Pani/Państwo are "
+            "capitalized in direct address. Don't capitalize words randomly."
         ),
         "punctuation_extra": "",
     },
@@ -994,9 +1023,9 @@ def fix_line_break(text: str) -> str:
     # Never end line 1 on a word that binds to what FOLLOWS — a determiner
     # (LINE_BREAK_BAD_LAST), a binding preposition/subordinator (MOVE_TRAILING),
     # a one-word preposition (FORWARD_PREPS) or an intensifier (FORWARD_INTENS).
-    # NO_LINE_END is the union of all of these (a superset of LINE_BREAK_BAD_LAST),
-    # so this keeps "seit über 10 Jahren" / "in meinem eigenen Körper" intact.
-    if clean(line1_words[-1]) not in NO_LINE_END:
+    # _no_line_end() is the ACTIVE_LANG's union of all of these, so this keeps
+    # "seit über 10 Jahren" / "chez le médecin" / "u lekarza" intact.
+    if clean(line1_words[-1]) not in _no_line_end():
         return text
 
     current_break = len(line1_words)
@@ -1004,7 +1033,7 @@ def fix_line_break(text: str) -> str:
         new_line1 = " ".join(all_words[:new_break])
         new_line2 = " ".join(all_words[new_break:])
         last = clean(all_words[new_break - 1])
-        if last in NO_LINE_END:
+        if last in _no_line_end():
             continue
         if max(text_width(new_line1), text_width(new_line2)) <= LINE_W_MAX:
             return new_line1 + "\n" + new_line2
@@ -1024,10 +1053,22 @@ def normalize_text_preserve_breaks(text: str) -> str:
 
 
 def _brand_config():
-    """The canonical brand spelling, configured per project via the env var
-    CAPTION_BRAND (loaded from tools/captions-de/.env). Empty by default, so
-    nothing is hard-coded into the tool — opt in by setting CAPTION_BRAND."""
-    return os.environ.get("CAPTION_BRAND", "").strip()
+    """The canonical brand spelling, configured per project via .env. The
+    product name differs per market, so a per-language override wins:
+    CAPTION_BRAND_<LANG> (e.g. CAPTION_BRAND_PL=Przetwornik,
+    CAPTION_BRAND_IT=Conversol) falls back to the global CAPTION_BRAND.
+    Empty by default, so nothing is hard-coded into the tool."""
+    per_lang = os.environ.get(f"CAPTION_BRAND_{ACTIVE_LANG.upper()}", "").strip()
+    return per_lang or os.environ.get("CAPTION_BRAND", "").strip()
+
+
+def _terms_config() -> list:
+    """Extra canonical terms (comma-separated). Same per-language override as
+    the brand: CAPTION_TERMS_<LANG> wins over CAPTION_TERMS, so e.g. German
+    "L-Thyroxin" isn't enforced onto a Polish video (set CAPTION_TERMS_PL)."""
+    raw = os.environ.get(f"CAPTION_TERMS_{ACTIVE_LANG.upper()}",
+                         os.environ.get("CAPTION_TERMS", ""))
+    return [t.strip() for t in raw.split(",") if t.strip()]
 
 
 def _term_core(s: str) -> str:
@@ -1087,7 +1128,7 @@ def _canonical_terms() -> list:
     brand/domain words (the brand name, a recurring product/ingredient); enforcing
     their exact spelling deterministically is the one place overfitting is wanted."""
     brand = _brand_config()
-    terms = [t.strip() for t in os.environ.get("CAPTION_TERMS", "").split(",") if t.strip()]
+    terms = _terms_config()
     out, seen = [], set()
     for t in ([brand] if brand else []) + terms:
         k = t.lower()
@@ -1149,7 +1190,7 @@ def project_terms_block() -> str:
     CAPTION_TERMS), injected only when configured. Keeps the base prompt neutral
     and unbiased; Gemini applies these only when the audio matches."""
     brand = _brand_config()
-    terms = [t.strip() for t in os.environ.get("CAPTION_TERMS", "").split(",") if t.strip()]
+    terms = _terms_config()
     items = ([brand] if brand else []) + terms
     if not items:
         return ""
@@ -1252,6 +1293,97 @@ FORWARD_INTENS = {
 # a one-word preposition or intensifier, or a bare number (binds to its noun).
 NO_LINE_END = LINE_BREAK_BAD_LAST | MOVE_TRAILING | FORWARD_PREPS | FORWARD_INTENS
 
+# ─── Per-language forward-binding words ──────────────────────────────────────
+# The German sets above power the language-sensitive safety nets: fix_line_break
+# and _binds_forward (where a visible line must NOT end) and
+# move_trailing_binders (which trailing word is moved to the next caption).
+# French / Italian / Polish get their own closed-class sets so the same nets
+# apply that language's grammar. Like the German lists these are EVERGREEN:
+# only closed classes (determiners, prepositions, subordinators, intensifiers,
+# negation) — never video vocabulary. Languages without a set (en/es) fall back
+# to the German sets, preserving their long-standing behaviour.
+
+# French — subordinators + binding prepositions/partitives safe to MOVE to the
+# start of the next caption. The clitic pronoun "en"/"y" homographs are
+# deliberately excluded here (post-verbal "il y en a" would break) but "en" is
+# still a bad LINE ending, so it appears in the det/intensifier set below.
+MOVE_TRAILING_FR = {
+    "que", "qui", "quand", "parce", "puisque", "lorsque", "comme",
+    "pour", "avec", "sans", "chez", "vers", "contre", "entre", "depuis",
+    "dans", "sur", "sous", "de", "du", "des", "à", "au", "aux",
+    "très", "si", "plus", "moins", "trop",
+}
+_DET_INTENS_FR = {
+    "le", "la", "les", "un", "une", "ce", "cet", "cette", "ces",
+    "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses",
+    "notre", "nos", "votre", "vos", "leur", "leurs",
+    "quel", "quelle", "quels", "quelles", "chaque", "quelques", "plusieurs",
+    "ne", "en", "assez", "tellement", "vraiment", "presque", "peu", "beaucoup",
+}
+
+# Italian — "non"/"si" precede their verb, articulated prepositions bind to
+# their noun phrase.
+MOVE_TRAILING_IT = {
+    "che", "chi", "se", "quando", "perché", "mentre", "siccome", "dove",
+    "per", "con", "senza", "contro", "verso", "tra", "fra",
+    "di", "a", "da", "in", "su",
+    "del", "dello", "della", "dei", "degli", "delle",
+    "al", "allo", "alla", "ai", "agli", "alle",
+    "dal", "dallo", "dalla", "nel", "nella", "nei", "nelle",
+    "sul", "sulla", "molto", "più", "meno", "troppo", "così", "non", "si",
+}
+_DET_INTENS_IT = {
+    "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
+    "questo", "questa", "questi", "queste",
+    "quel", "quello", "quella", "quei", "quegli", "quelle",
+    "mio", "mia", "miei", "mie", "tuo", "tua", "tuoi", "tue",
+    "suo", "sua", "suoi", "sue", "nostro", "nostra", "nostri", "nostre",
+    "vostro", "vostra", "loro", "ogni", "qualche", "alcuni", "alcune",
+    "tanto", "poco", "quasi", "davvero", "proprio", "abbastanza",
+}
+
+# Polish — prepositions (including the one-letter w/z/o/u), subordinators and
+# the pre-verbal negation "nie" all bind forward. No articles in Polish; the
+# demonstratives/possessives play that role.
+MOVE_TRAILING_PL = {
+    "że", "żeby", "aby", "bo", "ponieważ", "gdy", "kiedy", "jeśli",
+    "jeżeli", "chociaż", "czy",
+    "dla", "z", "ze", "w", "we", "na", "do", "od", "o", "u", "za", "po",
+    "przed", "przez", "przy", "bez", "pod", "nad", "między",
+    "bardzo", "zbyt", "nie",
+}
+_DET_INTENS_PL = {
+    "ten", "ta", "to", "te", "tego", "tej", "tych", "tym", "tą",
+    "taki", "taka", "takie", "każdy", "każda", "każde",
+    "żaden", "żadna", "żadne",
+    "mój", "moja", "moje", "twój", "twoja", "twoje",
+    "swój", "swoja", "swoje", "nasz", "nasza", "nasze",
+    "jego", "jej", "ich", "kilka", "wiele", "więcej", "mniej",
+    "który", "która", "które", "których",
+    "tak", "trochę", "prawie", "całkiem", "naprawdę", "dość", "tylko",
+}
+
+MOVE_TRAILING_BY_LANG = {
+    "de": MOVE_TRAILING,
+    "fr": MOVE_TRAILING_FR,
+    "it": MOVE_TRAILING_IT,
+    "pl": MOVE_TRAILING_PL,
+}
+NO_LINE_END_BY_LANG = {
+    "de": NO_LINE_END,
+    "fr": MOVE_TRAILING_FR | _DET_INTENS_FR,
+    "it": MOVE_TRAILING_IT | _DET_INTENS_IT,
+    "pl": MOVE_TRAILING_PL | _DET_INTENS_PL,
+}
+
+
+def _move_trailing() -> set:
+    return MOVE_TRAILING_BY_LANG.get(ACTIVE_LANG, MOVE_TRAILING)
+
+
+def _no_line_end() -> set:
+    return NO_LINE_END_BY_LANG.get(ACTIVE_LANG, NO_LINE_END)
+
 
 def move_trailing_binders(segments: list) -> list:
     """Never end a caption on a forward-binding word (subordinating conjunction,
@@ -1264,7 +1396,7 @@ def move_trailing_binders(segments: list) -> list:
     for i in range(len(segs) - 1):
         toks = _seg_tokens(segs[i])
         last = toks[-1] if toks else ""
-        if not (len(toks) >= 2 and _norm_word(last) in MOVE_TRAILING
+        if not (len(toks) >= 2 and _norm_word(last) in _move_trailing()
                 and not re.search(r"[?!.]", last)):
             continue
         nxt = segs[i + 1]
@@ -1405,6 +1537,29 @@ NUMBER_LABELS = {
     "folge", "runde", "phase", "level", "tipp", "grund", "regel", "platz",
 }
 
+NUMBER_LABELS_BY_LANG = {
+    "de": NUMBER_LABELS,
+    "fr": {
+        "numéro", "no", "partie", "point", "étape", "chapitre", "jour",
+        "semaine", "épisode", "phase", "niveau", "astuce", "raison", "règle",
+        "place", "conseil",
+    },
+    "it": {
+        "numero", "nr", "parte", "punto", "passo", "capitolo", "giorno",
+        "settimana", "episodio", "fase", "livello", "consiglio", "motivo",
+        "regola", "posto",
+    },
+    "pl": {
+        "numer", "nr", "część", "punkt", "krok", "rozdział", "dzień",
+        "tydzień", "odcinek", "etap", "poziom", "wskazówka", "powód",
+        "zasada", "miejsce", "rada",
+    },
+}
+
+
+def _number_labels() -> set:
+    return NUMBER_LABELS_BY_LANG.get(ACTIVE_LANG, NUMBER_LABELS)
+
 
 def merge_split_numbers(segments: list) -> list:
     """Keep a number with its unit/noun. If a caption ends on a bare number and
@@ -1417,7 +1572,7 @@ def merge_split_numbers(segments: list) -> list:
         seg = dict(segments[i])
         toks = _seg_tokens(seg)
         if (toks and re.fullmatch(r"\d+([.,]\d+)?", _norm_word(toks[-1]))
-                and not (len(toks) >= 2 and _norm_word(toks[-2]) in NUMBER_LABELS)
+                and not (len(toks) >= 2 and _norm_word(toks[-2]) in _number_labels())
                 and i + 1 < len(segments)):
             nxt = segments[i + 1]
             combined = _flat_text(seg) + " " + _flat_text(nxt)
@@ -1487,10 +1642,10 @@ def merge_short_durations(segments: list, words: list, min_dur: float = 0.6) -> 
 
 def _binds_forward(tok: str) -> bool:
     """True if `tok` binds to what FOLLOWS it, so a line/caption must not end on
-    it: a determiner/preposition/intensifier (NO_LINE_END) or a bare number
-    (which binds to its noun, "10 | Jahren")."""
+    it: a determiner/preposition/intensifier (the ACTIVE_LANG's no-line-end set)
+    or a bare number (which binds to its noun, "10 | Jahren")."""
     w = _norm_word(tok)
-    return w in NO_LINE_END or bool(re.fullmatch(r"\d+([.,]\d+)?", w))
+    return w in _no_line_end() or bool(re.fullmatch(r"\d+([.,]\d+)?", w))
 
 
 def _split_one_line(tokens: list) -> list:
@@ -1708,8 +1863,8 @@ def main():
     parser.add_argument("--model", default="large-v3", help="Whisper model (default: large-v3)")
     parser.add_argument("--context", default="", help="Optional context hint for Gemini")
     parser.add_argument("--language", default="de",
-                        choices=["de", "en", "es", "fr", "it"],
-                        help="Language: de (default), en, es, fr, it")
+                        choices=["de", "en", "es", "fr", "it", "pl"],
+                        help="Language: de (default), en, es, fr, it, pl")
     parser.add_argument("--lines", default="hybrid", choices=["hybrid", "1"],
                         help="Caption length: hybrid (default, natural 1-2 line "
                              "mix) or 1 (one line per caption)")

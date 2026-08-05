@@ -5,6 +5,7 @@
     - Python 3.12 (detected via PATH / py launcher / registry / common dirs;
       downloaded from python.org and installed silently if missing)
     - ffmpeg (winget if available, else a static build downloaded + put on PATH)
+    - eSpeak NG (winget; the Script Animator measures clip lengths with it)
     - the app venv (PySide6 + opencv)
     - WhisperX in %USERPROFILE%\whisperx  (required; ~3 GB)
     - the Gemini API key
@@ -23,8 +24,9 @@ function Section($t) { Write-Host ""; Write-Host ("=" * 52); Write-Host " $t"; W
 function Info($t)    { Write-Host ">> $t" }
 
 Section "Mariposa Studio - Installer for Windows"
-Write-Host "Sets up Python, ffmpeg, the app, WhisperX (German Captions) and"
-Write-Host "your Gemini key - then opens the app. Takes ~10-15 min (WhisperX)."
+Write-Host "Sets up Python, ffmpeg, eSpeak NG, the app, WhisperX (German"
+Write-Host "Captions) and your Gemini key - then opens the app."
+Write-Host "Takes ~10-15 min (WhisperX)."
 Write-Host ""
 
 # ---------------------------------------------------------------------------
@@ -140,6 +142,46 @@ if (-not (Has-Ffmpeg)) {
     }
 } else {
     Info "ffmpeg already on PATH."
+}
+
+# ---------------------------------------------------------------------------
+# 2b. eSpeak NG - the Script Animator MEASURES how long each line takes to say
+#     by rendering it and reading the audio length, instead of predicting it from
+#     the text (which ran 16% fast and shipped a 12.4s clip in a 10s slot).
+#     Same engine as the macOS installer fetches, so a Mac and a Windows machine
+#     agree on every clip length. Without it the Animator still builds, but the
+#     lengths are estimates and it says so on screen.
+# ---------------------------------------------------------------------------
+function Has-Espeak { return [bool](Get-Command espeak-ng -ErrorAction SilentlyContinue) }
+
+if (-not (Has-Espeak)) {
+    Info "eSpeak NG not found - installing (Script Animator clip lengths)..."
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($winget) {
+        try { & winget install --silent --source winget --accept-package-agreements --accept-source-agreements eSpeak-NG.eSpeak-NG } catch {}
+    }
+    if (-not (Has-Espeak)) {
+        # The default MSI location, in case winget installed it without
+        # refreshing this session's PATH.
+        foreach ($guess in @("$env:ProgramFiles\eSpeak NG", "${env:ProgramFiles(x86)}\eSpeak NG")) {
+            if (Test-Path (Join-Path $guess 'espeak-ng.exe')) {
+                $userPath = [Environment]::GetEnvironmentVariable('Path','User')
+                if ($userPath -notlike "*$guess*") {
+                    [Environment]::SetEnvironmentVariable('Path', "$userPath;$guess", 'User')
+                }
+                $env:Path = "$env:Path;$guess"
+                Info "eSpeak NG found at $guess"
+                break
+            }
+        }
+    }
+    if (-not (Has-Espeak)) {
+        Write-Host "  ! Could not install eSpeak NG automatically. The Script Animator"
+        Write-Host "    will estimate clip lengths instead of measuring them (it says so"
+        Write-Host "    on screen). Installer: https://github.com/espeak-ng/espeak-ng/releases"
+    }
+} else {
+    Info "eSpeak NG already on PATH."
 }
 
 # ---------------------------------------------------------------------------

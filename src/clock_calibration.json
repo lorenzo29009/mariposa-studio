@@ -1,0 +1,18 @@
+{
+  "_comment": "Fitted by scripts/fit_clock.py from docs/clock_reference.csv. Do not hand-edit: re-run the fitter after adding confirmed clips.",
+  "measure_version": 1,
+  "engines": {
+    "espeak-ng": {
+      "scale": 0.9,
+      "offset": 0.0,
+      "fitted_rows": 13,
+      "fitted_hits": 12
+    },
+    "say": {
+      "scale": 0.81,
+      "offset": 0.0,
+      "fitted_rows": 13,
+      "fitted_hits": 12
+    }
+  }
+}

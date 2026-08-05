@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QProcessEnvironment
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QGuiApplication, QIcon
 
 from design import (
     svg_icon,
@@ -71,7 +71,7 @@ __all__ = [
     "WHISPERX_PY", "ENV_PATH",
     "studio_python", "make_qprocess_env", "chevron_icon", "arrow_icon",
     "reveal_in_finder", "open_folder", "read_env_value", "write_env_value",
-    "ensure_windows_shortcut",
+    "ensure_windows_shortcut", "make_nonactivating_panel",
 ]
 
 
@@ -144,6 +144,88 @@ def open_folder(p: Path):
             subprocess.run(["xdg-open", str(target)], check=False)
     except Exception:
         pass
+
+
+# --- macOS: floating panels that don't drag the app to the front -----------
+def make_nonactivating_panel(widget) -> bool:
+    """Make an already-shown Qt.Tool window a *non-activating* NSPanel.
+
+    Qt.Tool does map to an NSPanel on macOS, but a plain NSPanel still
+    activates the whole application when you click it — which yanks the main
+    Studio window in front of the browser/editor the user is actually working
+    in. Only `NSWindowStyleMaskNonactivatingPanel` (1 << 7) stops that, and Qt
+    exposes no flag for it, so we set it through the Objective-C runtime with
+    ctypes (no pyobjc dependency).
+
+    Must be called AFTER show(), once the native window exists. Returns True if
+    the mask was applied; a silent no-op off macOS or on any failure.
+    """
+    if not IS_MAC:
+        return False
+    # Only the cocoa platform hands out a real NSView from winId(); under
+    # "offscreen"/"minimal" (smoke tests, CI) it is a placeholder, and sending
+    # it an Objective-C message would segfault the process.
+    app = QGuiApplication.instance()
+    if app is None or app.platformName() != "cocoa":
+        return False
+    try:
+        import ctypes
+        import ctypes.util
+
+        objc = ctypes.CDLL(ctypes.util.find_library("objc"))
+        objc.sel_registerName.restype = ctypes.c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.objc_getClass.argtypes = [ctypes.c_char_p]
+
+        def sel(name: bytes):
+            return ctypes.c_void_p(objc.sel_registerName(name))
+
+        def send(restype, argtypes, receiver, selector, *args):
+            fn = ctypes.CFUNCTYPE(
+                restype, ctypes.c_void_p, ctypes.c_void_p, *argtypes
+            )(("objc_msgSend", objc))
+            return fn(receiver, selector, *args)
+
+        view = ctypes.c_void_p(int(widget.winId()))
+        if not view.value:
+            return False
+        window = send(ctypes.c_void_p, [], view, sel(b"window"))
+        if not window:
+            return False
+        window = ctypes.c_void_p(window)
+
+        # setStyleMask: throws on a plain NSWindow — only NSPanel accepts the
+        # non-activating bit, so verify the class before touching it.
+        panel_cls = ctypes.c_void_p(objc.objc_getClass(b"NSPanel"))
+        is_panel = send(ctypes.c_bool, [ctypes.c_void_p], window,
+                        sel(b"isKindOfClass:"), panel_cls)
+        if not is_panel:
+            return False
+
+        NON_ACTIVATING = 1 << 7
+        mask = send(ctypes.c_ulong, [], window, sel(b"styleMask"))
+        if not (mask & NON_ACTIVATING):
+            send(None, [ctypes.c_ulong], window, sel(b"setStyleMask:"),
+                 ctypes.c_ulong(mask | NON_ACTIVATING))
+        # Key only when it actually needs the keyboard, never on a plain click.
+        send(None, [ctypes.c_bool], window, sel(b"setBecomesKeyOnlyIfNeeded:"), True)
+        send(None, [ctypes.c_bool], window, sel(b"setHidesOnDeactivate:"), False)
+        # Stay visible over a full-screen app (a browser running Veo, typically).
+        # AppKit *validates* collection behavior and raises on a contradictory
+        # pair — and an Objective-C exception kills the process, the try/except
+        # around this cannot catch it. So clear the bits that conflict with
+        # FullScreenAuxiliary instead of blindly OR-ing, and leave the Spaces
+        # bits to Qt (it already sets MoveToActiveSpace, which brings the panel
+        # along to whichever Space the user is on).
+        FULLSCREEN_PRIMARY, FULLSCREEN_AUXILIARY, FULLSCREEN_NONE = 1 << 7, 1 << 8, 1 << 9
+        behavior = send(ctypes.c_ulong, [], window, sel(b"collectionBehavior"))
+        behavior = (behavior & ~(FULLSCREEN_PRIMARY | FULLSCREEN_NONE)) | FULLSCREEN_AUXILIARY
+        send(None, [ctypes.c_ulong], window, sel(b"setCollectionBehavior:"),
+             ctypes.c_ulong(behavior))
+        return True
+    except Exception:
+        return False
 
 
 # --- Windows: ensure a taskbar-pinnable shortcut exists --------------------

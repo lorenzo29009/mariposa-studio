@@ -610,6 +610,10 @@ class Select(QComboBox):
     def _pick(self, index):
         self.setCurrentIndex(index.row())
         self.hidePopup()
+        # The custom popup bypasses QComboBox's own machinery, so `activated`
+        # (= the user picked a row, as opposed to the index changing in code)
+        # has to be emitted by hand — without it that signal never fires.
+        self.activated.emit(index.row())
 
 
 __all__ = [

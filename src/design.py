@@ -442,6 +442,7 @@ QPushButton#SecondaryBtn {{
 }}
 QPushButton#SecondaryBtn:hover {{ background: {PAPER_CARD2}; border-color: {GREEN_LINE}; }}
 QPushButton#SecondaryBtn:pressed {{ background: {PAPER_PANEL}; }}
+QPushButton#SecondaryBtn:disabled {{ color: {TXT_DISABLED}; border-color: {PAPER_LINE}; }}
 
 QPushButton#GhostBtn {{
     background: transparent;
@@ -455,6 +456,7 @@ QPushButton#GhostBtn {{
 }}
 QPushButton#GhostBtn:hover {{ color: {TXT_HI}; border-color: {GREEN_LINE}; background: {PAPER_CARD}; }}
 QPushButton#GhostBtn:checked {{ color: {GREEN}; border-color: {GREEN}; }}
+QPushButton#GhostBtn:disabled {{ color: {TXT_DISABLED}; border-color: {PAPER_LINE}; background: transparent; }}
 
 QPushButton#DangerBtn {{
     background: transparent;
@@ -585,6 +587,150 @@ QPlainTextEdit#ResultBox {{
     padding: 12px 14px; color: {TXT_HI}; font-size: {t['body']['size']}px;
 }}
 
+/* =======================================================================
+   Script Animator
+   Two stages, one surface at a time: the script, then the cut. Both are a
+   single centred column on the cream canvas — the calm comes from white
+   cards, hairline separators and one accent, never from more boxes.
+   ======================================================================= */
+
+/* -- stage chrome -- */
+QFrame#StageBar {{
+    background: {PAPER_PANEL};
+    border: none;
+    border-bottom: 1px solid {INK_BORDER};
+}}
+QFrame#StageFoot {{
+    background: {PAPER_PANEL};
+    border: none;
+    border-top: 1px solid {INK_BORDER};
+}}
+QLabel#StageTitle {{
+    font-family: {FONT_DISPLAY};
+    color: {TXT_HI}; font-size: 17px; font-weight: 600; background: transparent;
+}}
+QLabel#StageMeta {{ color: {TXT_DIM}; font-size: 12.5px; background: transparent; }}
+QLabel#StageMeta[tone="warn"] {{ color: {WARNING}; }}
+QLabel#StageMeta[tone="ok"] {{ color: {SUCCESS}; }}
+QLabel#StageMeta[tone="err"] {{ color: {DANGER}; }}
+
+/* -- section: an eyebrow line, then one card -- */
+QLabel#AniSectionTitle {{
+    color: {TXT_HI}; font-size: 13px; font-weight: 700; letter-spacing: -0.1px;
+    background: transparent;
+}}
+QLabel#AniSectionHint {{ color: {TXT_FAINT}; font-size: 12px; background: transparent; }}
+QLabel#AniSectionCount {{
+    color: {TXT_FAINT}; font-family: {FONT_MONO}; font-size: 11px;
+    background: transparent;
+}}
+QFrame#AniCard {{
+    background: {PAPER_CARD};
+    border: 1px solid {INK_BORDER};
+    border-radius: {R_MD}px;
+}}
+
+/* -- one script block: a screenplay gutter tag, then the copy. No inner box:
+      the row separator is a hairline, and the tag carries the identity. -- */
+QFrame#BlockRow {{ background: transparent; border: none;
+    border-bottom: 1px solid {PAPER_LINE}; }}
+QFrame#BlockRow[last="true"] {{ border-bottom: none; }}
+QLabel#BlockTag {{
+    color: {TXT_FAINT}; font-family: {FONT_MONO}; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.4px; background: transparent;
+}}
+QFrame#BlockRow[filled="true"] QLabel#BlockTag {{ color: {GREEN}; }}
+QPlainTextEdit#BlockInput {{
+    background: transparent; border: none; border-radius: 0;
+    padding: 0; color: {TXT_HI}; font-size: 13.5px;
+}}
+QPushButton#BlockRemove {{ background: transparent; border: none; border-radius: 13px; }}
+QPushButton#BlockRemove:hover {{ background: {DANGER_TINT}; }}
+
+/* The "add another" affordance lives inside the card as a quiet text action —
+   a dashed box for it competed with the copy for attention. */
+QPushButton#AddLink {{
+    background: transparent; border: none; color: {GREEN};
+    min-height: 40px; padding: 0 14px; text-align: left;
+    font-size: {t['label']['size']}px; font-weight: 600;
+}}
+QPushButton#AddLink:hover {{ background: {GREEN_TINT}; }}
+QPushButton#AddLink:disabled {{ color: {TXT_DISABLED}; background: transparent; }}
+
+QPlainTextEdit#TailInput {{
+    background: transparent; border: none; border-radius: 0;
+    padding: 0; color: {TXT_BODY}; font-size: 13px;
+}}
+
+/* -- the cut: a group eyebrow, then one card per clip -- */
+QLabel#GroupHead {{
+    color: {TXT_HI}; font-size: {t['micro']['size']}px; font-weight: 800;
+    letter-spacing: {t['micro']['spacing']}; background: transparent;
+}}
+QLabel#GroupRuntime {{ color: {TXT_FAINT}; font-size: 11px; background: transparent; }}
+QFrame#GroupRule {{ background: {PAPER_LINE}; border: none; }}
+
+QFrame#SceneCard {{
+    background: {PAPER_CARD}; border: 1px solid {INK_BORDER}; border-radius: {R_MD}px;
+}}
+QFrame#SceneCard:hover {{ border-color: {PAPER_LINE2}; }}
+QFrame#SceneCard[selected="true"] {{ border: 1px solid {GREEN}; }}
+QLabel#SceneLabel {{
+    color: {TXT_FAINT}; font-family: {FONT_MONO}; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.3px; background: transparent;
+}}
+/* The clip length is a control, not a readout: click it to pin another one. A
+   pinned length is outlined, so it reads as "set by hand", not "worked out". */
+QPushButton#SceneDurBtn {{
+    background: {GREEN_TINT}; color: {GREEN}; border: 1px solid transparent;
+    border-radius: 11px; min-height: 22px; padding: 0 11px;
+    font-size: 11.5px; font-weight: 700;
+}}
+QPushButton#SceneDurBtn::menu-indicator {{ image: none; width: 0; }}
+QPushButton#SceneDurBtn:hover {{ background: {GREEN_TINT_HI}; border-color: {GREEN_LINE}; }}
+QPushButton#SceneDurBtn[locked="true"] {{
+    background: {GREEN}; color: {GREEN_FG}; border-color: {GREEN};
+}}
+QLabel#SceneBeat {{ color: {TXT_FAINT}; font-size: 11.5px; background: transparent; }}
+QLabel#FlagDot {{
+    background: {WARNING}; border-radius: 4px; min-width: 8px; max-width: 8px;
+    min-height: 8px; max-height: 8px;
+}}
+QLabel#SceneText {{ color: {TXT_HI}; font-size: 14px; background: transparent; }}
+QLabel#SceneEn {{ color: {TXT_FAINT}; font-size: 12px; font-style: italic; background: transparent; }}
+QLabel#ScenePrompt {{
+    background: {PAPER_WELL}; color: #CBD9D2; border-radius: {R_SM}px;
+    padding: 10px 12px; font-family: {FONT_MONO}; font-size: 11px;
+}}
+QFrame#SceneRule {{ background: {PAPER_LINE}; border: none; }}
+QLineEdit#SceneNote {{
+    background: {PAPER_CANVAS}; border: 1px solid {PAPER_LINE};
+    border-radius: {R_SM}px; padding: 7px 10px; font-size: 12.5px; min-height: 18px;
+}}
+QPushButton#RowIconBtn {{ background: transparent; border: none; border-radius: 14px; }}
+QPushButton#RowIconBtn:hover {{ background: {PAPER_CARD2}; }}
+/* The overflow menu: every by-hand correction to a clip lives behind it, so
+   the card itself carries only the copy. */
+QPushButton#RowMenuBtn {{
+    background: transparent; border: none; border-radius: 14px;
+    color: {TXT_DIM}; font-size: 17px; font-weight: 700; padding-bottom: 4px;
+}}
+QPushButton#RowMenuBtn:hover {{ background: {PAPER_CARD2}; color: {TXT_HI}; }}
+QPushButton#RowMenuBtn::menu-indicator {{ image: none; width: 0; }}
+
+/* Menus — every by-hand correction (length, merge, cut) lives in one place. */
+QMenu {{
+    background: {PAPER_RAISED}; border: 1px solid {PAPER_LINE2};
+    border-radius: {R_MD}px; padding: 6px;
+}}
+QMenu::item {{
+    padding: 7px 16px 7px 14px; border-radius: {R_SM}px;
+    color: {TXT_BODY}; font-size: 12.5px;
+}}
+QMenu::item:selected {{ background: {GREEN_TINT}; color: {TXT_HI}; }}
+QMenu::item:disabled {{ color: {TXT_DISABLED}; }}
+QMenu::separator {{ height: 1px; background: {PAPER_LINE}; margin: 5px 8px; }}
+
 /* ---- Floating Animator panel ---- */
 QFrame#FloatPanel {{ background: {INK_PANEL}; border: 1px solid {INK_BORDER2}; border-radius: {R_LG}px; }}
 QFrame#FloatHeader {{
@@ -621,6 +767,10 @@ QLabel#FloatChip {{
 QLabel#FloatMetaChip {{
     background: transparent; border: 1px solid {PAPER_LINE2}; color: {TXT_DIM};
     border-radius: 13px; padding: 6px 10px; font-size: 11.5px;
+}}
+QLabel#FloatTailChip {{
+    background: {PAPER_CARD2}; border: none; color: {TXT_FAINT};
+    border-radius: 10px; padding: 6px 10px; font-size: 10.5px;
 }}
 QFrame#ProgressTrack {{ background: {INK_BORDER}; border-radius: 2px; }}
 QFrame#ProgressFill {{ background: {IRIS}; border-radius: 2px; }}

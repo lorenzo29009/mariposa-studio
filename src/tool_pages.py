@@ -16,7 +16,7 @@ from PySide6.QtCore import (Qt, QProcess, QEvent)
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit,
     QComboBox, QFrame, QScrollArea, QGridLayout, QProgressBar,
-    QApplication, QPlainTextEdit,
+    QApplication, QPlainTextEdit, QStackedWidget,
 )
 
 from design import (
@@ -455,6 +455,11 @@ def _fill_kuerzel_combo(combo: QComboBox, rows: list[tuple[str, str, str]]):
         combo.addItem(f"{emoji}  {name}  —  {kuerzel}", kuerzel)
 
 
+# Sentinel item data for the "Custom" entry of a Kürzel combo — the Kürzel is
+# then typed by hand into the companion line edit instead of picked.
+CUSTOM_KUERZEL = "__custom__"
+
+
 class FlowCropperPage(ToolPage):
     title = "Flow Cropper"
     subtitle = ("Reframe a whole project from 9:16 to 4:5 and rename it following "
@@ -489,8 +494,29 @@ class FlowCropperPage(ToolPage):
         # C964" → angle "Conversion Disorder").
         self.num = QLineEdit(); self.num.setPlaceholderText("e.g. C857 or AI78")
         self.num.editingFinished.connect(self._normalize_id)
+        # Ad format: the known Notion entries plus a "Custom…" escape hatch for
+        # a Kürzel that isn't in the list yet (crop.py takes the code verbatim,
+        # so nothing downstream needs to know). Custom *replaces* the dropdown
+        # with a text field in the same slot rather than adding a second one —
+        # the cell keeps one field's height, so the 2-column grid stays aligned.
         self.ad_format = Select()
         _fill_kuerzel_combo(self.ad_format, FLOW_AD_FORMATS)
+        self.ad_format.addItem("✏️  Custom…", CUSTOM_KUERZEL)
+        self.ad_format.activated.connect(self._on_ad_format_activated)
+        self.ad_format_custom = QLineEdit()
+        self.ad_format_custom.setPlaceholderText("Type the Kürzel, e.g. TT")
+        # The way back to the list, in the field's own trailing slot.
+        self._ad_format_back = self.ad_format_custom.addAction(
+            svg_icon("x", TEXT_DIM, 14), QLineEdit.TrailingPosition)
+        self._ad_format_back.setToolTip("Back to the list")
+        self._ad_format_back.triggered.connect(self._leave_custom_ad_format)
+        self.ad_format_stack = QStackedWidget()
+        self.ad_format_stack.setObjectName("TransparentPanel")
+        self.ad_format_stack.setStyleSheet(
+            "QWidget#TransparentPanel { background: transparent; }")
+        self.ad_format_stack.addWidget(self.ad_format)
+        self.ad_format_stack.addWidget(self.ad_format_custom)
+
         self.avatar = Select()
         _fill_kuerzel_combo(self.avatar, FLOW_AVATARS)
         self.creator = QLineEdit()
@@ -505,7 +531,7 @@ class FlowCropperPage(ToolPage):
         # Angle is last so it's the one that spans the full row when the field
         # count is odd (grid_2col spans a trailing lone field automatically).
         self.fields_group = self.grid_2col([
-            Field("Creative id", self.num), Field("Ad format", self.ad_format),
+            Field("Creative id", self.num), Field("Ad format", self.ad_format_stack),
             Field("Avatar", self.avatar), Field("Creator (optional)", self.creator),
             Field("Awareness", self.awareness), Field("Product", self.product),
             Field("Angle", self.angle),
@@ -572,6 +598,29 @@ class FlowCropperPage(ToolPage):
         self.fields_group.setVisible(mode == "Manual")
         self.simple_group.setVisible(mode == "Simple")
 
+    def _on_ad_format_activated(self, _i: int):
+        # `activated` (not currentIndexChanged): only a real pick swaps the slot.
+        if self.ad_format.currentData() != CUSTOM_KUERZEL:
+            return
+        self.ad_format_stack.setCurrentWidget(self.ad_format_custom)
+        self.ad_format_custom.setFocus()
+        self.ad_format_custom.selectAll()
+
+    def _leave_custom_ad_format(self):
+        # Back to the list — land on the first entry, not on "Custom…".
+        self.ad_format.setCurrentIndex(0)
+        self.ad_format_stack.setCurrentWidget(self.ad_format)
+
+    def _custom_ad_format(self) -> bool:
+        return self.ad_format_stack.currentWidget() is self.ad_format_custom
+
+    def ad_format_value(self) -> str:
+        """The Kürzel that goes into the filename — picked from the list, or
+        typed by hand when the field is in Custom mode."""
+        if self._custom_ad_format():
+            return self.ad_format_custom.text().strip()
+        return self.ad_format.currentData() or ""
+
     def _normalize_id(self):
         # A bare number defaults to a C id (e.g. "857" → "C857"); anything with
         # a letter prefix (C, AI, Cr…) is left as typed.
@@ -605,7 +654,7 @@ class FlowCropperPage(ToolPage):
                 return "Simple mode needs a Creative id and a Format."
             return None
         # Creator is optional (AI has none); id, ad format, avatar and angle are required.
-        if not all([self.num.text().strip(), self.ad_format.currentData(),
+        if not all([self.num.text().strip(), self.ad_format_value(),
                     self.avatar.currentData(), self.angle.text().strip()]):
             return "Fill in the Creative id, Ad format, Avatar and Angle."
         return None
@@ -627,7 +676,7 @@ class FlowCropperPage(ToolPage):
         product = self.product.text().strip() or "Umwandler"
         # crop.py takes the id verbatim and the Kürzel codes; creator may be "".
         args += ["--creative", self.folder.value(), self.num.text().strip(),
-                 self.ad_format.currentData(), self.avatar.currentData(),
+                 self.ad_format_value(), self.avatar.currentData(),
                  self.angle.text().strip(), self.creator.text().strip(),
                  self.awareness.currentText(), product]
         return py, args, FLOW_CROPPER_DIR
@@ -711,6 +760,14 @@ class CaptionsPage(ToolPage):
     LENGTH_LABELS = ["Hybrid", "Single line"]
     LINE_CODES = ["hybrid", "1"]
 
+    # Language of the spoken video. Index order must match LANG_CODES —
+    # German first so it stays the default. caption.py adapts everything to
+    # the choice: WhisperX transcription, the Gemini prompts, casing rules,
+    # the line-break/binder safety nets, and the per-market product name
+    # (CAPTION_BRAND_<LANG> in tools/captions-de/.env).
+    LANG_LABELS = ["German", "Polish", "French", "Italian"]
+    LANG_CODES = ["de", "pl", "fr", "it"]
+
     def build_form(self):
         # Hero: the video.
         self.video = DropZone(
@@ -720,6 +777,15 @@ class CaptionsPage(ToolPage):
         self.add_widget(self.video)
 
         lay = self.settings_card()
+
+        # Spoken language as a segmented row (German default).
+        lgcol = QVBoxLayout(); lgcol.setSpacing(6)
+        lgcol.addWidget(self.group_label("LANGUAGE"))
+        self.language = Segmented(self.LANG_LABELS)
+        lgcol.addWidget(self.language)
+        lgw = _panel(lgcol); lay.addWidget(lgw)
+
+        lay.addWidget(self.divider())
 
         # Caption length as a segmented row (Hybrid default).
         clcol = QVBoxLayout(); clcol.setSpacing(6)
@@ -841,9 +907,8 @@ class CaptionsPage(ToolPage):
         return None
 
     def build_command(self):
-        # Videos are always German, so the language is no longer a GUI choice —
-        # caption.py defaults to German on its own.
         args = ["-u", str(CAPTIONS_DIR / "caption.py"), self.video.value()]
+        args += ["--language", self.LANG_CODES[self.language.currentIndex()]]
         args += ["--lines", self.LINE_CODES[self.length.currentIndex()]]
         if not self.use_ai.isChecked():   # toggle off → heuristic only
             args.append("--no-ai")
