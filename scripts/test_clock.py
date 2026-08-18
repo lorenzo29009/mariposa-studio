@@ -23,8 +23,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import speech_clock as clock                                        # noqa: E402
 from script_packer import (                                         # noqa: E402
-    PAUSE_COMMA, PAUSE_SENTENCE, analytic_seconds, count_syllables,
-    estimate_seconds, timing_source,
+    PAUSE_COMMA, PAUSE_SENTENCE, PRONUNCIATION, analytic_seconds,
+    count_syllables, estimate_seconds, timing_source,
 )
 
 fails = []
@@ -64,8 +64,41 @@ for name in ("espeak-ng", "say"):
     cal = clock.calibration_for(name)
     print(f"       {name:10} scale {cal['scale']:.3f}  offset {cal['offset']:+.2f}")
     check(f"{name} has a plausible scale", 0.4 < cal["scale"] < 2.0, cal)
+    for language in ("German", "Italian"):
+        lc = clock.calibration_for(name, language)
+        print(f"       {'':10}   {language:8} scale {lc['scale']:.3f}")
+        check(f"{name}/{language} has a plausible scale",
+              0.4 < lc["scale"] < 2.0, lc)
 check("an unknown engine falls back to 1.0",
       clock.calibration_for("festival")["scale"] == 1.0)
+# The scale is a ratio between two paces, and the engine's pace changes with the
+# voice: `say` reads Italian 17 % further from this talent than it reads German, so
+# a language with confirmed clips has to be able to carry its own constant.
+check("a language with no clips inherits the engine's constant",
+      clock.calibration_for("espeak-ng", "Klingon")["scale"]
+      == clock.calibration_for("espeak-ng")["scale"])
+check("and a language with its own is allowed to differ",
+      clock.calibration_for("say", "Italian")["scale"]
+      != clock.calibration_for("say", "German")["scale"],
+      (clock.calibration_for("say", "Italian"),
+       clock.calibration_for("say", "German")))
+check("the German constant is the one the reference file fitted",
+      clock.calibration_for("espeak-ng", "German")["scale"] == 0.9,
+      clock.calibration_for("espeak-ng", "German"))
+
+print("\n— every offered language can actually be spoken —")
+# A language missing from an engine's `voices` falls back to the English voice,
+# which reads the copy as English and times it as nonsense. The set of languages the
+# Animator offers is the set with a pronunciation map (no Qt import here).
+for language in sorted(PRONUNCIATION):
+    for eng in (clock.ESPEAK, clock.SAY):
+        check(f"{eng.name} has a voice for {language}",
+              language in eng.voices, eng.voices)
+check("engine_note names the language it is talking about",
+      engine is None or "Italian" in clock.engine_note("Italian"),
+      clock.engine_note("Italian"))
+print(f"       {clock.engine_note('Italian')}")
+print(f"       {clock.engine_note('Polish')}")
 
 if engine is None:
     print("\n— no engine: only the fallback can be checked —")

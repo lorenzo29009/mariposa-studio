@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Optional
 
-from PySide6.QtCore import (Qt, Signal, QPointF, QPoint, QSize)
+from PySide6.QtCore import Qt, Signal, QPointF, QPoint
 from PySide6.QtGui import (QFont, QColor, QPainter, QPixmap, QImage, QPalette)
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit,
@@ -17,9 +17,7 @@ from PySide6.QtWidgets import (
 
 from design import (
     INK_PANEL, INK_BORDER2, TXT_HI, TXT_DIM, TXT_FAINT, IRIS, IRIS_FG,
-    GREEN, GREEN_FG, PAPER_CARD2,
-    TOOL_ACCENTS, SHADOW_CARD, svg_icon,
-    svg_pixmap,
+    GREEN, GREEN_FG, TOOL_ACCENTS, SHADOW_CARD, svg_icon, svg_pixmap,
 )
 
 # ---------------------------------------------------------------------------

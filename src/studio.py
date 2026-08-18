@@ -6,7 +6,7 @@ tool pages. The implementation lives in focused modules:
 
     core.py          paths, .env helpers, platform/icon helpers
     widgets.py       reusable UI widgets
-    tool_pages.py    Flow Cropper / Captions / Extract Frame
+    tool_page.py     the ToolPage base; one module per tool next to it
     camera_page.py   Camera Prompts
     animator_page.py Script Animator
     launcher.py      Settings, launcher desktop, Spotlight
@@ -24,14 +24,17 @@ from PySide6.QtWidgets import (
 )
 
 from design import (
-    IRIS_FG, BG, PANEL, TEXT, ACCENT, build_stylesheet, load_fonts,
+    IRIS_FG, BG, PANEL, TEXT, ACCENT, load_fonts,
 )
 
+from stylesheet import build_stylesheet
 from core import (
     APP_DIR, IS_WINDOWS, APP_USER_MODEL_ID, ensure_windows_shortcut,
     FLOW_CROPPER_DIR, CAPTIONS_DIR, EXTRACT_DIR, CAMERA_PROMPT_DIR,
 )
-from tool_pages import FlowCropperPage, CaptionsPage, ExtractFramePage
+from flow_cropper_page import FlowCropperPage
+from captions_page import CaptionsPage
+from extract_frame_page import ExtractFramePage
 from camera_page import CameraPromptsPage
 from animator_page import AnimatorPage
 from launcher import SettingsPage, LauncherPage, SpotlightOverlay

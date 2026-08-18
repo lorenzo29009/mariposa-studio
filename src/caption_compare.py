@@ -29,13 +29,11 @@ from PySide6.QtWidgets import (
 )
 
 from design import (
-    PAPER_CANVAS, PAPER_CARD, PAPER_LINE, PAPER_LINE2,
-    TXT_HI, TXT_BODY, TXT_DIM, TXT_FAINT,
-    GREEN, GREEN_FG, DANGER, WARNING, SUCCESS,
-    svg_icon, primary_button_style,
+    PAPER_CANVAS, PAPER_CARD, PAPER_LINE, TXT_HI, TXT_DIM, TXT_FAINT,
+    GREEN, GREEN_FG, DANGER, WARNING, svg_icon, primary_button_style,
 )
 from core import CAPTIONS_DIR, studio_python, make_qprocess_env
-from widgets import Card, DropZone, _panel
+from widgets import Card, DropZone
 
 # Per-issue-type colour (foreground, soft tint) — light-theme palette.
 _TYPE_STYLE = {

@@ -27,6 +27,41 @@ slot,language,text
 10,German,"Deine Müdigkeit kommt auch nicht von zu wenig Schlaf. Das ist nämlich auch deine Schilddrüse. Und dein Gewicht? Obwohl du dich gut ernährst und bewegst nimmst du zu? Das ist auch deine Schilddrüse."
 8,German,"Denn bei fast dreißig Prozent der Betroffenen wirkt L-Thyroxin nicht richtig. Oft wird das, je älter man wird, sogar noch schlechter."
 #
+# ── Italian ──────────────────────────────────────────────────────────────────
+# The Italian cut of the same ad, as the director shot it: copy and length per
+# clip, signed off. It is what makes Italian a *fitted* language instead of one
+# borrowing the German constant — and the answer it gives is that the constant is
+# the same to within the width of its own window (see scripts/fit_clock.py).
+#
+# Read the misses before changing anything: four of these clips hold about a slot
+# less speech than the clip they were shot at, and none holds more. That is not a
+# scale that is out — it is this talent leaving air, and the sheet proves it
+# directly. Two lines were shot TWICE at two different lengths in two variants of
+# the ad ("Se l'esterno delle tue sopracciglia…" at 8s and at 10s, "Quello che
+# vedi ha un nome…" at 6s and at 8s). No function of the copy can satisfy both, so
+# the second of each pair is deliberately not in this file: it would be an
+# unsatisfiable row, and the ±1 slot it demonstrates is what the clip-length menu
+# in the UI is for.
+8,Italian,"Se come donna prendi pastiglie da anni e ti serve qualcosa che finalmente aiuti davvero, allora ho una cosa per te."
+8,Italian,"Ogni giorno donne mi scrivono per dirmi come questa guida le ha aperto gli occhi. Leggila anche tu, la trovi qui sotto."
+6,Italian,"Ho raccolto tutto ciò che devi sapere su questo metodo in una guida gratuita."
+10,Italian,"E la cosa migliore è che c'è una garanzia soddisfatti o rimborsati di novanta giorni: se non ti aiuta ti ridanno i soldi. Clicca sul link sotto questo video e dacci un'occhiata finché è ancora disponibile."
+10,Italian,"Selenio, glutaTHione, cardo mariano, radice di tàrassaco – più altri sette nutrienti, tutto in due piccole capsule al giorno. Così non devi metterti a cercare quattro prodotti diversi."
+6,Italian,"Esiste un solo prodotto che combina tutte queste sostanze nel dosaggio giusto. il Conversol di miavòla."
+8,Italian,"Che tu sia donna o uomo, se prendi pastiglie da anni e cerchi qualcosa che finalmente aiuti davvero la tua tiroide, allora ho una cosa per te."
+10,Italian,"E la cosa migliore: c'è una garanzia soddisfatti o rimborsati di novanta giorni. Se non ti aiuta, ti ridanno i soldi. Clicca sul link sotto questo video e dacci un'occhiata – finché è ancora disponibile."
+8,Italian,"Il tuo medico di base non te lo dice, ma se non fai niente la dose della terapia continuerà ad aumentare, anche se i tuoi sintomi restano – o peggiorano."
+8,Italian,"Ogni mattina prendi Selenio insieme al GlutaThione. Aiutano i tuoi ormoni tiroidei a lavorare come dovrebbero."
+10,Italian,"Così i tuoi ormoni tornano in equilibrio. E non appena tornano in equilibrio, il tuo corpo regola l'energia, i capelli e il peso tutto da solo. Io stesso l'ho già visto in centinaia di persone."
+8,Italian,"A questo aggiungi duecento milligrammi di semi di cardo mariano e cinquanta milligrammi di radice di tarassaco. Per tre settimane."
+8,Italian,"Adesso ti starai sicuramente chiedendo cosa puoi fare. Ascolta bene e manda questo video a un'amica che ha i tuoi stessi problemi."
+10,Italian,"Prima l'esterno delle sopracciglia si dirada. Poi cadono i capelli. Poi ingrassi, anche se non hai cambiato niente in quello che mangi. E in più sei sempre stanca – per quanto tu dorma."
+8,Italian,"Questi sono segnali d'allarme che la tua terapia per la tiroide non ti sta facendo effetto come dovrebbe. E dovresti prenderli davvero sul serio!"
+6,Italian,"Sopracciglia che si diradano, capelli nella spazzola e chili che non se ne vogliono andare – è tutto collegato."
+8,Italian,"Ipotiroidismo: se ti riconosci in questi segnali, molto probabilmente hai un problema di conversione e la terapia per la tiroide non funziona come dovrebbe."
+8,Italian,"Se l'esterno delle tue sopracciglia si assottiglia sempre di più, non è un caso. È un segnale d'allarme della tua tiroide – e pochissime donne lo sanno."
+6,Italian,"Quello che vedi ha un nome... i medici lo chiamano segno di Hertoghe. Tradotto, la tua tiroide è in riserva."
+#
 # Thin spots, worth filling as clips get confirmed:
 #
 #   4s   no rows at all — the short end of the fit is unconstrained.

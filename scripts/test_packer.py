@@ -31,7 +31,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from script_packer import (  # noqa: E402
-    CAPACITY_SECONDS, DEFAULT_PRONUNCIATION, LINK_INSEPARABLE, LINK_NEW_POINT,
+    CAPACITY_SECONDS, DEFAULT_PRONUNCIATION, PRONUNCIATION, pronunciation_for,
+    LINK_INSEPARABLE, LINK_NEW_POINT,
     LINK_NEW_SECTION, LINK_SAME_THOUGHT, MAX_SLOT, ROLE_LIST_INTRO,
     ROLE_LIST_ITEM, SLOTS, apply_pronunciation, assign_duration,
     build_markdown, build_prompt, ceiling, collapse_to_one, count_syllables,
@@ -77,25 +78,53 @@ with (ROOT / "docs" / "clock_reference.csv").open(encoding="utf-8") as fh:
         CONFIRMED.append((int(row["slot"]), row.get("language") or "German",
                           row["text"].strip()))
 
-# One row is knowingly not reproduced, and it is named rather than tolerated
-# silently: "Wahrscheinlich hat dir dein Arzt gesagt …" measures ~3.6–3.9s and was
+# Five rows are knowingly not reproduced, and each is named rather than tolerated
+# silently. All five are loose the same way — the clip was shot a slot longer than
+# the copy needs — and that direction is the safe one: the tool asks for a shorter
+# clip than the director chose, never for one the copy cannot fit.
+#
+# German: "Wahrscheinlich hat dir dein Arzt gesagt …" measures ~3.6–3.9s and was
 # shot at 6s, where a 4s clip would have held it. eSpeak and `say` agree on that
-# independently, which says the clip was given air on purpose. Bending the model
-# to fit it would move every other length.
-KNOWN_LOOSE = "Wahrscheinlich hat dir dein Arzt"
+# independently, which says the clip was given air on purpose.
+#
+# Italian: four clips in one ad, 5.6s / 5.9s / 3.6s / 5.5s of speech in 8, 8, 6 and
+# 8 second clips. That this is air and not a clock that runs fast is provable from
+# the sheet itself: two *other* lines in the same ad were shot at two different
+# lengths in two variants (8s and 10s, 6s and 8s), so no function of the copy could
+# reproduce both. It is also the reason every scene row has a clip-length menu.
+# Raising the Italian scale until these four land reproduces none of the tight 10s
+# clips instead — see scripts/fit_clock.py, which prints the whole window.
+KNOWN_LOOSE = (
+    "Wahrscheinlich hat dir dein Arzt",
+    "Se come donna prendi pastiglie",
+    "Ogni giorno donne mi scrivono",
+    "Ho raccolto tutto ciò che devi sapere",
+    "Ogni mattina prendi Selenio",
+)
 matched = 0
+loose_seen = 0
 for slot, language, text in CONFIRMED:
     got = assign_duration(text, language)
     loose = text.startswith(KNOWN_LOOSE)
     if got == slot:
         matched += 1
+    elif loose:
+        loose_seen += 1
     check(f"{slot:>2}s · {text[:44]}", got == slot or loose,
           f"got {got}s ({estimate_seconds(text, language):.2f}s of speech)")
     check(f"     … and fits its clip", estimate_seconds(text, language)
           <= ceiling(got) + 1e-9,
           f"{estimate_seconds(text, language):.2f}s > {ceiling(got):.1f}s")
-check(f"all but the one known-loose clip reproduce ({matched}/{len(CONFIRMED)})",
-      matched >= len(CONFIRMED) - 1, matched)
+    # A named row that starts reproducing is not a failure, but the name has to go
+    # — a tolerated exception nobody removes is how a real drift hides.
+    if loose and got == slot:
+        check(f"     … no longer loose: drop it from KNOWN_LOOSE", False, text[:44])
+check(f"all but the {len(KNOWN_LOOSE)} named clips reproduce "
+      f"({matched}/{len(CONFIRMED)})",
+      matched >= len(CONFIRMED) - len(KNOWN_LOOSE), matched)
+check("and every clip that misses, misses by being given air",
+      loose_seen == len(CONFIRMED) - matched,
+      f"{len(CONFIRMED) - matched} misses, {loose_seen} of them named")
 
 print("\n— the ceiling —")
 check("a clip carries a little more than its length", ceiling(10) > 10)
@@ -578,6 +607,88 @@ check("and so do the sentences a later split would use",
       all("Selen" not in s["text"] and "Glutathion" not in s["text"]
           for s in built["sentences"]),
       [s["text"] for s in built["sentences"]])
+
+print("\n— the map is per language —")
+# The German map, matched at a word start, turned Italian "Selenio" into
+# "Selehnio" in a shipped build: a respelling is a phonetic instruction and one
+# language's is nonsense in another.
+it_pairs = parse_pronunciation(pronunciation_for("Italian"))
+IT_LINE = "Ogni mattina prendi Selenio insieme al glutatione."
+check("Italian copy keeps its own words",
+      "Selehnio" not in apply_pronunciation(IT_LINE, it_pairs)[0],
+      apply_pronunciation(IT_LINE, it_pairs)[0])
+check("and gets the Italian respellings",
+      "glutaTHione" in apply_pronunciation(IT_LINE, it_pairs)[0],
+      apply_pronunciation(IT_LINE, it_pairs)[0])
+check("German is untouched by the split",
+      pronunciation_for("German") == DEFAULT_PRONUNCIATION)
+check("every language has a map, and every map has the brand in it",
+      all("iavola" in text.replace("Miavola", "Miavola")
+          for text in PRONUNCIATION.values()), list(PRONUNCIATION))
+check("an unknown language still gets one",
+      len(parse_pronunciation(pronunciation_for("Klingon"))) >= 1)
+
+print("\n— Italian: the language layer that used to be German-shaped —")
+# Italian and Spanish drop the subject, so a clause resumes with a conjunction, an
+# adverb, a negation or an object pronoun — never with the subject pronoun the old
+# table looked for. The seam was therefore never found, and a long Italian sentence
+# could only be cut before "e", the worst seam in the language.
+IT_CLAUSE = ("Il tuo medico di base non te lo dice, ma se non fai niente la dose "
+             "della terapia continuerà ad aumentare, anche se i tuoi sintomi "
+             "restano.")
+it_pieces = fragment_sentence(IT_CLAUSE, "Italian")
+check("an Italian clause comma is a seam", len(it_pieces) >= 3, it_pieces)
+check("and it is graded as a clause, not as a fragment",
+      all(p["link"] in (None, LINK_SAME_THOUGHT) for p in it_pieces),
+      [(p["link"], p["text"][:20]) for p in it_pieces])
+IT_ELIDED = ("Prima l'esterno delle sopracciglia si dirada, poi cadono i capelli "
+             "dalla testa e in più sei sempre stanca.")
+check("an elision doesn't hide the word after the comma",
+      any(p["text"].startswith("poi") for p in fragment_sentence(IT_ELIDED, "Italian")),
+      [p["text"][:24] for p in fragment_sentence(IT_ELIDED, "Italian")])
+check("count_syllables reads Italian hiatus",
+      count_syllables("aiutano", "Italian") == 4
+      and count_syllables("idea", "Italian") == 3
+      and count_syllables("mio", "Italian") == 1,
+      [count_syllables(w, "Italian") for w in ("aiutano", "idea", "mio")])
+check("a spelled-out Italian number is read slower, not faster",
+      estimate_seconds("Prendi novanta capsule.", "Italian")
+      > estimate_seconds("Prendi grandi capsule.", "Italian"))
+# Italian list items carry an article, so the determiner that opens a clause is
+# also the word that opens the next item — which is why determiners are guarded
+# (WEAK_RESUMPTIONS) instead of sitting in RESUMPTIONS. Both a three-item list
+# (commas) and a two-item one (one comma, then "e") have to survive. The "e" itself
+# stays a legal seam, graded 0, exactly as "und" does in German: the packer only
+# reaches for it when there is nothing else, and it is the last resort by design.
+for listy in ("Il corpo regola l'energia, i capelli, il peso e l'umore da solo.",
+              "Il corpo regola l'energia, i capelli e il peso tutto da solo."):
+    check(f"an Italian list item is not a clause seam ({listy[24:44]}…)",
+          not any(p["text"].startswith("i capelli") and p["link"] == LINK_SAME_THOUGHT
+                  for p in fragment_sentence(listy, "Italian")),
+          [(p["link"], p["text"]) for p in fragment_sentence(listy, "Italian")])
+# One Italian sentence longer than any clip: cut, and each half left as a whole
+# sentence — which needs the openers table to know that "il"/"non"/"ti" open an
+# Italian sentence even though no pronoun does.
+IT_LONG = ("Se hai le sopracciglia che si diradano e i capelli nella spazzola e i "
+           "chili che non se ne vogliono andare e ti senti sempre stanca e senza "
+           "forze e non capisci il perché, il tuo corpo ti sta chiedendo aiuto da "
+           "mesi e nessuno ti ha mai spiegato che la tua tiroide non converte gli "
+           "ormoni come dovrebbe e continua a peggiorare.")
+it_scenes, _ = finalise_block("Body", [sent(IT_LONG, LINK_NEW_SECTION)],
+                              "body", "Italian")
+check("an over-long Italian sentence is cut", len(it_scenes) > 1,
+      [s["text"][:30] for s in it_scenes])
+check("and nothing overruns", not overruns(it_scenes), overruns(it_scenes))
+check("both halves read as whole sentences",
+      all(s["text"].rstrip().endswith((".", "!", "?", "…")) for s in it_scenes),
+      [s["text"][-30:] for s in it_scenes])
+# Punctuation and case only: the tidy promotes the comma it cut at to a full stop
+# and capitalises the word after it, so the copy is word-identical and the measured
+# length is unchanged.
+it_words = " ".join(s["text"] for s in it_scenes).lower().replace(".", "").split()
+check("no word of the copy moved",
+      it_words == IT_LONG.lower().replace(",", "").replace(".", "").split(),
+      " ".join(s["text"] for s in it_scenes))
 
 print("\n— prompts / export —")
 tail = "Static shot. Single shot. No cuts. UGC style."

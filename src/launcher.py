@@ -15,10 +15,8 @@ from PySide6.QtWidgets import (
 )
 
 from design import (
-    INK_BORDER, TXT_HI, TXT_DIM, TXT_FAINT,
-    IRIS, IRIS_HI,
-    TEXT_DIM, TEXT_FAINT, OK_COLOR, TOOL_ACCENTS, TOOL_ICONS,
-    svg_icon, svg_pixmap, brand_pixmap,
+    INK_BORDER, TXT_HI, TXT_DIM, TXT_FAINT, IRIS, IRIS_HI, TEXT_FAINT,
+    OK_COLOR, TOOL_ACCENTS, TOOL_ICONS, svg_icon, svg_pixmap, brand_pixmap,
 )
 
 from core import (

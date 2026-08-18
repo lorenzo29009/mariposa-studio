@@ -50,6 +50,37 @@ from __future__ import annotations
 
 import re
 
+from script_text import (
+    LINK_INSEPARABLE, LINK_NEW_POINT, LINK_NEW_SECTION,
+    LINK_SAME_THOUGHT, _WORD_RE, _seam_indices,
+    apply_pronunciation, count_syllables, fragment_sentence, in_vocabulary,
+    infer_link, leftover_symbols, numeral_re, openers_for, parse_pronunciation,
+    pronunciation_for, split_sentences, verbatim_gaps,
+    DEFAULT_PRONUNCIATION, PRONUNCIATION,
+)
+
+# Re-exported above so `script_packer` stays the one import for callers.
+__all__ = [
+    "CAPACITY_SECONDS", "CEILING_FACTOR", "CUT_COST",
+    "DEFAULT_PRONUNCIATION", "PRONUNCIATION", "pronunciation_for",
+    "LINK_INSEPARABLE", "LINK_NEW_POINT",
+    "LINK_NEW_SECTION", "LINK_SAME_THOUGHT", "MAX_SLOT",
+    "MAX_SYL_PER_WORD", "NUMERAL_PENALTY", "PAUSE_COMMA", "PAUSE_EMPHASIS",
+    "PAUSE_SENTENCE", "PAUSE_SHORT_BEAT", "RATE_BASE",
+    "RATE_PER_SYL_PER_WORD", "ROLE_LIST_INTRO", "ROLE_LIST_ITEM", "SLOTS",
+    "STUB_SECONDS", "W_FILL", "W_HOOK_SCENE", "W_LIST_CROWD",
+    "W_LIST_INTRO", "W_OVERFLOW", "W_OVER_CAP", "W_SCENE", "W_STUB",
+    "analytic_seconds", "apply_pronunciation", "assign_duration",
+    "build_markdown", "build_prompt", "ceiling", "collapse_to_one",
+    "count_syllables", "ends_mid_sentence", "estimate_seconds",
+    "finalise_block", "flag_for", "format_runtime", "fragment_sentence",
+    "infer_link", "leftover_symbols", "merge_scenes", "nearest_slot",
+    "overruns", "pack_block", "pack_sentences", "parse_pronunciation",
+    "pause_between", "performance_beats", "relabel", "set_duration",
+    "split_long_sentence", "split_scene", "split_sentences",
+    "timing_source", "verbatim_gaps",
+]
+
 # ── Clip lengths ─────────────────────────────────────────────────────────────
 SLOTS: tuple[int, ...] = (4, 6, 8, 10)
 MAX_SLOT = SLOTS[-1]
@@ -121,11 +152,36 @@ PAUSE_EMPHASIS = 0.15    # a SHOUTED word is landed, then left to sit
 # of sentences inside 0.92–1.14 and a worst case of 24 %. That is far better than
 # the hand-set version (median 1.22, worst 49 %) and still not a measurement,
 # which is why a build that falls back to it says so on screen.
+#
+# German and English are the fitted pair. Italian is now fitted the same way, over
+# the 37 sentences of the confirmed Italian clips against what the clock measures
+# for each: median predicted/measured 1.06, 84 % inside 0.92–1.14, and never more
+# than 8 % short. It needed a *faster* base than the hand-set 4.5, because Italian
+# is a fast language read syllable by syllable — and because `count_syllables` now
+# counts its hiatus properly (a-iu-ta-no is four syllables, not three), so there
+# are more syllables to get through in the same second.
+#
+# Spanish (median 1.08, 70 % in band) and Polish (1.03, 90 %) are checked the same
+# way but against a *translated* script rather than confirmed clips: what is being
+# calibrated there is the formula against the clock, which is all this formula is
+# for, so the copy only has to be representative. Polish needed a much slower base
+# than the Romance pair — its clusters are long and its words are long with them.
+#
+# French is deliberately left where it was. It over-predicts by about 40 % against
+# the clock, because French orthography writes vowels it does not speak
+# ("appellent" is two syllables and counts as three) and no rate constant can fix a
+# counting error: the base that centres the median leaves one sentence in ten
+# 20 % SHORT, and short is the direction that ships a clip the copy doesn't fit.
+# Over-predicting only costs air. Fixing it properly means a silent-vowel rule in
+# `count_syllables`, and it needs a French clip confirmed before that is worth
+# doing blind.
 RATE_BASE: dict[str, float] = {
-    "German": 4.2, "English": 4.1, "Spanish": 4.5, "French": 4.2, "Italian": 4.5,
+    "German": 4.2, "English": 4.1, "Spanish": 4.9, "French": 4.2,
+    "Italian": 4.9, "Polish": 3.4,
 }
 RATE_PER_SYL_PER_WORD: dict[str, float] = {
-    "German": 1.00, "English": 1.05, "Spanish": 1.00, "French": 1.00, "Italian": 1.00,
+    "German": 1.00, "English": 1.05, "Spanish": 1.00, "French": 1.00,
+    "Italian": 1.00, "Polish": 1.00,
 }
 _DEFAULT_BASE, _DEFAULT_SLOPE = 4.2, 1.00
 # Past this, extra word length buys no extra speed — it is a compound, not a
@@ -138,14 +194,6 @@ MAX_SYL_PER_WORD = 2.4
 PAUSE_COMMA = 0.15
 NUMERAL_PENALTY = 0.40   # syl/s knocked off a line that spells out numbers
 
-# ── Link grades ──────────────────────────────────────────────────────────────
-# How a sentence relates to the one before it. Gemini grades every sentence;
-# these are *costs*, not vetoes, so a run that has to break somewhere breaks at
-# the cheapest seam instead of wherever the arithmetic ran out.
-LINK_INSEPARABLE = 0   # cannot open a shot: answers it, continues it, "Aber …"
-LINK_SAME_THOUGHT = 1  # same thought, better kept together
-LINK_NEW_POINT = 2     # a new point in the same section — a clean cut
-LINK_NEW_SECTION = 3   # a new section of the ad — the best place to cut
 
 CUT_COST: dict[int, float] = {
     LINK_INSEPARABLE: 9.0,    # only when the alternative is worse
@@ -184,201 +232,7 @@ assert W_HOOK_SCENE < W_OVER_CAP, "a hook past the ceiling must still split"
 ROLE_LIST_INTRO = "list_intro"
 ROLE_LIST_ITEM = "list_item"
 
-# Coordinating conjunctions: a legal cut point inside a sentence.
-CONNECTORS: dict[str, tuple[str, ...]] = {
-    "German":  ("und", "aber", "denn", "oder", "sondern"),
-    "English": ("and", "but", "so", "or", "yet"),
-    "Spanish": ("y", "pero", "porque", "o", "sino"),
-    "French":  ("et", "mais", "car", "ou", "donc"),
-    "Italian": ("e", "ma", "perché", "oppure", "quindi"),
-}
 
-# Words that open a subordinate clause. German closes such a clause with a comma,
-# and that comma is the other legal cut point — it is where the speaker breathes,
-# and both halves still stand as whole statements.
-SUBORDINATORS: dict[str, tuple[str, ...]] = {
-    "German":  ("wenn", "weil", "dass", "obwohl", "während", "damit", "um",
-                "falls", "sobald", "bevor", "nachdem", "bis", "seit", "da"),
-    "English": ("if", "because", "that", "although", "while", "so", "before",
-                "after", "until", "since", "when", "once"),
-    "Spanish": ("si", "porque", "que", "aunque", "mientras", "para", "cuando"),
-    "French":  ("si", "parce", "que", "bien", "pendant", "pour", "quand"),
-    "Italian": ("se", "perché", "che", "anche", "mentre", "per", "quando"),
-}
-
-_LETTERS = "a-zà-öø-ÿœæß"
-_VOWELS = "aeiouyäöüàáâãåèéêëìíîïòóôõøùúûœæ"
-_WORD_RE = re.compile(f"[{_LETTERS}]+", re.IGNORECASE)
-_VOWEL_GROUP_RE = re.compile(f"[{_VOWELS}]+")
-_SENT_END_RE = re.compile(r"([.!?…]+[\"'»”’\)\]]*)(\s+|$)")
-_ABBREV_TAIL_RE = re.compile(r"(?:^|\s)[^\W\d_]\.$", re.UNICODE)
-
-
-# ── Syllables ────────────────────────────────────────────────────────────────
-
-def _word_syllables(word: str, language: str) -> int:
-    """Syllables in one word — vowel-group counting with per-language tweaks.
-
-    Approximate by design (a full dictionary would be a dependency), but stable
-    and close enough for German, which is what the tool is used for. Nothing
-    user-facing shows a syllable count: this feeds the pace model only."""
-    w = "".join(ch for ch in word.lower() if ch.isalpha())
-    if not w:
-        return 0
-    n = len(_VOWEL_GROUP_RE.findall(w))
-    if language == "English":
-        # Silent terminal "e" ("time", "make") — but not "-le" ("table") or "-ee".
-        if n > 1 and w.endswith("e") and not w.endswith(("le", "ee", "ye", "oe", "ie")):
-            n -= 1
-    elif language == "German":
-        # "-tion"/"-sion" is spoken as two syllables (Na-ti-on), one vowel group.
-        n += len(re.findall(r"[ts]ion", w))
-    return max(1, n)
-
-
-def count_syllables(text: str, language: str = "German") -> int:
-    """Total syllables in a stretch of spoken text."""
-    return sum(_word_syllables(w, language) for w in _WORD_RE.findall(text.lower()))
-
-
-# ── Sentences ────────────────────────────────────────────────────────────────
-
-def split_sentences(text: str) -> list[str]:
-    """Split on . ! ? … only. Used by the pace model and by the fallback packer
-    when the model didn't return sentences for a block."""
-    text = re.sub(r"\s+", " ", (text or "").strip())
-    if not text:
-        return []
-    out: list[str] = []
-    start = 0
-    for m in _SENT_END_RE.finditer(text):
-        chunk = text[start:m.end(1)].strip()
-        # "z. B." style abbreviations: a lone letter before the dot is not an end.
-        if len(chunk) < 3 or _ABBREV_TAIL_RE.search(chunk):
-            continue
-        out.append(chunk)
-        start = m.end()
-    tail = text[start:].strip()
-    if tail:
-        out.append(tail)
-    return out
-
-
-def _clean_word(w: str) -> str:
-    return "".join(ch for ch in w.lower() if ch.isalpha())
-
-
-# A seam inside a sentence is graded exactly like a seam between two sentences —
-# by whether what FOLLOWS it could open a clip on its own. That way the same
-# dynamic program decides intra-sentence cuts as decides everything else, and
-# prices a bad one accordingly instead of needing its own rules.
-SEAM_MARK = LINK_SAME_THOUGHT   # after : ; — — the writer marked the break
-SEAM_CLAUSE = LINK_SAME_THOUGHT  # after a subordinate clause closed by a comma
-SEAM_CONNECTOR = LINK_INSEPARABLE  # before und / oder — a fragment, not a clause
-
-_MARK_RE = re.compile(r"[:;–—]$")
-
-
-# What a clause-closing comma is followed by. This is the whole test for a comma
-# seam, and it keys off what comes AFTER the comma rather than what came before.
-#
-# The obvious-looking alternative — "is there a subordinator earlier in the
-# sentence?" — is what produced the worst cut this module has made. In
-# "…wenn du … mit Gewichtszunahme, Müdigkeit, Gelenkschmerzen oder
-# Schlafproblemen kämpfst, dann …" the `wenn` sits within a dozen words of every
-# comma in the symptom list, so each of them read as a clause boundary and the cut
-# landed inside the list. What actually distinguishes them is trivial once you look
-# forward instead of back: a clause resumes with a function word, a list item is a
-# bare noun.
-RESUMPTIONS: dict[str, tuple[str, ...]] = {
-    "German":  ("dann", "dass", "weil", "damit", "sodass", "aber", "denn", "und",
-                "oder", "sondern", "wenn", "obwohl", "während", "um", "der",
-                "die", "das", "du", "ich", "er", "sie", "es", "wir", "man",
-                "deshalb", "deswegen", "trotzdem", "also"),
-    "English": ("then", "that", "because", "so", "but", "and", "or", "if",
-                "although", "while", "which", "who", "you", "i", "he", "she",
-                "it", "we", "they"),
-    "Spanish": ("entonces", "que", "porque", "pero", "y", "o", "si", "aunque",
-                "mientras", "tú", "yo", "él", "ella", "nosotros"),
-    "French":  ("alors", "que", "parce", "mais", "et", "ou", "si", "bien",
-                "pendant", "tu", "je", "il", "elle", "nous", "qui"),
-    "Italian": ("allora", "che", "perché", "ma", "e", "o", "se", "anche",
-                "mentre", "tu", "io", "lui", "lei", "noi"),
-}
-
-
-def _is_list_connector(words: list[str], i: int) -> bool:
-    """Is this ``und`` / ``oder`` joining list items rather than clauses?
-
-    "…mit Gewichtszunahme, Müdigkeit, Gelenkschmerzen **oder** Schlafproblemen
-    kämpfst…" — cutting there tears the list in half and strands the verb that
-    governs it. A run of commas around the conjunction is the tell, and it is
-    worth the false negative: refusing a seam only ever costs a flag, while taking
-    this one produces a clip that reads as a mistake.
-    """
-    window = words[max(0, i - 5):i + 4]
-    return sum(1 for w in window if w.endswith(",")) >= 2
-
-
-def _seam_indices(words: list[str], language: str) -> list[tuple[int, int]]:
-    """Where a sentence may legally be cut, as ``(word index, link grade)``.
-
-    Three kinds of seam, best first:
-
-    * after a colon, semicolon or dash — the strongest of the three, because the
-      writer put it there to mark the break. What follows is a whole statement.
-    * after a clause closed by a comma, where what follows *resumes* the sentence
-      (``Wenn du das kennst, | dann …``). German marks these unambiguously, and
-      they are where a person breathes. See `RESUMPTIONS`.
-    * before a coordinating conjunction (``und``, ``aber``, ``oder`` …). Legal but
-      poor: the second half opens on a fragment, so it is graded as unable to open
-      a clip and the packer only uses it when there is nothing better.
-
-    A comma separating list items is never a seam.
-    """
-    conns = set(CONNECTORS.get(language, CONNECTORS["English"]))
-    resume = set(RESUMPTIONS.get(language, RESUMPTIONS["English"]))
-    seams: list[tuple[int, int]] = []
-    for i in range(1, len(words)):
-        if i < 3 or len(words) - i < 3:
-            continue                      # neither half would be a spoken unit
-        if _MARK_RE.search(words[i - 1]):
-            seams.append((i, SEAM_MARK))
-        elif words[i - 1].endswith(",") and _clean_word(words[i]) in resume:
-            # No list test here, deliberately: a resumption word after the comma
-            # already proves this is a clause boundary and not a list item, and
-            # applying the test anyway threw away the best seam in the sentence
-            # ("… Schlafproblemen kämpfst, | dann liegt das oft daran …") merely
-            # because a list happened to sit earlier in the same clause.
-            seams.append((i, SEAM_CLAUSE))
-        elif _clean_word(words[i]) in conns and not _is_list_connector(words, i):
-            seams.append((i, SEAM_CONNECTOR))
-    return seams
-
-
-def fragment_sentence(sentence: str, language: str = "German") -> list[dict]:
-    """One sentence → the pieces it can be cut into, each with its link grade.
-
-    Cut at *every* legal seam and hand the pieces to the same packer that handles
-    whole sentences: it already weighs fill, cut quality and scene count, so it
-    will rejoin what it can and break only where it must — and because a seam's
-    grade says whether the piece can open a clip, a bad seam costs what a bad cut
-    between sentences costs. Nothing here decides the cut; it only offers it.
-
-    The first piece carries no grade (``None``) — it inherits the whole sentence's
-    own relationship to the line before it.
-    """
-    words = sentence.split()
-    seams = _seam_indices(words, language) if len(words) >= 6 else []
-    if not seams:
-        return [{"text": sentence, "link": None}]
-    out: list[dict] = []
-    start, grade = 0, None
-    for at, seam_grade in seams:
-        out.append({"text": " ".join(words[start:at]), "link": grade})
-        start, grade = at, seam_grade
-    out.append({"text": " ".join(words[start:]), "link": grade})
-    return out
 
 
 def split_long_sentence(sentence: str, language: str,
@@ -420,15 +274,6 @@ def split_long_sentence(sentence: str, language: str,
 
 # ── The pace model: how long a line takes to say ─────────────────────────────
 
-_NUMERAL_RE = re.compile(
-    r"\b(?:null|eins?|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|elf|zwölf"
-    r"|zwanzig|dreißig|vierzig|fünfzig|sechzig|siebzig|achtzig|neunzig"
-    r"|hundert|tausend|million"
-    r"|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty"
-    r"|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)",
-    re.IGNORECASE)
-
-
 def performance_beats(sentence: str) -> float:
     """The beats a delivery adds to one sentence, on top of the measured speech.
 
@@ -469,7 +314,7 @@ def _analytic_sentence_seconds(sentence: str, language: str) -> float:
     per_word = min(syl / words, MAX_SYL_PER_WORD)
     rate = (RATE_BASE.get(language, _DEFAULT_BASE)
             + RATE_PER_SYL_PER_WORD.get(language, _DEFAULT_SLOPE) * per_word)
-    if _NUMERAL_RE.search(sentence):
+    if numeral_re(language).search(sentence):
         rate -= NUMERAL_PENALTY          # spelled-out numbers are articulated
     seconds = syl / max(rate, 2.0)
     seconds += PAUSE_COMMA * sentence.count(",")
@@ -842,27 +687,6 @@ def ends_mid_sentence(scene: dict) -> bool:
     return bool(tail.get("continues"))
 
 
-# Words that can *open an independent sentence*. This is not the same set as
-# `RESUMPTIONS` (which is "does this resume the sentence?"): a subordinating
-# conjunction resumes a sentence but cannot start one — "Dass sie aufwachen." is a
-# fragment, not a sentence. So only coordinating conjunctions, adverbs and
-# pronouns are here, and `dass`/`weil`/`während`/`damit`/`wenn`/`um` are
-# deliberately absent. A tidy that fires on those would ship a grammatical error.
-_STANDALONE_OPENERS: dict[str, frozenset] = {
-    "German":  frozenset(("dann", "deshalb", "deswegen", "darum", "trotzdem",
-                          "also", "und", "aber", "denn", "oder", "sondern",
-                          "der", "die", "das", "du", "ich", "er", "sie", "es",
-                          "wir", "man", "hier", "so", "dabei", "dadurch")),
-    "English": frozenset(("then", "so", "and", "but", "or", "you", "i", "he",
-                          "she", "it", "we", "they", "this", "that", "here")),
-    "Spanish": frozenset(("entonces", "y", "pero", "o", "tú", "yo", "él", "ella",
-                          "nosotros", "esto", "eso", "así")),
-    "French":  frozenset(("alors", "et", "mais", "ou", "donc", "tu", "je", "il",
-                          "elle", "nous", "cela", "ainsi")),
-    "Italian": frozenset(("allora", "e", "ma", "o", "quindi", "tu", "io", "lui",
-                          "lei", "noi", "questo", "così")),
-}
-
 _TIDY_TRAIL_RE = re.compile(r"[,;:–—]+\s*$")
 
 
@@ -881,10 +705,10 @@ def _tidy_boundaries(scenes: list[dict], language: str) -> None:
     trims silence and renders "dann" and "Dann" identically). A boundary whose
     continuation cannot stand alone (`dass …`, `weil …`) is left exactly as it was
     — the comma stays, and the clip is not reported as missing punctuation because
-    the cut is deliberate. This is why it must be `_STANDALONE_OPENERS` and not
+    the cut is deliberate. This is why it must be `STANDALONE_OPENERS` and not
     `RESUMPTIONS`: a subordinate clause resumes a sentence but cannot open one.
     """
-    openers = _STANDALONE_OPENERS.get(language, _STANDALONE_OPENERS["English"])
+    openers = openers_for(language)
     for first, second in zip(scenes, scenes[1:]):
         if first.get("block") != second.get("block"):
             continue
@@ -892,7 +716,7 @@ def _tidy_boundaries(scenes: list[dict], language: str) -> None:
             continue
         head, cont = first["sentences"][-1], second["sentences"][0]
         opener = cont["text"].split()[0] if cont["text"].split() else ""
-        if _clean_word(opener) not in openers:
+        if not in_vocabulary(opener, openers):
             continue
         head["text"] = _TIDY_TRAIL_RE.sub("", head["text"].rstrip()) + "."
         head.pop("continues", None)           # it is a whole sentence now
@@ -949,26 +773,6 @@ def finalise_block(block_id: str, sentences: list[dict], kind: str = "body",
     return scenes, notes
 
 
-def infer_link(text: str, language: str = "German") -> int:
-    """A local guess at how a sentence relates to the one before it — used only
-    on the fallback path, where no model output is available."""
-    first = _clean_word(text.strip().split(" ")[0] if text.strip() else "")
-    if first in _CONTINUATION.get(language, _CONTINUATION["English"]):
-        return LINK_INSEPARABLE
-    return LINK_NEW_POINT
-
-
-_CONTINUATION: dict[str, tuple[str, ...]] = {
-    "German": ("aber", "denn", "und", "oder", "sondern", "deswegen", "deshalb",
-               "dass", "trotzdem", "also", "darum", "übersetzt", "erstens",
-               "zweitens", "drittens", "egal"),
-    "English": ("but", "because", "and", "or", "so", "that", "still", "which",
-                "first", "second", "third"),
-    "Spanish": ("pero", "porque", "y", "o", "sino", "así"),
-    "French":  ("mais", "car", "et", "ou", "donc", "alors"),
-    "Italian": ("ma", "perché", "e", "o", "oppure", "quindi", "allora"),
-}
-
 
 def pack_block(block_id: str, raw_text: str, language: str = "German",
                kind: str = "body") -> list[dict]:
@@ -990,45 +794,6 @@ def pack_block(block_id: str, raw_text: str, language: str = "German",
             })
     return finalise_block(block_id, sentences, kind, language)[0]
 
-
-# ── Pronunciation map ────────────────────────────────────────────────────────
-
-# Words the video model mispronounces, respelled so it says them correctly.
-# User-editable in the tool; these are the defaults.
-DEFAULT_PRONUNCIATION = "Selen → Selehn\nGlutathion → Glutation\nMiavola → miavòla"
-
-_PRON_SPLIT_RE = re.compile(r"\s*(?:→|->|=|\|)\s*")
-
-
-def parse_pronunciation(text: str) -> list[tuple[str, str]]:
-    """`Selen → Selehn` lines → [(written, spoken)]. Blank/one-sided lines are
-    ignored so a half-typed row never mangles the copy."""
-    pairs: list[tuple[str, str]] = []
-    for line in (text or "").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = _PRON_SPLIT_RE.split(line, maxsplit=1)
-        if len(parts) != 2:
-            continue
-        written, spoken = parts[0].strip(), parts[1].strip()
-        if written and spoken:
-            pairs.append((written, spoken))
-    return pairs
-
-
-def apply_pronunciation(text: str, pairs: list[tuple[str, str]]) -> tuple[str, list[str]]:
-    """Respell the mispronounced words. Returns (text, [what changed]).
-
-    Matches at a word start and keeps whatever follows, so German compounds and
-    inflections come along ("Selenmangel" → "Selehnmangel")."""
-    changed: list[str] = []
-    for written, spoken in pairs:
-        pattern = re.compile(r"\b" + re.escape(written), re.IGNORECASE)
-        text, n = pattern.subn(spoken, text)
-        if n:
-            changed.append(f"{written} → {spoken}" + (f" ×{n}" if n > 1 else ""))
-    return text, changed
 
 
 # ── Output ───────────────────────────────────────────────────────────────────
@@ -1060,49 +825,3 @@ def build_markdown(scenes: list[dict], tail: str = "") -> str:
 def format_runtime(seconds: int) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
-
-# ── Guards ───────────────────────────────────────────────────────────────────
-
-_DIGIT_OR_SYMBOL_RE = re.compile(r"[0-9%€$§&@#]")
-
-
-def leftover_symbols(text: str) -> str:
-    """The digits/symbols still present in a line that should be fully spoken."""
-    return "".join(sorted(set(_DIGIT_OR_SYMBOL_RE.findall(text or ""))))
-
-
-def _same_word(a: str, b: str) -> bool:
-    """Same word, allowing for an inflected ending — "Fingernägel" matches
-    "Fingernägeln". Without this, every grammar fix reads as a rewrite."""
-    if a == b:
-        return True
-    short, long = (a, b) if len(a) <= len(b) else (b, a)
-    return len(short) >= 4 and len(long) - len(short) <= 3 and long.startswith(short)
-
-
-def verbatim_gaps(source: str, produced: str, limit: int = 6,
-                  ignore: "set[str] | None" = None) -> list[str]:
-    """Words of the source copy that never made it into the spoken version.
-
-    Digits expand ("2.400" → "zweitausendvierhundert") so the two texts can't be
-    compared directly; instead every word of the source that carries no digits
-    must still appear, in order, in the output. Anything missing means the model
-    rewrote copy it was told to leave alone.
-
-    ``ignore`` holds words the model already declared it changed (its reported
-    typo fixes) — those are agreed edits, not silent rewrites."""
-    skip = {w.lower() for w in (ignore or set())}
-    src = [t for t in re.findall(r"[^\W\d_]+", (source or "").lower(), re.UNICODE)
-           if len(t) >= 3 and t not in skip]
-    out = re.findall(r"[^\W\d_]+", (produced or "").lower(), re.UNICODE)
-    missing: list[str] = []
-    at = 0
-    for token in src:
-        found = next((i for i in range(at, len(out)) if _same_word(token, out[i])), None)
-        if found is None:
-            missing.append(token)
-            if len(missing) >= limit:
-                break
-        else:
-            at = found + 1
-    return missing

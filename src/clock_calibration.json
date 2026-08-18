@@ -5,14 +5,42 @@
     "espeak-ng": {
       "scale": 0.9,
       "offset": 0.0,
-      "fitted_rows": 13,
-      "fitted_hits": 12
+      "fitted_rows": 32,
+      "fitted_hits": 27,
+      "languages": {
+        "German": {
+          "scale": 0.9,
+          "offset": 0.0,
+          "fitted_rows": 13,
+          "fitted_hits": 12
+        },
+        "Italian": {
+          "scale": 0.9,
+          "offset": 0.0,
+          "fitted_rows": 19,
+          "fitted_hits": 15
+        }
+      }
     },
     "say": {
-      "scale": 0.81,
+      "scale": 0.86,
       "offset": 0.0,
-      "fitted_rows": 13,
-      "fitted_hits": 12
+      "fitted_rows": 32,
+      "fitted_hits": 27,
+      "languages": {
+        "German": {
+          "scale": 0.81,
+          "offset": 0.0,
+          "fitted_rows": 13,
+          "fitted_hits": 12
+        },
+        "Italian": {
+          "scale": 0.945,
+          "offset": 0.0,
+          "fitted_rows": 19,
+          "fitted_hits": 16
+        }
+      }
     }
   }
 }

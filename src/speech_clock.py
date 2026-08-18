@@ -161,17 +161,20 @@ class _SayEngine(Engine):
                 "--", text]
 
 
+# A language missing from `voices` falls back to the English voice, which reads the
+# copy as English and times it as nonsense — so every language the Animator offers
+# (`animator_common.LANG_CHOICES`) must have a row here.
 ESPEAK = _EspeakEngine(
     name="espeak-ng", binary="espeak-ng",
     voices={"German": "de", "English": "en-us", "Spanish": "es",
-            "French": "fr-fr", "Italian": "it"},
+            "French": "fr-fr", "Italian": "it", "Polish": "pl"},
     rate=175, default_voice="en-us",
 )
 
 SAY = _SayEngine(
     name="say", binary="say",
     voices={"German": "Anna", "English": "Samantha", "Spanish": "Mónica",
-            "French": "Amélie", "Italian": "Alice"},
+            "French": "Amélie", "Italian": "Alice", "Polish": "Zosia"},
     rate=175, default_voice="Samantha",
 )
 
@@ -199,21 +202,34 @@ def reset_engine_probe() -> None:
     _engine_cache.clear()
 
 
-def engine_note() -> str:
+def engine_note(language: "str | None" = None) -> str:
     """One line for the UI: what timed this build, and how well it is calibrated.
 
     The user has to be able to tell a measured build from an estimated one — they
     are different promises — and to tell which engine measured it, because two
     machines with different engines can differ by a slot on a borderline line.
+
+    With a language given it also says whether that language has confirmed clips
+    of its own or is borrowing the engine's overall constant: a language nobody has
+    shot yet is measured, but its constant is inherited, and that is worth knowing
+    before trusting a length to the second.
     """
     engine = available_engine()
     if engine is None:
         return ("No speech engine installed — clip lengths are estimated from the "
                 "text, not measured. Install eSpeak NG for measured timings.")
-    cal = load_calibration().get("engines", {}).get(engine.name) or {}
+    entry = load_calibration().get("engines", {}).get(engine.name) or {}
+    per_lang = (entry.get("languages") or {}).get(language or "") or {}
+    cal = per_lang or entry
     hits, rows = cal.get("fitted_hits"), cal.get("fitted_rows")
-    fitted = f", fitted on {hits}/{rows} confirmed clips" if hits and rows else \
-             " (uncalibrated — run scripts/fit_clock.py)"
+    if hits and rows and per_lang:
+        fitted = f", fitted on {hits}/{rows} confirmed {language} clips"
+    elif hits and rows:
+        fitted = f", fitted on {hits}/{rows} confirmed clips"
+        if language:
+            fitted += f" (none of them {language})"
+    else:
+        fitted = " (uncalibrated — run scripts/fit_clock.py)"
     return f"Clip lengths measured with {engine.name}{fitted}."
 
 
@@ -227,6 +243,13 @@ def engine_note() -> str:
 #           `script_packer.PAUSE_SENTENCE` instead of fitted here.
 #   offset  a constant per line, for an engine that pads its output. Normally 0 —
 #           wav_speech_seconds() already trims the silence.
+#
+# Per **language**, and then per engine, because the scale is a ratio between two
+# paces and the engine's own pace changes with the voice: nothing says eSpeak's
+# Italian voice sits the same distance from an Italian delivery as its German voice
+# does from a German one. A language with confirmed clips gets its own constant
+# under ``engines.<name>.languages.<language>``; one without inherits the engine's,
+# which is the honest default and is what `engine_note()` says out loud.
 _FALLBACK_CALIBRATION = {"scale": 1.0, "offset": 0.0}
 
 _calibration: "dict | None" = None
@@ -243,17 +266,22 @@ def load_calibration(reload: bool = False) -> dict:
     return _calibration
 
 
-def calibration_for(engine: "Engine | str") -> dict:
+def calibration_for(engine: "Engine | str",
+                    language: "str | None" = None) -> dict:
+    """``{scale, offset}`` for this engine, narrowed to a language if it has one."""
     name = engine if isinstance(engine, str) else engine.name
     entry = load_calibration().get("engines", {}).get(name)
     if not isinstance(entry, dict):
         return dict(_FALLBACK_CALIBRATION)
     out = dict(_FALLBACK_CALIBRATION)
-    for key in ("scale", "offset"):
-        try:
-            out[key] = float(entry[key])
-        except (KeyError, TypeError, ValueError):
-            pass
+    per_lang = (entry.get("languages") or {}).get(language) \
+        if language and isinstance(entry.get("languages"), dict) else None
+    for source in (entry, per_lang if isinstance(per_lang, dict) else {}):
+        for key in ("scale", "offset"):
+            try:
+                out[key] = float(source[key])
+            except (KeyError, TypeError, ValueError):
+                pass
     return out
 
 
@@ -409,7 +437,7 @@ def measure(text: str, language: str = "German",
     raw = measure_raw(text, language, engine)
     if raw is None:
         return None
-    cal = calibration_for(engine)
+    cal = calibration_for(engine, language)
     return max(0.0, raw * cal["scale"] + cal["offset"])
 
 

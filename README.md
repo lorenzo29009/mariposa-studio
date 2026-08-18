@@ -58,11 +58,13 @@ changed, and restarts. To **publish** a new version, see
 The Python app lives in **`src/`** (run as scripts — flat sibling imports, no
 package): `studio.py` is the thin entrypoint (`MainWindow` + `main()`); the
 implementation is split into `core.py` (paths, `.env` and platform helpers),
-`widgets.py` (reusable widgets), `tool_pages.py`, `camera_page.py`,
-`animator_page.py`, `script_packer.py` (the Animator's Qt-free scene logic),
+`widgets.py` (reusable widgets), `tool_page.py` plus one `*_page.py` per tool,
+`camera_page.py`, the five `animator_*.py` modules, `script_packer.py` (the
+Animator's Qt-free scene logic) and `script_text.py` (its language layer),
 `speech_clock.py` (how long a line takes to say — measured with an offline speech
-synthesiser rather than predicted from the text), and `launcher.py`. The design
-system is `src/design.py`.
+synthesiser rather than predicted from the text), `gemini.py` (the shared API
+transport), and `launcher.py`. The design system is `src/design.py` (tokens) and
+`src/stylesheet.py` (the QSS built from them).
 The bundled tools are in `tools/`, brand assets in `brand/`, docs in `docs/`.
 (For a fuller map aimed at contributors, see [CLAUDE.md](CLAUDE.md).)
 
@@ -70,12 +72,13 @@ After any code change, confirm the app still launches with the headless smoke
 test: `QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/smoketest.py`.
 The Animator's scene logic and its speech clock have offline tests of their own:
 `./venv/bin/python scripts/test_packer.py` and `scripts/test_clock.py`.
+After adding or moving a symbol, refresh the map with `scripts/gen_index.py`.
 
 ## Design & brand
 
 The whole look is the **"Studio Instrument"** design system — one source of truth
-in [`src/design.py`](src/design.py) (tokens, the Lucide icon system, and the
-stylesheet). See [BRAND.md](docs/BRAND.md) for the identity (logo, palette, type,
+in [`src/design.py`](src/design.py) (tokens and the Lucide icon system; the
+stylesheet built from them is [`src/stylesheet.py`](src/stylesheet.py)). See [BRAND.md](docs/BRAND.md) for the identity (logo, palette, type,
 app icon) and [DESIGN.md](docs/DESIGN.md) for the system and how to extend it. To
 re-skin the app, edit the tokens in `src/design.py` — nothing else needs to
 change. Re-render the app icon any time with `./venv/bin/python src/make_icon.py`.
@@ -88,8 +91,9 @@ an app), **Esc / Home** (back). See [DESIGN.md](docs/DESIGN.md) for the full mod
 
 ## Adding a new tool
 
-1. Subclass `ToolPage` in `src/tool_pages.py` (for an input → action → output
-   "job runner"), or build a bespoke `QWidget` that starts with an `AppBar`:
+1. Subclass `ToolPage` (`src/tool_page.py`) in a new `src/<tool>_page.py` (for an
+   input → action → output "job runner"), or build a bespoke `QWidget` that
+   starts with an `AppBar`:
    - Set `title`, `subtitle`, `tool_key`, and `action_label`.
    - Build the form in `build_form()`.
    - Return `(program, args, cwd)` from `build_command()`.

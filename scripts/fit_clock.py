@@ -23,6 +23,15 @@ away from moving, and being wrong on the low side ships copy that can't be spoke
 The width of that range is the honest measure of how much the reference file pins
 down, and it is printed. A file of nothing but comfortable 10 s clips constrains
 almost nothing — the useful rows are the ones where the copy only just fits.
+
+**Per language, and then per engine.** The scale is the ratio between two paces,
+and the engine's pace changes with the voice, so nothing says eSpeak's Italian
+voice sits the same distance from an Italian delivery as its German voice does from
+a German one. Each language with confirmed clips is therefore fitted on its own
+rows and written under ``engines.<name>.languages.<language>``; the engine-level
+constant is fitted over every row pooled and is what a language with no confirmed
+clip inherits. Pooling was not an option once the file held two languages: the
+larger set would quietly move the other one's constant.
 """
 
 from __future__ import annotations
@@ -65,6 +74,11 @@ def load_rows() -> list[tuple[int, str, str]]:
     return rows
 
 
+def languages_of(rows: list[tuple[int, str, str]]) -> list[str]:
+    """The languages present, in the order they first appear in the file."""
+    return list(dict.fromkeys(language for _slot, language, _text in rows))
+
+
 class Row:
     """One confirmed clip, measured once, so its length at any scale is arithmetic.
 
@@ -75,8 +89,9 @@ class Row:
     packer evaluates, and the two differ by the engine's own inter-sentence gap.
     """
 
-    def __init__(self, slot: int, text: str, raw: list[float], beats: float):
-        self.slot, self.text = slot, text
+    def __init__(self, slot: int, text: str, raw: list[float], beats: float,
+                 language: str = "German"):
+        self.slot, self.text, self.language = slot, text, language
         self.raw_total = sum(raw)
         self.beats = beats
         self.gaps = max(0, len(raw) - 1)
@@ -94,7 +109,7 @@ def measure_row(engine, slot: int, language: str, text: str) -> "Row | None":
             return None
         raw.append(seconds)
     beats = sum(performance_beats(s) for s in sentences)
-    return Row(slot, text, raw, beats)
+    return Row(slot, text, raw, beats, language)
 
 
 def satisfied(slot: int, speech: float) -> bool:
@@ -124,10 +139,41 @@ def fit(raw: list[Row], pause: float = PAUSE_SENTENCE
     best = max(h for _, h in scores)
     ok = [s for s, h in scores if h == best]
     lo, hi = min(ok), max(ok)
-    scale = round(((lo + hi) / 2) / ROUND_TO) * ROUND_TO
+    # round() twice on purpose: the ROUND_TO grid, then the decimals, so what is
+    # written is 0.945 and not 0.9450000000000001 — the file is read back by the
+    # incumbent check below and by a human.
+    scale = round(round(((lo + hi) / 2) / ROUND_TO) * ROUND_TO, 4)
     if hits_at(raw, scale, pause) < best:           # rounding left the window
-        scale = round(lo / ROUND_TO) * ROUND_TO + ROUND_TO
+        scale = round(round(lo / ROUND_TO) * ROUND_TO + ROUND_TO, 4)
     return scale, hits_at(raw, scale, pause), (lo, hi)
+
+
+def fit_and_print(raw: list[Row], label: str, indent: str = "  ") -> dict:
+    """Fit one set of rows and show every one of them against the result."""
+    pause = PAUSE_SENTENCE
+    scale, hits, (lo, hi) = fit(raw, pause)
+
+    print(f"{indent}{label}: scale = {scale:.3f}   "
+          f"(sentence pause pinned at {pause:.2f}s)   "
+          f"{hits}/{len(raw)} clips land on the length they were shot at")
+    print(f"{indent}{'shot':>4} {'got':>4}  {'speech':>7}  {'limit':>6}   text")
+    for row in raw:
+        got = row.seconds(scale, pause)
+        mark = "ok  " if satisfied(row.slot, got) else "MISS"
+        print(f"{indent}{row.slot:>4} {nearest_slot(got):>4}  {got:6.2f}s  "
+              f"{ceiling(row.slot):5.1f}s {mark}  {row.text[:44]}")
+    print(f"{indent}scales that score the same: {lo:.3f}–{hi:.3f} "
+          f"(width {hi - lo:.3f}) — taking the middle, so one more confirmed clip "
+          f"doesn't move it")
+    if hi - lo > 0.08:
+        print(f"{indent}that window is wide: the reference file has no clip whose "
+              f"copy only just fits. Add a tight 4s and a tight 6s clip.")
+    # What the pinned pause costs. If a different pause scored better this is
+    # where it shows up, so the choice never goes unexamined.
+    sens = "  ".join(f"{p:.2f}s→{fit(raw, p)[1]}" for p in PAUSE_PROBES)
+    print(f"{indent}pause sensitivity (clips matched): {sens}")
+    return {"scale": scale, "offset": 0.0,
+            "hits": hits, "rows": len(raw), "window": [round(lo, 3), round(hi, 3)]}
 
 
 def report(engine, rows: list[tuple[int, str, str]]) -> dict:
@@ -144,29 +190,57 @@ def report(engine, rows: list[tuple[int, str, str]]) -> dict:
         print("  no rows rendered — engine unusable")
         return {}
 
-    pause = PAUSE_SENTENCE
-    scale, hits, (lo, hi) = fit(raw, pause)
+    # The engine-wide constant: every row pooled. This is what a language with no
+    # confirmed clip of its own inherits, so it is fitted over everything there is.
+    outcome = adopt_or_keep(fit_and_print(raw, "all languages pooled"),
+                            raw, engine.name, None)
 
-    print(f"  scale = {scale:.3f}   (sentence pause pinned at {pause:.2f}s)   "
-          f"{hits}/{len(raw)} clips land on the length they were shot at")
-    print(f"  {'shot':>4} {'got':>4}  {'speech':>7}  {'limit':>6}   text")
-    for row in raw:
-        got = row.seconds(scale, pause)
-        mark = "ok  " if satisfied(row.slot, got) else "MISS"
-        print(f"  {row.slot:>4} {nearest_slot(got):>4}  {got:6.2f}s  "
-              f"{ceiling(row.slot):5.1f}s {mark}  {row.text[:44]}")
-    print(f"  scales that score the same: {lo:.3f}–{hi:.3f} "
-          f"(width {hi - lo:.3f}) — taking the middle, so one more confirmed clip "
-          f"doesn't move it")
-    if hi - lo > 0.08:
-        print("  that window is wide: the reference file has no clip whose copy "
-              "only just fits. Add a tight 4s and a tight 6s clip.")
-    # What the pinned pause costs. If a different pause scored better this is
-    # where it shows up, so the choice never goes unexamined.
-    sens = "  ".join(f"{p:.2f}s→{fit(raw, p)[1]}" for p in PAUSE_PROBES)
-    print(f"  pause sensitivity (clips matched): {sens}")
-    return {"scale": scale, "offset": 0.0,
-            "hits": hits, "rows": len(raw), "window": [round(lo, 3), round(hi, 3)]}
+    per_language: dict[str, dict] = {}
+    for language in languages_of(rows):
+        subset = [r for r in raw if r.language == language]
+        if not subset:
+            continue
+        print()
+        fitted = fit_and_print(subset, language, indent="    ")
+        per_language[language] = adopt_or_keep(fitted, subset, engine.name,
+                                               language, indent="    ")
+    outcome["languages"] = per_language
+    return outcome
+
+
+def adopt_or_keep(fitted: dict, rows: list[Row], engine_name: str,
+                  language: "str | None", indent: str = "  ") -> dict:
+    """Take the freshly fitted scale only if it beats the one already shipping.
+
+    The window that scores best is often wide — Italian's is 0.06 across — and its
+    middle is then one arbitrary point inside it. Writing that point out anyway
+    moves every clip length in that language by a percent or two in whichever
+    direction the arithmetic happened to fall, for no gain: the value already in
+    ``clock_calibration.json`` sits inside the same window and scores the same.
+    That churn is not free. It re-cuts scripts, and it once dropped a confirmed
+    Italian 8s clip to 6s while scoring identically on the reference file.
+
+    So the incumbent wins ties, and only strictly better evidence moves a
+    constant. It also means re-running the fitter twice over is a no-op, and that
+    a language's constant moves when its *clips* say so, not when a sibling
+    language's clips are added to the file.
+    """
+    incumbent = round(speech_clock.calibration_for(engine_name, language)["scale"], 4)
+    if fitted["scale"] == incumbent:
+        return fitted
+    before = hits_at(rows, incumbent, PAUSE_SENTENCE)
+    if fitted["hits"] > before:
+        print(f"{indent}→ {fitted['scale']:.3f} adopted: {fitted['hits']}/"
+              f"{len(rows)} against {before}/{len(rows)} on the "
+              f"{incumbent:.3f} shipping today")
+        return fitted
+    print(f"{indent}→ keeping the {incumbent:.3f} shipping today: it already "
+          f"scores {before}/{len(rows)} here, so {fitted['scale']:.3f} would move "
+          f"every length for nothing")
+    kept = dict(fitted)
+    kept["scale"] = incumbent
+    kept["hits"] = before
+    return kept
 
 
 def main() -> int:
@@ -199,6 +273,10 @@ def main() -> int:
         w = r["window"]
         print(f"  {name:10} {r['hits']}/{r['rows']} clips, scale {r['scale']:.3f}, "
               f"window {w[0]:.3f}–{w[1]:.3f}")
+        for language, lr in (r.get("languages") or {}).items():
+            lw = lr["window"]
+            print(f"    {language:12} {lr['hits']}/{lr['rows']} clips, "
+                  f"scale {lr['scale']:.3f}, window {lw[0]:.3f}–{lw[1]:.3f}")
     top = max(r["hits"] for r in results.values())
     if "espeak-ng" in results and results["espeak-ng"]["hits"] == top:
         print("  espeak-ng matches the best score, so it can be the single "
@@ -213,9 +291,16 @@ def main() -> int:
                         "docs/clock_reference.csv. Do not hand-edit: re-run the "
                         "fitter after adding confirmed clips.",
             "measure_version": speech_clock.MEASURE_VERSION,
-            "engines": {n: {"scale": r["scale"], "offset": r["offset"],
-                            "fitted_rows": r["rows"], "fitted_hits": r["hits"]}
-                        for n, r in results.items()},
+            "engines": {
+                n: {"scale": r["scale"], "offset": r["offset"],
+                    "fitted_rows": r["rows"], "fitted_hits": r["hits"],
+                    "languages": {
+                        lang: {"scale": lr["scale"], "offset": lr["offset"],
+                               "fitted_rows": lr["rows"],
+                               "fitted_hits": lr["hits"]}
+                        for lang, lr in (r.get("languages") or {}).items()},
+                    }
+                for n, r in results.items()},
         }
         speech_clock.CALIBRATION_PATH.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
