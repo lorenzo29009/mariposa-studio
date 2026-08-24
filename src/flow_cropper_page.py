@@ -52,6 +52,8 @@ FLOW_AVATARS = [
     ("🙅‍♀️", "Undiagnostizierte Uli", "UnUi"),
     ("✨", "Strahlende Sandra (42)", "StSa"),
     ("🤱", "Schwangerer Haarausfall", "SchwHaa"),
+    ("🧴", "Äußerliche Anja (40)", "ÄuAn"),
+    ("💞", "Libido Liana (31)", "LiLia"),
 ]
 
 FLOW_AD_FORMATS = [
