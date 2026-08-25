@@ -42,6 +42,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -98,6 +99,53 @@ def safe_print(*args, **kwargs):
     with _PRINT_LOCK:
         print(*args, **kwargs)
         sys.stdout.flush()
+
+
+# Windows shares files by default, so the shell keeps .mp4s open behind our back:
+# Explorer's Preview/Details pane, the search indexer, the thumbnail/metadata
+# handler, OneDrive and antivirus all open a video the moment it's selected or
+# scanned. A rename that lands on one of those handles fails with
+# PermissionError — WinError 32 (ERROR_SHARING_VIOLATION) or 5
+# (ERROR_ACCESS_DENIED). These locks are almost always released within a moment,
+# so we retry with a short backoff before giving up. macOS doesn't lock like this,
+# so a PermissionError there is a genuine permissions problem — re-raised at once.
+_RENAME_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.5, 2.0, 3.0, 3.0)  # ~11s total
+
+
+def rename_with_retry(src: Path, dst: Path):
+    """Rename src → dst, retrying transient Windows sharing violations.
+
+    On the final failure raises a RuntimeError that names the likely culprit and
+    how to clear it — far more useful than a raw WinError 32 traceback."""
+    last_err = None
+    for attempt, delay in enumerate((0.0, *_RENAME_RETRY_DELAYS)):
+        if delay:
+            time.sleep(delay)
+        try:
+            src.rename(dst)
+            return
+        except PermissionError as e:
+            # A live handle on the file (Windows) — worth waiting out. Anywhere
+            # else this is a real permissions error, so don't mask it.
+            if not IS_WINDOWS:
+                raise
+            last_err = e
+            if attempt == 0:
+                safe_print(
+                    f"    '{src.name}' is in use by another program — "
+                    f"retrying for a few seconds…"
+                )
+    raise RuntimeError(
+        f"Couldn't rename '{src.name}': it's still open in another program after "
+        f"several retries.\n"
+        f"Close whatever is holding it, then run again. Usual culprits on Windows:\n"
+        f"  • the File Explorer window showing this folder — turn OFF its Preview "
+        f"pane (View ▸ Preview pane) and Details pane\n"
+        f"  • any video player, editor (CapCut, Premiere, DaVinci) or browser tab "
+        f"showing the clip\n"
+        f"  • let OneDrive/antivirus finish scanning the folder\n"
+        f"Original error: {last_err}"
+    )
 
 
 def find_ffmpeg():
@@ -329,7 +377,7 @@ def process_folder(folder: Path, name_for, ffmpeg: str, cta: str = "",
                 print(f"{indent}[{pos}/{total}] would rename {vid.name} → {n9}")
             else:
                 print(f"{indent}[{pos}/{total}] rename {vid.name} → {n9}")
-                vid.rename(p9)
+                rename_with_retry(vid, p9)
                 if actions is not None:
                     actions.append({
                         "type": "rename",
@@ -478,7 +526,7 @@ def undo_last(folder: Path):
                 src = d / a["to"]
                 dst = d / a["from"]
                 if src.exists() and not dst.exists():
-                    src.rename(dst)
+                    rename_with_retry(src, dst)
                     print(f"  - reverted {a['to']} → {a['from']}")
                 else:
                     print(f"  ! skipped rename (missing or conflict): {a['to']} → {a['from']}")
