@@ -70,15 +70,15 @@ Extract Frame: pull the last, first, random or every-N-seconds frame (OpenCV).
 
 `ExtractFramePage`:23 · `ExtractFramePage.build_form`:40 · `ExtractFramePage.validate`:94 · `ExtractFramePage.build_command`:108 · `ExtractFramePage.after_finished`:119
 
-### `src/flow_cropper_page.py` — 357 lines
+### `src/flow_cropper_page.py` — 359 lines
 Flow Cropper: batch 9:16 -> 4:5 crops via ffmpeg, named from the briefing.
 
-`FlowCropperPage`:97 · `FlowCropperPage.build_form`:104 · `FlowCropperPage.extra_action_buttons`:186 · `FlowCropperPage.ad_format_value`:251 · `FlowCropperPage.validate`:278 · `FlowCropperPage.build_command`:296 · `FlowCropperPage.after_finished`:318
+`FlowCropperPage`:99 · `FlowCropperPage.build_form`:106 · `FlowCropperPage.extra_action_buttons`:188 · `FlowCropperPage.ad_format_value`:253 · `FlowCropperPage.validate`:280 · `FlowCropperPage.build_command`:298 · `FlowCropperPage.after_finished`:320
 
-### `src/gemini.py` — 204 lines
+### `src/gemini.py` — 218 lines
 Gemini over plain HTTPS — the one transport the app uses.
 
-`ssl_context`:44 · `GeminiError`:101 · `generate_text`:156 · `generate_json`:175
+`ssl_context`:50 · `GeminiError`:107 · `generate_text`:170 · `generate_json`:189
 
 ### `src/launcher.py` — 464 lines
 The OS-style shell pieces: Settings, the launcher desktop with app icons, and the Spotlight overlay.
@@ -169,10 +169,10 @@ Upsert a KEY=VALUE into tools/captions-de/.env, preserving every other line.
 
 ## Bundled tool scripts (`tools/`) — separate processes, not imported
 
-### `tools/captions-de/caption.py` — 1945 lines
+### `tools/captions-de/caption.py` — 1947 lines
 Generate TikTok-style captions (SRT) from a video file. German is the default; Polish, French, Italian (plus English and Spanish) are selected with --language a
 
-`text_width`:80 · `auto_hyphenate`:200 · `apply_auto_hyphenation`:220 · `join_soft_hyphens`:240 · `flatten_lines`:258 · `drop_midline_hyphens`:278 · `strip_punct`:289 · `clean_for_output`:295 · `normalize_case`:327 · `insert_compound_hyphens`:341 · `tokenize_for_packing`:349 · `pack_lines`:365 · `format_caption`:414 · `fmt_time`:418 · `get_video_duration`:428 · `run_whisperx`:454 · `load_words`:512 · `build_generic_prompt`:614 · `segment_with_ai`:698 · `review_grouping`:770 · `segment_heuristic`:945 · `compute_boundaries`:976 · `fix_line_break`:1008 · `normalize_text_preserve_breaks`:1044 · `apply_canonical_terms`:1141 · `project_terms_block`:1188 · `finalize_caption`:1202 · `move_trailing_binders`:1388 · `split_emphasis_repeats`:1414 · `merge_orphans`:1456 · `merge_split_numbers`:1564 · `merge_short_durations`:1591 · `enforce_single_line`:1676 · `learn_and_relabel_case`:1729 · `recase_with_ai`:1807 · `write_srt`:1846 · `main`:1853
+`text_width`:80 · `auto_hyphenate`:200 · `apply_auto_hyphenation`:220 · `join_soft_hyphens`:240 · `flatten_lines`:258 · `drop_midline_hyphens`:278 · `strip_punct`:289 · `clean_for_output`:295 · `normalize_case`:327 · `insert_compound_hyphens`:341 · `tokenize_for_packing`:349 · `pack_lines`:365 · `format_caption`:414 · `fmt_time`:418 · `get_video_duration`:428 · `run_whisperx`:454 · `load_words`:512 · `build_generic_prompt`:614 · `segment_with_ai`:700 · `review_grouping`:772 · `segment_heuristic`:947 · `compute_boundaries`:978 · `fix_line_break`:1010 · `normalize_text_preserve_breaks`:1046 · `apply_canonical_terms`:1143 · `project_terms_block`:1190 · `finalize_caption`:1204 · `move_trailing_binders`:1390 · `split_emphasis_repeats`:1416 · `merge_orphans`:1458 · `merge_split_numbers`:1566 · `merge_short_durations`:1593 · `enforce_single_line`:1678 · `learn_and_relabel_case`:1731 · `recase_with_ai`:1809 · `write_srt`:1848 · `main`:1855
 
 ### `tools/captions-de/caption_qa.py` — 342 lines
 PROTOTYPE — Approach B: Gemini-based caption QA pass.
@@ -189,7 +189,7 @@ Extract frames from a video.
 
 `extract`:24
 
-### `tools/flow-cropper/crop.py` — 809 lines
+### `tools/flow-cropper/crop.py` — 857 lines
 Flow Cropper — 9:16 → 4:5 batch crop + smart rename.
 
-`normalize_creator`:84 · `safe_print`:97 · `find_ffmpeg`:103 · `detect_creative_id`:122 · `select_encoder`:165 · `crop_to_4x5`:211 · `normalize_creative_id`:224 · `creative_name`:233 · `simple_name`:246 · `process_folder`:275 · `detect_structure`:373 · `run`:414 · `undo_last`:459 · `pick_folder`:520 · `ask_text`:538 · `ask_choice`:561 · `alert`:604 · `interactive`:632 · `run_with`:675 · `main`:743
+`normalize_creator`:85 · `safe_print`:98 · `rename_with_retry`:115 · `find_ffmpeg`:151 · `detect_creative_id`:170 · `select_encoder`:213 · `crop_to_4x5`:259 · `normalize_creative_id`:272 · `creative_name`:281 · `simple_name`:294 · `process_folder`:323 · `detect_structure`:421 · `run`:462 · `undo_last`:507 · `pick_folder`:568 · `ask_text`:586 · `ask_choice`:609 · `alert`:652 · `interactive`:680 · `run_with`:723 · `main`:791

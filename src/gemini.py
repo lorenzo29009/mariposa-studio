@@ -27,7 +27,13 @@ import urllib.error
 import urllib.request
 
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
-DEFAULT_MODEL = "gemini-2.5-flash"
+# A *floating* alias, deliberately: Google retires dated/versioned models (e.g.
+# "gemini-2.5-flash" stopped being served to newly-created API keys, so every
+# teammate on a fresh key hit "this model is no longer available to new users").
+# "gemini-flash-latest" always resolves to the current stable Flash and stays
+# available to new keys, so a model retirement can't break the app again. It
+# supports everything we send (response_schema, seed, thinkingBudget:0).
+DEFAULT_MODEL = "gemini-flash-latest"
 
 # Gemini answers a demand spike with 503 ("high demand … try again later") and
 # throttling with 429. Both clear on their own in a second or two, so they must
@@ -138,6 +144,14 @@ def _http_error(e: urllib.error.HTTPError) -> GeminiError:
             "Gemini's free daily quota for this key is used up. It resets "
             "tomorrow — or add billing to the Google project. A build costs "
             "two requests.")
+    # A retired model. This shouldn't happen with the "…-latest" default, but a
+    # stale GEMINI_MODEL override or a future retirement would land here — say so
+    # plainly instead of dumping the raw JSON.
+    if e.code == 404 and ("no longer available" in detail or "not found" in detail):
+        return GeminiError(
+            "Gemini rejected the model this app asked for (it's been retired). "
+            "Update Mariposa Studio to the latest version — if it still fails, "
+            "make sure GEMINI_MODEL isn't pinned to an old model in your .env.")
     return GeminiError(f"HTTP {e.code}: {detail[:300]}")
 
 

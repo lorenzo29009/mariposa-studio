@@ -673,7 +673,9 @@ def _gemini_generate(prompt: str, retries: int = 3, timeout: int = 180):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.0, "response_mime_type": "application/json"},
     }).encode("utf-8")
-    model_id = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    # Floating alias — dated models get retired for new API keys; this one stays
+    # available. See the note in src/gemini.py.
+    model_id = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}"
     for attempt in range(1, retries + 1):
         try:
