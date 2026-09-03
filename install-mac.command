@@ -60,7 +60,7 @@ cat <<'BANNER'
 ====================================================
 
 This single installer sets up EVERYTHING needed to run
-the app and all 4 bundled tools:
+the app and every bundled tool:
 
   • Homebrew (if missing)
   • Python 3.12 (only if no 3.10–3.13 is found)
@@ -71,6 +71,12 @@ the app and all 4 bundled tools:
   • WhisperX in ~/whisperx (~3 GB; German Captions)
   • Your Gemini API key   (Camera Prompts + Animator
     + Captions polishing)
+
+Clip Cutter needs nothing extra from this installer — it
+uses the same ffmpeg and WhisperX. It does need CapCut
+installed, with at least one project of your own in it
+(a clip and a caption) for it to copy the house style
+from. Clip Cutter tells you if either is missing.
 
 When it finishes, just double-click "Mariposa Studio.app".
 
@@ -254,7 +260,7 @@ if [ -n "$FREE_KB" ] && [ "$FREE_KB" -lt "$NEED_KB" ]; then
     echo "!! Not enough free disk space for WhisperX."
     echo "   Need ~7 GB free on your home volume; you have about ${FREE_GB} GB."
     echo "   Free up space and re-run this installer to enable Captions."
-    echo "   (The other four tools are already set up and work now.)"
+    echo "   (Every other tool is already set up and works now.)"
 else
     SYS_ARCH="$(uname -m)"
     if [ -x "$HOME/whisperx/bin/python" ]; then

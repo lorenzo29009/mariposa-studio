@@ -1,175 +1,148 @@
 # Mariposa Studio — Brand Identity
 
-> **Club Paper** · *Warm. Crafted. Unhurried.*
+> **Atelier** · *The tool wears the brand it makes ads for.*
 
 This document is the brand half of the design. The system half — how these
-choices become reusable UI — lives in [DESIGN.md](DESIGN.md). Every value here is
-expressed as a token in [`design.py`](design.py); change it there and the whole
-app follows.
+choices become reusable UI — lives in [DESIGN.md](DESIGN.md). Every value here
+is expressed as a token in [`design.py`](../src/design.py); change it there and
+the whole app follows.
 
 ---
 
 ## 1. Personality
 
-**Warm. Crafted. Unhurried.**
+**Warm. Calm. Unfussy.**
 
-Three words the whole product must keep expressing:
+Mariposa makes miavola's ads. miavola already has a warm, extremely specific
+visual language — the same cream as the product photography, a wine that
+appears on the packaging, a butterfly — and until this redesign the tool that
+produces its creatives was dressed in a bottle green that appeared on nothing
+the company sells. Atelier closes that gap: the app and the product finally
+look like the same house, and the butterfly stops being decoration and becomes
+the actual mark of the actual brand.
 
-- **Warm** — a paper-cream canvas, white cards, soft shadows. The UI feels like
-  good stationery, not a cockpit.
-- **Crafted** — a serif display voice (Fraunces) over a precise grotesque
-  (Inter), pill-shaped controls, a 4px grid. Nothing is approximate.
-- **Unhurried** — one bottle-green accent used with restraint. The UI never
-  shouts; your footage and prompts are the loud thing, not the chrome.
-
-The north star is the "members' club" polish of The Padel Society — editorial
-serif headlines, cream paper, bottle green — and a deliberate rejection of the
-"AI default" look (rainbow gradient cards, emoji icons, generic Bootstrap
-chrome).
+Warm was never the wrong idea. Cream-coloured hospitality for strangers was —
+so the greeting, the clock and the members'-club serif are gone.
 
 ---
 
 ## 2. Logo & wordmark
 
-The mark is a **butterfly** — *mariposa* — drawn as a clean, symmetrical vector
-silhouette: two large rounded upper wings, two smaller lower wings, a slim body
-and a pair of curled antennae. It's a single-colour shape (`currentColor`), so
-it reads on dark **and** light without edits, and stays recognizable down to
-16px because it's one silhouette, not a scene.
+The mark is a **butterfly** — *mariposa* — a single-colour vector silhouette in
+`currentColor`, so it reads on cream and on wine without edits.
 
 | Asset | File | Use |
 |---|---|---|
-| Logomark | [`brand/logomark.svg`](brand/logomark.svg) | App, window, favicons. Uses `currentColor` → works on dark **and** light. |
-| Wordmark (dark/green bg) | [`brand/wordmark-dark.svg`](brand/wordmark-dark.svg) | Paper-white serif. READMEs on dark, green surfaces. |
-| Wordmark (light bg) | [`brand/wordmark-light.svg`](brand/wordmark-light.svg) | Ink serif + green "Studio". Print, light docs. |
-| App icon | rendered by [`make_icon.py`](make_icon.py) → `AppIcon.icns` | Dock, Finder, Launchpad. |
+| Logomark | `brand/logomark.svg` | Home bar, first run, the app icon. |
+| Wordmark (dark/wine bg) | `brand/wordmark-dark.svg` | Docs on wine surfaces. |
+| Wordmark (light bg) | `brand/wordmark-light.svg` | Print, light docs. |
+| App icon | `src/make_icon.py` → `AppIcon.icns` / `brand/AppIcon.ico` | Dock, Finder, taskbar. |
 
-**Clear space:** keep padding ≥ half a wing-width around the mark.
-**Don't:** recolor the wings a second brand color, add a drop shadow to the
-glyph, stretch it, or place it on a busy photo without a scrim.
+The wordmark in the app is set as live text in Cabinet Grotesk, not as an SVG,
+so it stays crisp at any scale factor.
 
-### App icon concept
-A bottle-green squircle with the paper-white butterfly — recognizable down to
-16px because it's one shape + one color, not a scene. Regenerate any time with
-`./venv/bin/python src/make_icon.py` (macOS + Windows). The icon **is** the
-logomark: `make_icon.py` rasterises `brand/logomark.svg` directly, so the two
-can never drift.
+**App icon:** a wine squircle with the cream butterfly — one shape, one colour,
+recognisable at 16px. Regenerate with `./venv/bin/python src/make_icon.py`.
 
 ---
 
 ## 3. Color palette
 
-One accent, a disciplined neutral ramp, and minimal semantics. Each token has a
-job — we don't add a color without a reason.
+**The one rule: colour only ever marks what's running, what's done, or what
+stopped.** Identity comes from name and place, never from hue. There is one
+accent and four state colours, and nothing else on screen is coloured.
 
-### Accent — "Court" (the only brand color)
+### Accent — wine (the only brand colour)
 | Token | Hex | Role |
 |---|---|---|
-| `GREEN` | `#046C4E` | Primary action, focus ring, selection, signal dot |
-| `GREEN_HI` | `#0B7F5E` | Hover |
-| `GREEN_DIM` | `#03543C` | Pressed |
-| `GREEN_TINT` | `rgba(4,108,78,.10)` | Soft fill behind selected items |
+| `WINE` | `#7A3343` | Primary action, the running state, every tool glyph |
+| `WINE_HI` | `#8E4756` | Hover |
+| `WINE_PRESSED` | `#4A1F2A` | Pressed |
+| `WINE_SOFT` | `#A45A6A` | Lighter wine — eyebrows on cream |
+| `WINE_LINE` | `#E6CDD2` | Selection outline |
+| `GOLD_LIGHT` | `#EFD8AE` | The only accent allowed *on* a wine ground |
 
-*Why one accent?* A single signal color makes the primary action unmistakable on
-every screen and keeps the product feeling like one tool, not five. Bottle green
-reads established and calm — a club crest, not a notification.
-
-### Neutrals — "club paper"
-A warm cream-to-white ramp. Depth comes from soft shadow, never from glow.
-
+### Surfaces — the studio light
 | Token | Hex | Role |
 |---|---|---|
-| `PAPER_CANVAS` | `#F6F3EC` | App background (warm cream) |
-| `PAPER_WELL` | `#0E1F19` | Deepest well — the console stays a dark pit |
-| `PAPER_PANEL` | `#FBFAF6` | Sticky bars, top chrome |
-| `PAPER_CARD` | `#FFFFFF` | Cards, tiles, inputs |
-| `PAPER_CARD2` | `#F1EDE3` | Hover / selected surface |
-| `PAPER_RAISED` | `#FFFFFF` | Menus, popovers (deeper shadow, not darker) |
-| `PAPER_LINE` | `#E5E0D3` | Hairline dividers |
-| `PAPER_LINE2` | `#CFC9B9` | Stronger / hover borders |
+| `CANVAS` | `#FFFCF9` | App background — the main ground everywhere |
+| `CARD_SOFT` | `#FCF7F2` | Cards and asides on the canvas |
+| `CARD_RAISED` | `#FFFFFF` | Cards that sit *on* a cream aside |
+| `BLUSH` | `#F6ECE8` | Selected rows, wine-adjacent fills |
+| `FILL` | `#EDE4D9` | Quiet fill, progress track |
+| `HAIRLINE` | `#F0E7DD` | The 1px rule between regions |
+| `RULE_SOFT` | `#F4ECE3` | The softer rule *inside* a card |
+| `WELL` | `#FCF7F2` | The log ground — cream, in daylight |
 
-The old dark-theme names (`INK_*`, `IRIS_*`) remain in `design.py` as
-back-compat aliases pointing at these tokens.
+Depth is **layering**, not outlines: cream on canvas, white on cream. A card
+has no border; a hairline appears only where two regions meet.
 
-### Text — 4-step legibility ramp (green-cast ink)
-`TXT_HI #13241D` (headings) · `TXT_BODY #33423A` (body) · `TXT_DIM #67756C`
-(labels) · `TXT_FAINT #98A39A` (placeholder) · `TXT_DISABLED #BDC5BC`.
+### Ink — a six-step warm-grey ramp
+`TXT_HI #1A1714` (headings) · `TXT_STRONG #2A2522` (script lines, prompts) ·
+`TXT_BODY #3F3833` (body) · `TXT_DIM #6B605A` (secondary) ·
+`TXT_META #8C8079` (counts, durations) · `TXT_FAINT #A99E93` (placeholders) ·
+`TXT_DISABLED #B8ADA5`.
 
-### Semantic (used sparingly)
-`SUCCESS #067647` · `WARNING #B45309` · `DANGER #D92D20`. Each also has a ~10%
-tint for backgrounds.
-
-### Per-tool hues (wayfinding only)
-Each tool owns one hue, used **only** as a small icon-chip tint + glyph color —
-never as a full gradient card. Deepened so each reads on white at equal weight.
-
-| Tool | Hue | Icon (Lucide) |
+### State — the only other colours in the app
+| Meaning | Token | Hex |
 |---|---|---|
-| Flow Cropper | `#4F46E5` indigo | `scissors` |
-| Captions | `#0284C7` sky | `captions` |
-| Extract Frame | `#0F766E` teal | `film` |
-| Camera Prompts | `#B45309` amber | `camera` |
-| Script Animator | `#7C3AED` violet | `clapperboard` |
+| done · installed · generated | `DONE` (+ `DONE_TINT`, `DONE_SOFT`) | `#87A35D` sage |
+| running · current | `RUNNING` = `WINE` | `#7A3343` |
+| missing · unassigned · worth a look | `WAIT` (+ `WAIT_TEXT`, `WAIT_FILL`) | `#F4DC7A` butter |
+| stopped · failed | `STOP` (+ `STOP_FILL`) | `#B54D4D` |
+
+Because those four are the only meanings, one glance answers the only question
+anybody has.
+
+### No per-tool hues
+Indigo, sky, teal, amber and violet-twice, confined to a 46px badge, was a
+wayfinding system nobody could perceive. Every tool glyph is the same wine: the
+shape says *which tool*, the colour never does. `TOOL_ACCENTS` survives in
+`design.py` as one colour under six keys so call sites keep working.
 
 ---
 
 ## 4. Typography
 
-**Display:** **Fraunces** (OFL, bundled in [`brand/fonts/`](brand/fonts)) — the
-serif voice for big titles only (hero titles, app-bar titles, the wordmark).
-It carries the "club" character.
+| Face | Where | Notes |
+|---|---|---|
+| **Cabinet Grotesk** | Headings, tool names, the wordmark, big numbers | 15–34px, 600, tight tracking |
+| **Satoshi** | Everything else | 13–14px body, 500 for labels |
+| System mono | Paths, logs, versions, clip keys | `SF Mono` / `Menlo` / `Consolas` |
 
-**UI:** **Inter** (OFL, bundled) for everything else. Both families are loaded
-at startup by `design.load_fonts()` via `QFontDatabase` — in Qt a font must be
-registered before the stylesheet is applied, or the family name silently falls
-back to a system font.
+**No serif anywhere.** Qt renders a serif badly at UI sizes — a constraint the
+old design named and then broke by using Fraunces at 30px. A serif used once
+per screen at one size is not a typographic system, it is a logo, so the
+display face is a grotesk with enough character to carry the brand. Mono is a
+*system* face, never a shipped one: it appears only where the text is literally
+machine output.
 
-**Mono:** **JetBrains Mono** → `SF Mono` → `Menlo`. Used for the console and any
-technical / numeric value.
+### Where the fonts come from
+Both faces are Fontshare releases (Indian Type Foundry) under the ITF Free Font
+Licence, and both arrived as **variable woff2** in the design handoff. Qt cannot
+read woff2, so `scripts/build_fonts.py` decompresses each source and instances
+the static weights the app uses:
 
 ```
-FONT_UI      = "Inter", -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif
-FONT_DISPLAY = "Fraunces", "Playfair Display", Georgia, serif
-FONT_MONO    = "JetBrains Mono", "SF Mono", "Menlo", "Consolas", monospace
+brand/fonts/_src/CabinetGrotesk-Variable.woff2  →  CabinetGrotesk-500/600/700.ttf
+brand/fonts/_src/Satoshi-Variable.woff2         →  Satoshi-400/500/600/700.ttf
 ```
 
-### Type scale
-| Role | Size / Weight | Tracking | Use |
-|---|---|---|---|
-| Display | 30 / 600 serif | -0.3 | Home & Settings hero |
-| Title | 20 / 700 | -0.3 | Big numbers, panel titles |
-| Heading | 15–16 / 600–700 | -0.2 | Top-bar title (serif), card titles |
-| Body | 13 / 400 | 0 | Default text |
-| Label | 12 / 600 | 0 | Field labels, buttons |
-| Caption | 11 / 500 | 0 | Secondary meta |
-| Micro | 10 / 700 | +1.5, UPPERCASE | Section eyebrows |
+`design.load_fonts()` registers every `brand/fonts/*.ttf` with `QFontDatabase`
+at startup, **with absolute paths** — Qt silently returns -1 for a relative one.
+The sources are committed so the build is reproducible from a clone; fontTools
+is a build-only dependency and the app never imports it.
 
-Serif only at display sizes; below ~16px everything is Inter — small serif
-rendering is where the elegance breaks.
+Inter stays in `brand/fonts/` as the fallback in `FONT_UI`. Fraunces stays on
+disk but appears in no font stack.
 
 ---
 
-## 5. Iconography
+## 5. Voice
 
-Real vector icons from **[Lucide](https://lucide.dev)** (ISC licensed), rendered
-through Qt's SVG engine and recolored from tokens — see `svg_icon()` in
-`design.py`. **Zero emoji** anywhere in the UI. Icons are stroke-based, 2px, with
-round caps. The full set lives in [`brand/icons/`](brand/icons).
+Sentence case, real sentences, no shouting. A control that needs explaining gets
+a second line rather than a tooltip ("Caption length — how the lines are
+broken"). A finished job says what it made and where; a failed one says what
+went wrong and offers the fix. Nothing says "Ready · Output will appear here."
 
----
-
-## 6. Shape language
-
-Controls are **pills**: outline at rest (white fill, `PAPER_LINE2` border),
-solid Court green with white text when selected/primary. Cards and panels use
-12–16px radii. This is the reference brand's "simple, clean tab" pattern, and
-it is the default for every segmented control, chip and button.
-
----
-
-## Extending the brand
-1. Need a new color? Add it as a token in `design.py` with a one-line "role"
-   comment. If you can't name its job, don't add it.
-2. New tool? Pick a hue + Lucide icon name in `TOOL_ACCENTS` / `TOOL_ICONS`.
-3. Keep the rule: **one accent, paper everything else, pills not boxes, serif
-   only for display sizes.**
+No emoji in the interface.

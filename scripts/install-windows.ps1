@@ -12,6 +12,13 @@
     - a Desktop + Start-Menu shortcut with the app icon
   then launches the app.
 
+  Clip Cutter needs nothing extra here: the pipeline ships in
+  tools\clip-cutter\ and resolves ffmpeg/ffprobe/WhisperX per machine
+  (tools\clip-cutter\scripts\portable.py). It does need CapCut installed,
+  with one project of the user's own to take the house style from; the tool
+  reports both before it starts a job. Node.js is NOT required -- only the
+  skill's optional full-render backend uses it, never the CapCut hand-off.
+
   PowerShell (not .bat) because detection, downloads, free-space checks, PATH
   refresh and shortcut creation are all far more reliable here.
 #>
@@ -27,6 +34,9 @@ Section "Mariposa Studio - Installer for Windows"
 Write-Host "Sets up Python, ffmpeg, eSpeak NG, the app, WhisperX (German"
 Write-Host "Captions) and your Gemini key - then opens the app."
 Write-Host "Takes ~10-15 min (WhisperX)."
+Write-Host ""
+Write-Host "Clip Cutter also needs CapCut installed, with one project of your"
+Write-Host "own in it for the house style. It will tell you if that is missing."
 Write-Host ""
 
 # ---------------------------------------------------------------------------
@@ -208,7 +218,7 @@ if ($freeGB -lt 7) {
     Write-Host "!! Not enough free disk space for WhisperX."
     Write-Host "   Need ~7 GB free on drive $($drive.Name): ; you have $freeGB GB."
     Write-Host "   Free up space and re-run this installer to enable Captions."
-    Write-Host "   (The other four tools are set up and work now.)"
+    Write-Host "   (Every other tool is set up and works now.)"
 } else {
     Info "Setting up WhisperX (this can take 10-15 minutes)..."
     Push-Location (Join-Path $root 'tools\captions-de')

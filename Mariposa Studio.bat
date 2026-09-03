@@ -1,5 +1,5 @@
 @echo off
-REM Windows launcher for Mariposa Studio — mirror of "Mariposa Studio.command".
+REM Windows launcher for Mariposa Studio - mirror of "Mariposa Studio.command".
 REM Double-click to run. cd /d "%~dp0" makes the repo root the working dir, so
 REM src/studio.py resolves APP_DIR to this folder (tools/, exports/, venv/).
 cd /d "%~dp0"

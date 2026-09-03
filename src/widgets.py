@@ -13,26 +13,33 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit,
     QFileDialog, QPlainTextEdit, QFrame, QGraphicsDropShadowEffect, QButtonGroup,
     QComboBox, QListView, QStyledItemDelegate, QStyle, QAbstractItemView,
+    QDialog,
 )
 
 from design import (
-    INK_PANEL, INK_BORDER2, TXT_HI, TXT_DIM, TXT_FAINT, IRIS, IRIS_FG,
-    GREEN, GREEN_FG, TOOL_ACCENTS, SHADOW_CARD, svg_icon, svg_pixmap,
+    CARD_RAISED, FILL, SHADOW_FLOAT, SHADOW_REST, TXT_BODY, TXT_DIM,
+    TXT_DISABLED, TXT_HI, WINE, WINE_FG, apply_shadow, svg_icon, svg_pixmap,
 )
 
 # ---------------------------------------------------------------------------
 # Reusable widgets
 
 class Card(QFrame):
-    """A rounded card with a soft shadow."""
+    """A 12px cream card on the canvas. Flat on purpose: depth in Atelier comes
+    from layering (cream on canvas, white on cream), not from giving every
+    surface a shadow. Use RaisedCard for the white layer that sits on cream."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("Card")
-        sh = QGraphicsDropShadowEffect()
-        sh.setBlurRadius(SHADOW_CARD["blur"])
-        sh.setColor(QColor(*SHADOW_CARD["color"]))
-        sh.setOffset(0, SHADOW_CARD["y"])
-        self.setGraphicsEffect(sh)
+
+
+class RaisedCard(QFrame):
+    """The white layer — a card *on* a cream aside. This is the one that gets
+    the resting shadow, because it is the only one that is actually lifted."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("CardRaised")
+        apply_shadow(self, SHADOW_REST)
 
 
 class FormRow(QWidget):
@@ -88,8 +95,18 @@ class DropZone(QFrame):
     tool logic is untouched."""
     changed = Signal(str)
 
+    #: How tall the zone is in each of its two shapes.
+    ROW_H = 78
+    HERO_H = 250
+
     def __init__(self, prompt: str, *, is_folder: bool = False,
-                 file_filter: str = "All files (*)", media: bool = False):
+                 file_filter: str = "All files (*)", media: bool = False,
+                 hero: bool = False, sub: str = "",
+                 action_label: str = "", glyph: str = ""):
+        """`hero=True` gives the tall centred target the board asks for where
+        the drop *is* the screen's first move (Captions). Everything else keeps
+        the compact row — and a hero collapses to that row once it is filled,
+        because a 250px target stops being useful the moment it is full."""
         super().__init__()
         self.setObjectName("DropZone")
         self.is_folder = is_folder
@@ -97,53 +114,99 @@ class DropZone(QFrame):
         self.media = media
         self._path = ""
         self._prompt = prompt
+        self._sub = sub or ("mp4, mov or m4v" if media else
+                            "Drop it here, or click to browse")
+        self._hero = hero
+        self._glyph = glyph or ("folder" if is_folder else "file-video")
+        self._action_label = action_label or ("Choose a folder…" if is_folder
+                                             else "Choose a file…")
         self.setProperty("filled", False)
         self.setCursor(Qt.PointingHandCursor)
         self.setAcceptDrops(True)
-        self.setFixedHeight(96)
 
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
+        # Both shapes are built once and swapped, so a fill never rebuilds the
+        # widget tree under a live drag.
+        self._stack = QVBoxLayout(self)
+        self._stack.setContentsMargins(0, 0, 0, 0)
+        self._stack.setSpacing(0)
+
+        self._hero_page = self._build_hero()
+        self._row_page = self._build_row()
+        self._stack.addWidget(self._hero_page)
+        self._stack.addWidget(self._row_page)
+        self._render_empty()
+
+    # -- the two shapes --
+    def _build_hero(self) -> QWidget:
+        w = QWidget(); w.setObjectName("TransparentPanel")
+        v = QVBoxLayout(w); v.setContentsMargins(20, 20, 20, 20); v.setSpacing(11)
+        v.setAlignment(Qt.AlignCenter)
+        self.hero_glyph = QLabel(); self.hero_glyph.setAlignment(Qt.AlignCenter)
+        self.hero_glyph.setPixmap(svg_pixmap(self._glyph, TXT_DISABLED, 34, stroke=1.4))
+        self.hero_title = QLabel(self._prompt); self.hero_title.setObjectName("DropTitle")
+        self.hero_title.setAlignment(Qt.AlignCenter)
+        self.hero_sub = QLabel(self._sub); self.hero_sub.setObjectName("DropMeta")
+        self.hero_sub.setAlignment(Qt.AlignCenter)
+        self.hero_action = QPushButton(self._action_label)
+        self.hero_action.setObjectName("OnCardBtn")
+        self.hero_action.setCursor(Qt.PointingHandCursor)
+        self.hero_action.clicked.connect(self._pick)
+        for x in (self.hero_glyph, self.hero_title, self.hero_sub):
+            x.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        v.addWidget(self.hero_glyph); v.addWidget(self.hero_title)
+        v.addWidget(self.hero_sub)
+        row = QHBoxLayout(); row.addStretch(1); row.addWidget(self.hero_action); row.addStretch(1)
+        v.addLayout(row)
+        return w
+
+    def _build_row(self) -> QWidget:
+        w = QWidget(); w.setObjectName("TransparentPanel")
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(16, 12, 16, 12)
         lay.setSpacing(14)
-
         self.thumb = QLabel()
         self.thumb.setObjectName("DropThumb")
-        self.thumb.setFixedSize(70, 70)
+        self.thumb.setFixedSize(52, 52)
         self.thumb.setAlignment(Qt.AlignCenter)
         lay.addWidget(self.thumb)
-
         col = QVBoxLayout(); col.setSpacing(3); col.setContentsMargins(0, 0, 0, 0)
         col.addStretch(1)
-        self.title = QLabel(prompt); self.title.setObjectName("DropTitle")
-        self.meta = QLabel("Drop it here, or click to browse"); self.meta.setObjectName("DropMeta")
+        self.title = QLabel(self._prompt); self.title.setObjectName("DropTitleSm")
+        self.meta = QLabel(self._sub); self.meta.setObjectName("DropMeta")
         col.addWidget(self.title); col.addWidget(self.meta)
         col.addStretch(1)
         lay.addLayout(col, 1)
-
-        self.action = QPushButton("Browse")
-        self.action.setObjectName("GhostBtn")
+        self.action = QPushButton("Browse…")
+        self.action.setObjectName("OnCardBtn")
         self.action.setCursor(Qt.PointingHandCursor)
-        self.action.setIcon(svg_icon("folder-open" if is_folder else "folder", TXT_DIM, 14))
         self.action.clicked.connect(self._pick)
         lay.addWidget(self.action)
-        for w in (self.thumb, self.title, self.meta):
-            w.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._render_empty()
+        for x in (self.thumb, self.title, self.meta):
+            x.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        return w
+
+    def _show_shape(self, hero: bool):
+        self._hero_page.setVisible(hero)
+        self._row_page.setVisible(not hero)
+        self.setFixedHeight(self.HERO_H if hero else self.ROW_H)
 
     # ---- visuals ----
     def _render_empty(self):
-        self.thumb.setPixmap(svg_pixmap("folder" if self.is_folder else "file-video", TXT_FAINT, 26))
-        self.thumb.setStyleSheet(f"background: {INK_PANEL}; border-radius: 12px;")
+        self.thumb.setPixmap(svg_pixmap(self._glyph, TXT_DISABLED, 24, stroke=1.4))
+        self.thumb.setProperty("hasImage", False)
+        self.thumb.style().unpolish(self.thumb); self.thumb.style().polish(self.thumb)
         self.title.setText(self._prompt)
-        self.title.setStyleSheet("")  # falls back to #DropTitle (dim)
-        self.meta.setText("Drop it here, or click to browse")
+        self.meta.setText(self._sub)
+        self._show_shape(self._hero)
 
     def _render_filled(self, p: Path):
         name = p.name
         self.title.setText(name)
-        self.title.setStyleSheet(f"color: {TXT_HI};")
         pm, meta = (None, None)
-        if self.is_folder:
+        # A folder is described by what is in it, whichever mode the zone is
+        # in — Captions accepts either a clip or a whole folder of them, and an
+        # absolute path is not a description.
+        if p.is_dir():
             try:
                 # Campaign clips live in subfolders (9x16/, CTA*/9x16/…), so
                 # count recursively. Skip any already-produced 4x5 outputs so
@@ -156,18 +219,20 @@ class DropZone(QFrame):
                 meta = str(p)
         elif self.media:
             pm, meta = _video_thumb_and_meta(p)
+        side = self.thumb.width()
         if pm and not pm.isNull():
-            scaled = pm.scaled(70, 70, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-            # center-crop to 70×70
-            x = max(0, (scaled.width() - 70) // 2); y = max(0, (scaled.height() - 70) // 2)
-            self.thumb.setPixmap(scaled.copy(x, y, 70, 70))
-            self.thumb.setStyleSheet("border-radius: 12px;")
+            scaled = pm.scaled(side, side, Qt.KeepAspectRatioByExpanding,
+                               Qt.SmoothTransformation)
+            x = max(0, (scaled.width() - side) // 2)
+            y = max(0, (scaled.height() - side) // 2)
+            self.thumb.setPixmap(scaled.copy(x, y, side, side))
         else:
-            self.thumb.setPixmap(svg_pixmap("folder-open" if self.is_folder else "film",
-                                            TOOL_ACCENTS.get(getattr(self, '_hue_key', ''), IRIS), 26))
-            self.thumb.setStyleSheet(f"background: {INK_PANEL}; border-radius: 12px;")
+            self.thumb.setPixmap(svg_pixmap("folder-open" if p.is_dir() else "film",
+                                            WINE, 24, stroke=1.4))
         self.meta.setText(meta or str(p))
-        self.action.setText("Change")
+        self.action.setText("Browse…")
+        # A filled hero collapses to the row: the space belongs to the form now.
+        self._show_shape(False)
 
     # ---- drag & drop ----
     def dragEnterEvent(self, e):
@@ -247,6 +312,10 @@ class Segmented(QFrame):
             self._buttons.append(b)
             lay.addWidget(b)
         self._buttons[0].setChecked(True)
+        # The track hugs its segments: a segmented control stretched across a
+        # row stops reading as one control and starts reading as three buttons.
+        from PySide6.QtWidgets import QSizePolicy
+        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         self._group.idClicked.connect(self.currentChanged.emit)
         # Keep the icon color in step with the text: white on the checked
         # (green) pill, dim otherwise.
@@ -259,7 +328,7 @@ class Segmented(QFrame):
         for i, b in enumerate(self._buttons):
             name = self._icons[i] if i < len(self._icons) else None
             if name:
-                b.setIcon(svg_icon(name, IRIS_FG if b.isChecked() else TXT_DIM, 14))
+                b.setIcon(svg_icon(name, WINE_FG if b.isChecked() else TXT_DIM, 14))
 
     def currentIndex(self) -> int:
         return self._group.checkedId()
@@ -283,15 +352,52 @@ class Field(QWidget):
     def __init__(self, label: str, widget: QWidget):
         super().__init__()
         self.setObjectName("TransparentPanel")
-        self.setStyleSheet("QWidget#TransparentPanel { background: transparent; }")
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(5)
+        v.setSpacing(7)
         lbl = QLabel(label)
         lbl.setObjectName("FieldLabel")
         v.addWidget(lbl)
         v.addWidget(widget)
         self.widget = widget
+
+
+class SettingRow(QWidget):
+    """A control with its name *and* a line saying what it does.
+
+    "Hybrid" and "Single line" mean nothing on their own, so the row explains
+    itself — that second line is the only change of substance in most of these
+    forms. The label column is fixed so a stack of rows aligns."""
+
+    LABEL_W = 200
+
+    def __init__(self, label: str, hint: str, control: QWidget, *,
+                 label_width: int = LABEL_W, stretch_control: bool = False):
+        super().__init__()
+        self.setObjectName("TransparentPanel")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(16)
+
+        col = QVBoxLayout(); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(3)
+        self.label = QLabel(label)
+        self.label.setObjectName("DropTitleSm")
+        col.addWidget(self.label)
+        if hint:
+            self.hint = QLabel(hint)
+            self.hint.setObjectName("FieldHint")
+            self.hint.setWordWrap(True)
+            col.addWidget(self.hint)
+        holder = QWidget(); holder.setObjectName("TransparentPanel"); holder.setLayout(col)
+        holder.setFixedWidth(label_width)
+        lay.addWidget(holder)
+
+        self.control = control
+        if stretch_control:
+            lay.addWidget(control, 1)
+        else:
+            lay.addWidget(control)
+            lay.addStretch(1)
 
 
 def _panel(layout) -> QWidget:
@@ -301,7 +407,6 @@ def _panel(layout) -> QWidget:
     kill styled fills (e.g. the checked pill's green)."""
     w = QWidget()
     w.setObjectName("TransparentPanel")
-    w.setStyleSheet("QWidget#TransparentPanel { background: transparent; }")
     w.setLayout(layout)
     return w
 
@@ -323,7 +428,10 @@ class ChipGroup(QWidget):
         lay.addLayout(self._chips_box); lay.addStretch(1)
         self._chips: list[QPushButton] = []
         self.set_presets(presets, default)
-        self.edit.textEdited.connect(self._sync_chips)
+        # textChanged, not textEdited: a value set in code (a mode switch, a
+        # restored session) must light the matching chip too, or the control
+        # shows two different answers at once.
+        self.edit.textChanged.connect(self._sync_chips)
 
     def set_presets(self, presets: list[str], default: str = ""):
         for b in self._chips:
@@ -333,7 +441,7 @@ class ChipGroup(QWidget):
         self._chips = []
         for v in presets:
             b = QPushButton(v); b.setObjectName("PillBtn"); b.setCheckable(True)
-            b.setCursor(Qt.PointingHandCursor); b.setFixedHeight(36)
+            b.setCursor(Qt.PointingHandCursor); b.setFixedHeight(34)
             b.clicked.connect(lambda _=False, val=v: self._choose(val))
             self._chips_box.addWidget(b); self._chips.append(b)
         self.edit.setText(default or (presets[0] if presets else ""))
@@ -357,18 +465,31 @@ class Switch(QWidget):
     """A painted on/off toggle."""
     toggled = Signal(bool)
 
-    def __init__(self, checked: bool = False, hue: str = IRIS):
+    def __init__(self, checked: bool = False, hue: str = WINE):
+        """`hue` is kept for call-site compatibility but every switch in the app
+        is wine now — a per-tool colour said nothing a shape could not."""
         super().__init__()
         self._on = checked
-        self._hue = QColor(hue)
-        self.setFixedSize(52, 30)
+        self._hue = QColor(WINE)
+        self.setFixedSize(38, 22)
         self.setCursor(Qt.PointingHandCursor)
 
     def isChecked(self) -> bool:
         return self._on
 
     def setChecked(self, v: bool):
-        self._on = bool(v); self.update()
+        """Set the state, and say so.
+
+        A checkable widget that stays silent when set in code makes anything
+        derived from it (a sentence in a footer, a saved preference) quietly
+        wrong. Emitting only on a real change keeps a handler that calls back
+        into setChecked from looping."""
+        v = bool(v)
+        if v == self._on:
+            return
+        self._on = v
+        self.update()
+        self.toggled.emit(self._on)
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton:
@@ -378,13 +499,13 @@ class Switch(QWidget):
 
     def paintEvent(self, _e):
         p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
-        r = self.rect().adjusted(1, 1, -1, -1)
-        track = QColor(self._hue) if self._on else QColor(INK_BORDER2)
+        r = self.rect()
+        track = QColor(self._hue) if self._on else QColor(FILL)
         p.setBrush(track); p.setPen(Qt.NoPen)
         p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
-        d = r.height() - 6
-        x = r.right() - d - 3 if self._on else r.left() + 3
-        p.setBrush(QColor("#FFFFFF"))
+        d = r.height() - 4
+        x = r.right() - d - 2 if self._on else r.left() + 2
+        p.setBrush(QColor(CARD_RAISED))
         p.drawEllipse(QPointF(x + d / 2, r.center().y() + 0.5), d / 2, d / 2)
         p.end()
 
@@ -394,11 +515,15 @@ class ConsoleView(QPlainTextEdit):
         super().__init__()
         self.setReadOnly(True)
         self.setObjectName("Console")
-        f = QFont("SF Mono", 11)
-        if not f.exactMatch():
-            f = QFont("Menlo", 11)
-        self.setFont(f)
-        self.setPlaceholderText("Output appears here…")
+        # The families here must mirror design.FONT_MONO: #Console declares it
+        # in QSS, but a QPlainTextEdit's document font wins, so it is set once
+        # from the same list rather than from a second hard-coded name.
+        for family in ("SF Mono", "Menlo", "Consolas"):
+            f = QFont(family, 11)
+            if f.exactMatch():
+                self.setFont(f)
+                break
+        self.setPlaceholderText("ready")
 
     def append_line(self, s: str, *, color: Optional[str] = None):
         s = s.rstrip()
@@ -424,34 +549,38 @@ class AppBar(QFrame):
     def __init__(self, title: str, tool_key: str, on_home: Callable[[], None]):
         super().__init__()
         self.setObjectName("AppBar")
-        self.setFixedHeight(64)   # fits the 44px primary action comfortably
-        hue = TOOL_ACCENTS.get(tool_key, IRIS)
+        self.setFixedHeight(60)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(16, 10, 16, 10)
-        lay.setSpacing(12)
+        lay.setContentsMargins(28, 13, 28, 13)
+        lay.setSpacing(14)
 
-        self.home_btn = QPushButton("  Home")
+        # "← Tools", not "Home": the grid you came from is called Tools, and
+        # naming the destination beats naming the metaphor.
+        self.home_btn = QPushButton("  Tools")
         self.home_btn.setObjectName("HomeBtn")
-        self.home_btn.setIcon(svg_icon("house", TXT_HI, 15))
+        self.home_btn.setIcon(svg_icon("arrow-left", TXT_BODY, 15, stroke=1.6))
         self.home_btn.setCursor(Qt.PointingHandCursor)
-        self.home_btn.setToolTip("Back to Home  (Esc)")
+        self.home_btn.setToolTip("Back to Tools  (Esc)")
         self.home_btn.clicked.connect(lambda: on_home())
         lay.addWidget(self.home_btn)
-
-        dot = QLabel()
-        dot.setFixedSize(9, 9)
-        dot.setStyleSheet(f"background: {hue}; border-radius: 4px;")
-        lay.addSpacing(4)
-        lay.addWidget(dot)
 
         ttl = QLabel(title)
         ttl.setObjectName("AppTitle")
         lay.addWidget(ttl)
         lay.addStretch(1)
         self._lay = lay
+        # Where the left group ends. Tracked explicitly because add_right() may
+        # already have run by the time a page calls add_left().
+        self._stretch_at = lay.count() - 1
 
     def add_right(self, w: QWidget):
         self._lay.addWidget(w)
+
+    def add_left(self, w: QWidget):
+        """Put a widget immediately after the title, before the stretch — for a
+        page's own context line (e.g. Clip Cutter's "<folder> · N clips")."""
+        self._lay.insertWidget(self._stretch_at, w)
+        self._stretch_at += 1
 
 
 class _SelectRowDelegate(QStyledItemDelegate):
@@ -475,7 +604,7 @@ class _SelectRowDelegate(QStyledItemDelegate):
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setPen(Qt.NoPen)
             # Selected: solid green pill. Hover: a clearly visible green wash.
-            painter.setBrush(QColor(GREEN) if selected else QColor(4, 108, 78, 38))
+            painter.setBrush(QColor(WINE) if selected else QColor(246, 236, 232))
             painter.drawRoundedRect(option.rect.adjusted(5, 3, -5, -3),
                                     self.PILL_RADIUS, self.PILL_RADIUS)
             painter.restore()
@@ -484,7 +613,7 @@ class _SelectRowDelegate(QStyledItemDelegate):
         # ink otherwise (the QSS no longer sets an item colour to fight us).
         option.state &= ~(QStyle.State_Selected | QStyle.State_MouseOver
                           | QStyle.State_HasFocus)
-        ink = QColor(GREEN_FG) if selected else QColor(TXT_HI)
+        ink = QColor(WINE_FG) if selected else QColor(TXT_HI)
         pal = option.palette
         pal.setColor(QPalette.Text, ink)
         pal.setColor(QPalette.WindowText, ink)
@@ -614,7 +743,149 @@ class Select(QComboBox):
         self.activated.emit(index.row())
 
 
+# ---------------------------------------------------------------------------
+# The app's own modal
+
+class AskDialog(QDialog):
+    """A question, asked in the app's own voice.
+
+    `QInputDialog`/`QMessageBox` hand the question to the platform: a dark
+    system title bar, Aqua buttons and a system font in the middle of a cream
+    app — the one place in Mariposa where the branding simply stops. So the
+    modal is ours: a frameless card centred on the window, the wine primary and
+    the ghost cancel the rest of the app uses, and one accent.
+
+    Frameless means we owe Qt three things, and each of them is a visible bug
+    when it is missing: the window must be **translucent** (otherwise the card's
+    rounded corners come with square black shoulders), the panel must be a
+    **QFrame** and not a QWidget (a QWidget ignores a QSS background unless told
+    to honour one — see docs/DESIGN.md), and Return/Escape have to be wired by
+    hand because there is no button box to do it.
+
+    Use `ask_text()` / `ask_confirm()` rather than this class directly."""
+
+    PANEL_W = 430
+
+    def __init__(self, parent, title: str, message: str, *, field: bool = False,
+                 text: str = "", placeholder: str = "", ok_label: str = "OK",
+                 cancel_label: str = "Cancel"):
+        super().__init__(parent)
+        # NoDropShadowWindowHint matters here specifically: macOS gives every
+        # NSWindow a native shadow, even frameless and translucent ones, and it
+        # traces the *window's* rectangular bounds — which margins big enough
+        # for our own QGraphicsDropShadowEffect (below) make much bigger than
+        # the visible card. Without this flag you get two shadows competing:
+        # ours, soft and centred on the card, and the system's, a hard-edged
+        # curve out past it that reads as a stray border.
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint
+                            | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setModal(True)
+
+        outer = QVBoxLayout(self)
+        # The margin is where the drop shadow lives, painted inside the window —
+        # a translucent top-level window is sized tightly to its content
+        # (adjustSize(), below), so anything less than the shadow's own reach
+        # clips it, and a *clipped* soft shadow renders as a hard curved edge
+        # outside the card, not as no shadow at all. SHADOW_FLOAT is blur 62 /
+        # y 18: the blur needs ~62px on every side, and the downward offset
+        # needs that again on the bottom.
+        outer.setContentsMargins(66, 50, 66, 84)
+
+        self._card = panel = QFrame()
+        panel.setObjectName("AskPanel")
+        panel.setFixedWidth(self.PANEL_W)
+        apply_shadow(panel, SHADOW_FLOAT)
+        outer.addWidget(panel)
+
+        v = QVBoxLayout(panel)
+        v.setContentsMargins(26, 24, 26, 22)
+        v.setSpacing(12)
+
+        head = QLabel(title)
+        head.setObjectName("AskTitle")
+        head.setWordWrap(True)
+        v.addWidget(head)
+
+        if message:
+            body = QLabel(message)
+            body.setObjectName("AskBody")
+            body.setWordWrap(True)
+            v.addWidget(body)
+
+        self.field: Optional[QLineEdit] = None
+        if field:
+            self.field = QLineEdit(text)
+            self.field.setObjectName("AskField")
+            self.field.setPlaceholderText(placeholder)
+            # macOS paints its blue focus ring over the QSS border, and blue is
+            # not in the palette. No app-wide switch exists; it is per widget.
+            self.field.setAttribute(Qt.WA_MacShowFocusRect, False)
+            self.field.returnPressed.connect(self.accept)
+            v.addWidget(self.field)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 6, 0, 0)
+        row.setSpacing(10)
+        row.addStretch(1)
+        cancel = QPushButton(cancel_label)
+        cancel.setObjectName("GhostBtn")
+        cancel.setCursor(Qt.PointingHandCursor)
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        self.ok_btn = QPushButton(ok_label)
+        self.ok_btn.setObjectName("PrimaryBtn")
+        self.ok_btn.setCursor(Qt.PointingHandCursor)
+        self.ok_btn.setDefault(True)
+        self.ok_btn.clicked.connect(self.accept)
+        row.addWidget(self.ok_btn)
+        v.addLayout(row)
+
+    def value(self) -> str:
+        return self.field.text().strip() if self.field else ""
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        # Centre the *card* on the window it belongs to, not on the screen and
+        # not on this window's own bounding box: the box is the card plus the
+        # shadow's asymmetric margins (more below than above, since the shadow
+        # is cast downward), so centring the box would leave the card sitting
+        # visibly high.
+        self.adjustSize()
+        ref = self.parentWidget().window() if self.parentWidget() else None
+        if ref is not None:
+            centre = ref.geometry().center()
+            card = self._card.geometry()
+            self.move(centre.x() - card.center().x(),
+                      centre.y() - card.center().y())
+        if self.field is not None:
+            self.field.setFocus()
+            self.field.selectAll()
+
+
+def ask_text(parent, title: str, message: str = "", *, text: str = "",
+             placeholder: str = "", ok_label: str = "OK") -> Optional[str]:
+    """Ask for one line of text. Returns the trimmed answer, or None if
+    cancelled — so an empty answer and a cancelled dialog stay different
+    things, which `QInputDialog.getText`'s (text, ok) pair got wrong often
+    enough to be worth fixing here."""
+    dlg = AskDialog(parent, title, message, field=True, text=text,
+                    placeholder=placeholder, ok_label=ok_label)
+    if dlg.exec() != QDialog.Accepted:
+        return None
+    return dlg.value()
+
+
+def ask_confirm(parent, title: str, message: str = "", *, ok_label: str = "OK",
+                cancel_label: str = "Cancel") -> bool:
+    """Ask a yes/no. True only on the primary action."""
+    dlg = AskDialog(parent, title, message, ok_label=ok_label,
+                    cancel_label=cancel_label)
+    return dlg.exec() == QDialog.Accepted
+
+
 __all__ = [
-    "Card", "FormRow", "DropZone", "Segmented", "Field", "ChipGroup",
-    "Switch", "ConsoleView", "AppBar", "Select", "_panel", "_video_thumb_and_meta",
+    "Card", "RaisedCard", "FormRow", "SettingRow", "DropZone", "Segmented", "Field", "ChipGroup",
+    "Switch", "ConsoleView", "AppBar", "Select", "AskDialog", "ask_text",
+    "ask_confirm", "_panel", "_video_thumb_and_meta",
 ]

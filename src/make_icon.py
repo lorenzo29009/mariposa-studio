@@ -26,9 +26,11 @@ APP_DIR = Path(__file__).resolve().parent.parent
 BRAND_DIR = APP_DIR / "brand"
 RESOURCES = APP_DIR / "Mariposa Studio.app" / "Contents" / "Resources"
 
-BG_TOP    = QColor(d.GREEN_HI)    # subtle top sheen
-BG_BOTTOM = QColor(d.GREEN_DIM)
-MARK      = QColor(d.PAPER_CANVAS)  # warm paper-white butterfly
+# The squircle is miavola's wine, not the retired Court green — the Dock icon
+# is the first thing you see of the app and it should belong to the same house.
+BG_TOP    = QColor(d.WINE_HI)       # subtle top sheen
+BG_BOTTOM = QColor(d.WINE_PRESSED)
+MARK      = QColor(d.CANVAS)        # warm cream butterfly
 
 # The icon IS the logomark — we rasterise brand/logomark.svg so the two can
 # never drift. On the green squircle the butterfly is paper-white (its

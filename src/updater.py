@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton, QProgressDialog, QMessageBox,
 )
 
-from core import APP_DIR, VENV_PY
+from core import APP_DIR, IS_WINDOWS, VENV_PY
 
 # --- Release source (EDIT for your repo) ----------------------------------
 REPO_OWNER = "lorenzo29009"
@@ -174,10 +174,29 @@ def apply_update(zip_url: str, progress=lambda msg: None) -> None:
 
 
 def relaunch() -> None:
-    """Restart the app with the freshly-overlaid code."""
-    python = str(VENV_PY) if Path(VENV_PY).exists() else sys.executable
+    """Restart the app with the freshly-overlaid code.
+
+    Two things differ on Windows and both are visible to the user:
+
+    * the GUI host is `pythonw.exe`, not `python.exe` — relaunching through the
+      console interpreter leaves a black console window open for the life of the
+      app, and closing that window kills it;
+    * `os.execv` does not replace the process image on Windows the way it does
+      on POSIX. It spawns and exits, which loses the shortcut's AppUserModelID
+      (so the taskbar button reverts to "Python") and can race the exit. A plain
+      spawn-then-quit is the honest version of the same thing.
+    """
+    python = Path(VENV_PY)
+    if IS_WINDOWS:
+        pyw = python.with_name("pythonw.exe")
+        if pyw.exists():
+            python = pyw
+    exe = str(python) if python.exists() else sys.executable
     script = str(APP_DIR / "src" / "studio.py")
-    os.execv(python, [python, script])
+    if IS_WINDOWS:
+        subprocess.Popen([exe, script], cwd=str(APP_DIR), close_fds=True)
+        os._exit(0)
+    os.execv(exe, [exe, script])
 
 
 # --- Qt glue --------------------------------------------------------------
@@ -222,7 +241,7 @@ class UpdateBanner(QFrame):
         lay.setContentsMargins(16, 8, 12, 8)
         lay.setSpacing(10)
         self.label = QLabel()
-        self.label.setStyleSheet("background: transparent; font-weight: 600;")
+        self.label.setObjectName("UpdateBannerText")
         lay.addWidget(self.label, 1)
 
         self.update_btn = QPushButton("Update now")
@@ -236,11 +255,11 @@ class UpdateBanner(QFrame):
         self.later_btn.setCursor(Qt.PointingHandCursor)
         self.later_btn.clicked.connect(lambda: self.setVisible(False))
         lay.addWidget(self.later_btn)
-        # A subtle accent strip so it reads as a notice without a design-system dep.
-        self.setStyleSheet(
-            "#UpdateBanner { background: #046C4E; border: none; }"
-            "#UpdateBanner QLabel { color: white; }"
-        )
+        # The banner used to carry its own bottle-green strip "without a
+        # design-system dep" — which meant it was the one surface that did not
+        # follow a rebrand. #UpdateBanner is styled in stylesheet.py now, from
+        # the same tokens as everything else. updater.py still imports nothing
+        # from design: it only sets the objectName.
 
     def present(self, info: dict):
         self._info = info

@@ -1,4 +1,7 @@
 *.bat text eol=crlf
+# PowerShell does the real installer work on Windows and one script uses a
+# here-string, which is the construct most sensitive to stray line endings.
+*.ps1 text eol=crlf
 *.command text eol=lf
 
 # Never ship secrets in a release zip (`git archive`), even if a stray .env
@@ -16,3 +19,16 @@ docs/ export-ignore
 .gitattributes export-ignore
 scripts/make_release_zip.py export-ignore
 scripts/smoketest.py export-ignore
+scripts/test_clock.py export-ignore
+scripts/test_failures.py export-ignore
+scripts/test_fonts.py export-ignore
+scripts/test_packer.py export-ignore
+scripts/test_portable.py export-ignore
+scripts/test_release.py export-ignore
+scripts/fit_clock.py export-ignore
+scripts/gen_index.py export-ignore
+# Build-only: the variable sources scripts/build_fonts.py instances the shipped
+# static TTFs from. fontTools is a dev dependency and the app never imports it,
+# so neither the sources nor the builder belong in a user's install.
+scripts/build_fonts.py export-ignore
+brand/fonts/_src/ export-ignore

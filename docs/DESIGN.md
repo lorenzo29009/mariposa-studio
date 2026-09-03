@@ -4,168 +4,219 @@ How the [brand](BRAND.md) becomes real UI. If you only read one section, read
 **"The one rule"** at the bottom.
 
 This is a **PySide6 (Qt for Python)** desktop app — there is no web framework or
-component library. The "design system" is therefore three things, all in
-[`design.py`](design.py):
+component library. The "design system" is therefore three things:
 
-1. **Tokens** — every color, font, size, radius, shadow and duration.
-2. **An icon system** — `svg_icon()` renders [Lucide](https://lucide.dev) SVGs.
-3. **A stylesheet** — `build_stylesheet()` turns tokens into the app-wide QSS
-   (Qt's CSS-like styling), keyed by widget *object names*.
+1. **Tokens** — every colour, font, size, radius, shadow and duration, in
+   [`design.py`](../src/design.py).
+2. **An icon system** — `svg_icon()` renders [Lucide](https://lucide.dev) SVGs,
+   recoloured from a token.
+3. **A stylesheet** — [`stylesheet.py`](../src/stylesheet.py) turns tokens into
+   the app-wide QSS, keyed by widget *object names*.
 
-`studio.py` imports from `design.py` and **never hard-codes a color or size**.
-To re-skin the entire app, edit tokens in `design.py` — nothing else changes.
+Nothing outside `design.py` hard-codes a colour or a size. To re-skin the whole
+app, edit the tokens — nothing else changes.
 
 ---
 
 ## 1. Tokens (the single source of truth)
 
 ```python
-from design import GREEN, PAPER_CARD, TXT_DIM, R_MD, svg_icon, tint, ...
+from design import WINE, CANVAS, CARD_SOFT, TXT_DIM, R_MD, svg_icon, tint, ...
 ```
 
 | Group | Examples | Notes |
 |---|---|---|
-| Neutrals | `PAPER_CANVAS` … `PAPER_LINE2` | 8-step warm cream-to-white ramp; each step has one job |
-| Text | `TXT_HI`, `TXT_BODY`, `TXT_DIM`, `TXT_FAINT`, `TXT_DISABLED` | green-cast ink legibility ramp |
-| Accent | `GREEN`, `GREEN_HI`, `GREEN_DIM`, `GREEN_TINT`, `GREEN_LINE`, `GREEN_FG` | the only brand color ("Court") |
-| Semantic | `SUCCESS`, `WARNING`, `DANGER` (+ `_TINT`) | used sparingly |
-| Tools | `TOOL_ACCENTS`, `TOOL_ICONS` | one hue + one Lucide name per tool |
-| Type | `FONT_UI`, `FONT_DISPLAY`, `FONT_MONO`, `TYPE` | Inter UI, Fraunces display, scale roles: display→micro |
-| Layout | `SPACE`, `R_SM/MD/LG/XL/FULL` | 4px grid; pill controls, 12–16px cards |
-| Depth/Motion | `SHADOW_*`, `DUR_FAST/BASE/SLOW` | whisper-soft shadows; OutCubic |
+| Surfaces | `CANVAS` `CARD_SOFT` `CARD_RAISED` `BLUSH` `FILL` `HAIRLINE` `RULE_SOFT` `WELL` | cream layering; each step has one job |
+| Ink | `TXT_HI` `TXT_STRONG` `TXT_BODY` `TXT_DIM` `TXT_META` `TXT_FAINT` `TXT_DISABLED` | six-step warm-grey ramp |
+| Accent | `WINE` `WINE_HI` `WINE_PRESSED` `WINE_SOFT` `WINE_LINE` `WINE_TINT` `GOLD_LIGHT` | the only brand colour |
+| State | `DONE` `RUNNING` `WAIT` `STOP` (+ tints/fills) | the only other four colours |
+| Tools | `TOOL_ICONS` (one Lucide glyph each) · `TOOL_ACCENTS` (one wine, six keys) | shape distinguishes, colour never does |
+| Type | `FONT_DISPLAY` (Cabinet Grotesk) · `FONT_UI` (Satoshi) · `FONT_MONO` (system) · `TYPE` | roles: hero→eyebrow |
+| Layout | `SPACE` (4·8·12·16·22·28) · `R_SM 8` `R_MD 12` `R_FULL` · `CHIP_H` | see the radius note below |
+| Depth/Motion | `SHADOW_REST` `SHADOW_SEL` `SHADOW_FLOAT` · `DUR_BASE 220` | `apply_shadow(w, spec)` |
 
-> **Back-compat aliases.** The dark-theme names (`INK_CANVAS…INK_BORDER2`,
-> `IRIS_*`) and the original aliases (`BG, PANEL, CARD, CARD_HI, BORDER, TEXT,
-> TEXT_DIM, TEXT_FAINT, ACCENT, ACCENT_HI, OK_COLOR, ERR_COLOR`) map onto the
-> new tokens so existing code keeps working. New code should prefer the
-> descriptive names (`PAPER_CARD`, `GREEN`, …).
->
+> **The radius trap.** The board writes a pill as `99px`, which is how CSS says
+> "fully round". **Qt is not CSS: it *ignores* a `border-radius` bigger than
+> half the box instead of capping it** — so `99px`, and any radius above half a
+> chip's height, renders a *square* chip. That is why chips are given a known
+> height (`CHIP_H = 26`) and `R_FULL` is exactly half of it. If you add a chip,
+> give it `min-height`/`max-height: {CHIP_H}px` or it will not be round.
+
+> **A white card on cream needs an edge.** `CARD_RAISED` (`#FFFFFF`) on `CANVAS`
+> (`#FFFCF9`) is a one per cent step: on its own it does not read as a card at
+> all, and a *column* of them (script blocks, scene cards, the Clip Cutter's slot
+> rows) reads as one flat field you cannot navigate. So a card standing directly
+> on the canvas gets a **1px `FILL` border**, and one that also has to feel picked
+> up gets `apply_shadow(w, SHADOW_REST)` on top (`#AniCard`). Same reason inside a
+> card: a separator between rows is `FILL`, not `RULE_SOFT` — the softer rule is
+> for cream-on-cream and is invisible on white. A card on `CARD_SOFT` (an aside,
+> the sidebar) already has its step and needs neither.
+
+> **Mark "where the caret is" on the gutter, not the row.** The active row in a
+> stack of fields (`BlockRow`, `SlotRow`) turns its gutter tag/code `WINE`. A
+> filled background would be the obvious move and it is wrong here: the first and
+> last row sit flush against the card's rounded corners and a styled child paints
+> square ones over them.
+
+> **Never ask with a system dialog.** `QInputDialog` and `QMessageBox` hand the
+> question to the platform — dark system title bar, Aqua buttons, system font —
+> which is the one place the branding used to simply stop. Use
+> `widgets.ask_text()` / `ask_confirm()`: a frameless card centred on the window,
+> wine primary, ghost cancel. Frameless owes Qt three things, each a visible bug
+> when missing: `WA_TranslucentBackground` (or the rounded corners get square
+> black shoulders), a **QFrame** panel (a QWidget ignores a QSS background), and
+> Return/Escape wired by hand (no button box does it for you). `ask_text()`
+> returns `None` for cancel and `""` for an empty answer, deliberately: they are
+> different answers and `QInputDialog`'s `(text, ok)` pair invited conflating
+> them.
+
+> **Kill the macOS focus ring on a styled field.** macOS draws its own blue focus
+> ring *over* a QSS `:focus` border, and blue is not in the palette. There is no
+> app-wide switch — it is `w.setAttribute(Qt.WA_MacShowFocusRect, False)` per
+> field (harmless on Windows/Linux), and a styled `QLineEdit` wants it.
+
+> **Styled backgrounds on a plain QWidget.** A `QWidget` subclass ignores a QSS
+> `background` unless it is told to honour one
+> (`setAttribute(Qt.WA_StyledBackground, True)`), and even then a *translucent*
+> one can fail to survive the parent's composite — the ⌘K scrim is therefore
+> painted in `paintEvent`, not styled. `QFrame` has no such problem.
+
 > **Fonts must be loaded before styling.** `design.load_fonts()` registers
-> `brand/fonts/*.ttf` via `QFontDatabase`; `main()` calls it before
-> `setStyleSheet`, otherwise Qt silently falls back to system fonts.
+> `brand/fonts/*.ttf` with **absolute** paths (Qt returns -1 for a relative
+> one); `main()` calls it before `setStyleSheet`.
 
-Helpers: `tint(hex, alpha)` → an `rgba(...)` string for QSS tints;
-`brand_pixmap(stem, width, color)` → renders a `brand/*.svg` (home lockup).
+Helpers: `tint(hex, alpha)` → an `rgba(...)` string for QSS · `apply_shadow()` →
+one of the three depths · `brand_pixmap(stem, width, color)` → a `brand/*.svg`.
+
+**Intentionally-kept "dead" tokens (do NOT remove):** the unused palette entries
+and `DUR_*`/`R_XL` aliases are the design-system vocabulary, and the `PAPER_*` /
+`INK_*` / `IRIS_*` / `GREEN*` names are back-compat aliases pointing at Atelier
+tokens so the modules that still import them keep working.
 
 ---
 
 ## 2. Icon system
 
 ```python
-svg_icon(name, color=TXT_HI, size=18, stroke=2.0) -> QIcon   # for buttons
-svg_pixmap(name, color, size)                      -> QPixmap # for QLabel
+svg_icon(name, color=TXT_HI, size=18, stroke=2.0) -> QIcon
+svg_pixmap(name, color, size, stroke)             -> QPixmap
 ```
 
-- Reads `brand/icons/<name>.svg` (authentic Lucide, ISC license).
-- Recolors `currentColor` → `color`, renders @2x for retina crispness, caches by
-  `(name, color, size, stroke)`.
-- **No emoji anywhere.** Need a new glyph? Drop the Lucide SVG into
-  `brand/icons/` and call `svg_icon("its-name", ...)`. Download:
-  `curl -fsSL https://unpkg.com/lucide-static@latest/icons/<name>.svg -o brand/icons/<name>.svg`
+Reads `brand/icons/<name>.svg` (authentic Lucide, ISC), recolours
+`currentColor`, rewrites the stroke width, renders @2x, caches by
+`(name, color, size, stroke)`. Tool glyphs are drawn at **1.5px stroke in
+wine**. No emoji anywhere. New glyph:
 
-The legacy `chevron_icon()` / `arrow_icon()` helpers in `studio.py` now just
-delegate to Lucide, so every back button and primary action shares one source.
+```bash
+curl -fsSL https://unpkg.com/lucide-static@latest/icons/<name>.svg -o brand/icons/<name>.svg
+```
 
 ---
 
 ## 3. Primitives (reusable, object-name styled)
 
-Qt styles widgets by **`objectName`**. Set the name; the QSS does the rest. The
-catalogue (all defined in `build_stylesheet()`):
+Qt styles widgets by **`objectName`**. Set the name; the QSS does the rest.
 
 | Primitive | `objectName` | Where |
 |---|---|---|
-| **OS shell** | | |
-| System bar | `SystemBar` (+ `Wordmark`, `Clock`, `SpotlightPill`) | Launcher top |
-| App icon | `AppIcon` / `_AppBadge` (painted) + `AppName` | Launcher desktop |
-| Recent chip | `RecentChip` (+ `RecentName/Meta`) | Launcher "Recenti" |
-| Spotlight | `SpotlightScrim` / `SpotlightPanel` / `SpotlightField` / `SpotlightItem` | ⌘K overlay |
-| App bar | `AppBar` (Home `HomeBtn` + accent dot + `AppTitle`) | every opened app |
-| **Inside apps** | | |
-| Card surface | `Card` | forms, status, panels |
-| Drop zone (hero input) | `DropZone` (`#DropTitle/#DropMeta`, live thumbnail) | the primary file/folder of a tool |
-| Segmented control | `Segmented` (reuses `ModeToggle/ModeBtn`) | AI\|UGC, mode, language |
-| Toggle | `Switch` (painted, per-app hue) | dry-run, "Refine with Gemini" |
-| Preset chips | `ChipGroup` (editable value + `PillBtn` presets) | frame count / interval |
-| Label-on-top field | `Field` (+ `grid_2col`) | dense 2-column form grids |
-| Status panel | `StatusTitle` / `StatusDetail` / `StatusProgress` | job-runner result area |
-| Primary button | `PrimaryBtn` | the one green "go" action of each app |
-| Secondary / Ghost / Danger | `SecondaryBtn` / `GhostBtn` / `DangerBtn` | Browse / details / Stop |
-| Console (collapsible) | `Console` | mono log behind "Show details" |
-| Segmented toggle | `ModeToggle` + `ModeBtn` | Simple/Custom, Single/Combine |
-| Filter pill | `PillBtn` | Camera Prompts categories |
-| Selection chip | `SelectionChip` (+ `ChipTag/Remove`) | Camera multi-select |
-| Prompt card | `PromptCard` (`[selected="true"]`) | Camera grid |
-| Float panel | `FloatPanel` + `Float*` | Animator presenter |
-| Toast | `Toast` | copy confirmations |
+| **Shell** | | |
+| Home bar | `SystemBar` (+ `Wordmark`, `VersionTag`, `SpotlightPill`, `GearBtn`) | home |
+| Tool tile | `Tile` (+ `TileTitle`, `TileSub`, `TileKbd`) | the home grid |
+| ⌘K overlay | `SpotlightScrim` (painted) / `SpotlightPanel` / `SpotlightField` / `SpotlightItem` / `SpotlightGroup` / `SpotlightDesc` / `SpotlightKbd` | `launcher.py` |
+| App bar | `AppBar` (+ `HomeBtn` "← Tools", `AppTitle`, `AppMeta`) | every tool |
+| **Surfaces** | | |
+| Cream card | `Card` · white card `CardRaised` · blush `Blush` · aside `Aside` | everywhere |
+| Rules | `Hairline` (between regions) · `RuleSoft` (inside a card) | |
+| Modal | `AskPanel` (+ `AskTitle`, `AskBody`) — `widgets.AskDialog` / `ask_text()` / `ask_confirm()` | never `QInputDialog`/`QMessageBox` |
+| **Type roles** | `HeroTitle` `DisplayTitle` `SectionHeading` `Eyebrow` `Meta` `MetaFaint` `Mono`/`MonoPath` `FieldLabel` `FieldHint` | |
+| **Controls** | `PrimaryBtn` `SecondaryBtn` `OnCardBtn` `GhostBtn` `LinkBtn` `DangerBtn` · `ModeToggle`+`ModeBtn` · `PillBtn` · `Switch` (painted) · `Select` stack · `ChipGroup` | `widgets.py` |
+| Chips | `Chip` `ChipDone` `ChipWine` `ChipWait` — the only 99px-ish radius | |
+| Setting row | `SettingRow` (label + hint + control) | Captions, Settings |
+| Drop zone | `DropZone` (+ `[filled]`/`[hover]`, `DropTitle`, `DropTitleSm`, `DropMeta`, `DropThumb`) | hero *or* collapsed row |
+| **Job runner** | | |
+| Log column | `LogColumn` (+ `LogHeader`, `LogFoot`, `LogEnv`, `LogNote`, `StatusTitle`, `StatusDetail`, `StatusProgress`) | `widgets_status.py` |
+| End states | `ResultCard` (+ `ResultHead`/`ResultPath`/`ResultNote`) · `FailureCard` (+ `FailureHead`/`FailureBody`) · `DryRunCard` (+ `DryRunOld`/`DryRunNew`/`DryRunFlag`) | |
+| **Per tool** | `NamePreview` (Flow) · `PromptCard`/`CardBadge`/`ResultBar`/`FuseSheet` (Camera) · `BlockRail`/`RailItem`/`SceneCard`/`SceneDurBtn`/`SceneEn` (Animator) · `FloatPanel`/`FoldToggle` (panel) · `CCSidebar`/`CCBoard`/`CCFooter`/`SlotRow`/`ClipChip`/`PoolCard`/`BodyTile`/`DropArea[hot]` (Clip Cutter) · `FirstRunAside`/`DepTick`/`DepPending` (first run) | |
 
-To add a styled element: give it an existing `objectName`, or add a new rule in
-`build_stylesheet()` using tokens (never a literal hex).
+Dynamic properties re-polished in code carry state: `filled`, `hover`, `hot`,
+`selected`, `dimmed`, `locked`, `over`, `done`, `tone`.
+
+To add a styled element: give it an existing `objectName`, or add a rule in
+`build_stylesheet()` using tokens — never a literal hex, never an inline
+`setStyleSheet`.
 
 ---
 
-## 4. Information architecture — "Mariposa OS"
+## 4. Information architecture
 
-The app is a small **operating system for creators**, not a launcher of cards.
-Five tools, each opened as its own full-canvas **app**. The connective tissue is
-the OS itself — a launcher, a system search, and shortcuts — never a sidebar.
+The app is a **drawer of six small machines**, opened for four minutes to do one
+job and shut again. Nobody lives here, so nothing is built for dwelling: no
+greeting, no clock, no dashboard, no ordering that implies a sequence.
 
-- **Launcher (`LauncherPage`, the "Scrivania")** — the desktop. A system bar
-  (logomark + wordmark · centered **Spotlight** pill · live clock · settings),
-  a serif time-of-day greeting, the five **app card tiles** (solid hue badge +
-  white Lucide glyph, name, tagline — the reference app's home pattern), and a
-  **Recenti** strip surfacing recent `exports/` files.
-- **Opening an app** — the launcher recedes (zoom + fade) and the app fills the
-  canvas. Each app has an `AppBar`: a **Home** button, the app's **accent dot**,
-  the title, and the primary action — wearing the app's own hue.
-- **Spotlight (`⌘K`)** — the system launcher/switcher: type to jump to any app,
-  `↑↓` + `Enter` to choose. Reinforces the OS feel and gives power-user speed.
-- **Returning** — Home button or `Esc`; the app shrinks away to reveal the
-  launcher. `⌘1…⌘5` jump straight to an app.
+- **Home** — the wordmark, a visible **⌘K** pill, the gear, and six tiles in a
+  **fixed** order matching ⌘1–⌘6. It never re-sorts by recency: a grid that
+  moves under your hands costs more than it saves.
+- **A tool** — fills the canvas behind an `AppBar` whose back button says
+  **← Tools**. `Esc` returns.
+- **⌘K** — one line reaching tools, this session's files and a few verbs. It
+  opens on an empty field showing nothing.
+- **First run** — one field (the Gemini key) and the real state of the three
+  native dependencies. Shown once; setup never blocks.
 
-### The three app archetypes (don't force one shape on all)
-- **Job runner** (Flow Cropper, Captions, Extract Frame) — `ToolPage`: an input
-  `Card` (`FormRow`s, drag-and-drop) → primary action in the `AppBar` → a **status
-  panel** (`StatusTitle` + dot, indeterminate `StatusProgress`, latest-line detail,
-  a result action, and a collapsible "Show details" log). Flow: **input →
-  action → result**.
-- **Browser** (Camera Prompts) — `PillBtn` filters + search → sectioned
-  `PromptCard` grid. Click copies; "Combine" stacks `SelectionChip`s for Gemini.
-- **Transform** (Script Animator) — `ModeToggle` (Simple/Custom) → script
-  `Card` → "Build storyboard" → segments + a draggable `FloatPanel` presenter.
+### The three app archetypes
+- **Job runner** (Flow Cropper, Captions, Extract Frame, Clip Cutter) —
+  `ToolPage`: a form on the left, **the log in daylight on the right**.
+  `SIDE = "log"` for a job you wait for; `SIDE = "none"` gives the compact
+  `StatusStrip` to a job that takes a second.
+- **Browser** (Camera Prompts) — filters + search → a picture-led grid. Click
+  copies; **⌘-click gathers** into an ordered bar; Fuse returns one prompt.
+- **Transform** (Script Animator) — write the script with its spoken length
+  beside it, build, then work through the clips on a block rail and in a
+  floating panel.
 
-### States (every job-runner app)
-- **Empty** — placeholder copy + status "Ready · Output will appear here."
-- **Loading** — status "Running…" in green + indeterminate progress, Stop shown.
-- **Done / Error** — "Done" (green) / problem (red, auto-opens the log) + a
-  result action (Open folder / Reveal .srt).
-- **Keyboard** — `⌘K` Spotlight · `⌘1–5` open apps · `Esc`/Home back · arrows
-  navigate the launcher · `Ctrl+Return` runs the active app · drag-and-drop input.
+### Runner states (the only four)
+- **Waiting** — a sage-at-rest dot, three lines of environment, "ready".
+- **Running** — a wine dot, a **determinate** bar wherever the script counts
+  (`progress_from_line()`), elapsed + an estimate averaged from the units
+  already finished, `Stop`, and the live log.
+- **Done** — a sage dot and a `ResultCard`: what it made, where, two verbs.
+- **Stopped** — a red dot and a `FailureCard`: a written cause from
+  [`failures.py`](../src/failures.py) and, where we have one, a button that
+  fixes it.
+
+There is no "Show details" and no barber pole. A visible log means the job is
+running, not that something broke.
+
+### Keyboard
+`⌘K` search · `⌘1–⌘6` tools · `⌥⌘T` the scene panel over Chrome · `Esc` back ·
+`⌘↩` run the current tool · arrows navigate the home grid · drag-and-drop
+everywhere a path is wanted.
 
 ---
 
 ## 5. Motion & depth
-- **App open/close:** a ~230ms zoom + fade in the OS shell (`MainWindow._transition`),
-  OutCubic — the launcher recedes, the app shrinks away. Robust because it snapshots
-  the *visible* widget.
-- Depth comes from white-on-cream layering + a single whisper-soft shadow —
-  **never** a colored glow.
+
+- App open/close: a ~230ms zoom + fade (`MainWindow._transition`), OutCubic.
+- Three shadows and only three: `SHADOW_REST` (a resting white card),
+  `SHADOW_SEL` (selected/gathered), `SHADOW_FLOAT` (the ⌘K panel, the fuse
+  sheet, the float panel). Attach with `apply_shadow()`.
+- Motion is 220ms ease-out on geometry and opacity only.
 
 ---
 
 ## The one rule
 
-**One system accent (Court green). Each app owns one hue for its own
-action/identity. Everything else paper. Pills, not boxes; serif only at display
-sizes. No gradient content cards, no emoji.** Differentiate with iconography
-and hierarchy, not color.
+**Every screen is measured in keystrokes to the file — and colour only ever
+marks what's running, what's done, or what stopped.** If an element doesn't
+shorten the path to the artefact or tell the truth about a running job, it isn't
+on the screen. Identity comes from name and place, never from hue.
 
 ### Extending
 1. **New tool:** subclass `ToolPage` (job runner) or build a bespoke `QWidget`
-   that starts with an `AppBar`. Add `("Name", "key", Class, available)` to
-   `specs` in `MainWindow`, plus `"key": hue` / `"key": "lucide-name"` in
-   `TOOL_ACCENTS` / `TOOL_ICONS` and a line in `APP_TAGLINES`. It then appears on
-   the launcher, in Spotlight, and gets a `⌘n` shortcut automatically.
+   starting with an `AppBar`. Add `("Name", "key", Class, available)` to
+   `specs` in `MainWindow`, a `"key": "lucide-name"` in `TOOL_ICONS`, and a
+   sentence in `APP_TAGLINES` + `APP_DESCS` (`launcher.py`). It then appears on
+   home, in ⌘K, and gets its `⌘n`. A seventh tool makes the grid 3 × 3.
 2. **New token:** add it to `design.py` with a one-line role comment.
 3. **New component:** give it an `objectName` + a token-based rule in
    `build_stylesheet()`. No one-off inline styles.

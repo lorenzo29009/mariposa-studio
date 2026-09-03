@@ -56,6 +56,7 @@ class ComparePanel(QWidget):
     def __init__(self, parent: QWidget, on_close: Callable[[], None]):
         super().__init__(parent)
         self.setObjectName("ComparePanel")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(f"QWidget#ComparePanel {{ background: {PAPER_CANVAS}; }}")
         self._on_close = on_close
         self._srt_path: Optional[Path] = None

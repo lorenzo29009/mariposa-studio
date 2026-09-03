@@ -23,7 +23,7 @@ ANIMATOR_LOG_FILE = APP_DIR / "exports" / "animator_log.json"
 # 4: the lengths in a v3 log came from the old predictor, which ran about 16 %
 #    fast. Restoring them would put a clip on screen that the clock would now
 #    call too long, with no sign of it — so a v3 log is not carried forward.
-LOG_VERSION = 4
+LOG_VERSION = 5
 
 # (internal name, label shown in the picker)
 # Adding one means five things elsewhere, and the tool is quietly wrong if any is

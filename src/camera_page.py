@@ -8,19 +8,20 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import (
     Qt, Signal, QTimer, QPropertyAnimation, QEasingCurve, QPoint, QObject,
-    QThread, Slot,
+    QMimeData, QThread, Slot,
 )
+from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QLineEdit, QFrame, QSizePolicy, QScrollArea, QGraphicsOpacityEffect,
-    QToolButton, QButtonGroup,
+    QLineEdit, QPlainTextEdit, QFrame, QSizePolicy, QScrollArea,
+    QGraphicsOpacityEffect, QToolButton, QButtonGroup,
 )
 
 from design import (
-    TXT_HI, IRIS_FG, TEXT_DIM, TOOL_ACCENTS, svg_icon,
-    primary_button_style,
+    SHADOW_FLOAT, TXT_HI, TXT_META, WINE_FG, apply_shadow, svg_icon,
 )
 
+import session
 from core import (
     CAMERA_PROMPT_DIR, read_env_value,
 )
@@ -85,75 +86,98 @@ class GeminiWorker(QObject):
             self.failed.emit(str(e))
 
 
+class _OrderChip(QFrame):
+    """A gathered shot, carrying its position and able to change it.
+
+    Reordering is a drag rather than up/down buttons: the bar reads as a
+    sequence, and moving something in a sequence is a thing you do with your
+    hand. The chip never mutates the list itself — it calls back with
+    (from, to) so the page stays the single place order changes."""
+
+    MIME = "application/x-mariposa-pick"
+
+    def __init__(self, index: int, on_move):
+        super().__init__()
+        self.setObjectName("SelectionChip")
+        self.index = index
+        self._on_move = on_move
+        self._press: Optional[QPoint] = None
+        self.setAcceptDrops(True)
+        self.setCursor(Qt.OpenHandCursor)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._press = e.position().toPoint()
+
+    def mouseMoveEvent(self, e):
+        if self._press is None:
+            return
+        if (e.position().toPoint() - self._press).manhattanLength() < 8:
+            return
+        drag = QDrag(self)
+        data = QMimeData()
+        data.setData(self.MIME, str(self.index).encode())
+        drag.setMimeData(data)
+        drag.setPixmap(self.grab())
+        drag.setHotSpot(self._press)
+        self._press = None
+        drag.exec(Qt.MoveAction)
+
+    def mouseReleaseEvent(self, e):
+        self._press = None
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasFormat(self.MIME):
+            e.acceptProposedAction()
+
+    def dragMoveEvent(self, e):
+        if e.mimeData().hasFormat(self.MIME):
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        if not e.mimeData().hasFormat(self.MIME):
+            return
+        src = int(bytes(e.mimeData().data(self.MIME)).decode())
+        # Dropping on the right half of a chip means "after it".
+        dst = self.index + (1 if e.position().x() > self.width() / 2 else 0)
+        if src < dst:
+            dst -= 1
+        e.acceptProposedAction()
+        self._on_move(src, dst)
+
+
 # The page ------------------------------------------------------------------
 
 class CameraPromptsPage(QWidget):
     title = "Camera Prompts"
-    subtitle = ('Your reference deck of camera shots. Click = copy the prompt. '
-                'Switch to "Combine" to stack shots and let Gemini fuse them.')
     tool_key = "camera"
 
     def __init__(self, on_back: Callable[[], None]):
         super().__init__()
-        self.selections: dict[str, dict] = {}
+        # An ordered list, not one-per-category: order matters to a fused
+        # prompt, and nothing says a shot and an angle are mutually exclusive.
+        self.picks: list[dict] = []
         self._thread: Optional[QThread] = None
         self._worker: Optional[GeminiWorker] = None
         self._scroll_spy_lock = False
-        self._multi = False  # single-click mode by default
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # ---- OS app bar with the Single | Multi mode toggle ----
+        # ---- app bar. No Single | Combine toggle: a mode you have to enter
+        # and then remember to leave is a tax on the fast case, and the bar at
+        # the bottom already says unambiguously that you are gathering. ----
         self.app_bar = AppBar(self.title, self.tool_key, on_back)
-
-        mode_wrap = QFrame()
-        mode_wrap.setObjectName("ModeToggle")
-        mw = QHBoxLayout(mode_wrap)
-        mw.setContentsMargins(3, 3, 3, 3)
-        mw.setSpacing(0)
-        self.mode_single = QPushButton("Single")
-        self.mode_multi  = QPushButton("Combine")
-        for b in (self.mode_single, self.mode_multi):
-            b.setObjectName("ModeBtn")
-            b.setCheckable(True)
-            b.setCursor(Qt.PointingHandCursor)
-            mw.addWidget(b)
-        self.mode_group = QButtonGroup(self)
-        self.mode_group.setExclusive(True)
-        self.mode_group.addButton(self.mode_single)
-        self.mode_group.addButton(self.mode_multi)
-        self.mode_single.setChecked(True)
-        self.mode_single.toggled.connect(
-            lambda on: self._set_multi(False) if on else None
-        )
-        self.mode_multi.toggled.connect(
-            lambda on: self._set_multi(True) if on else None
-        )
-        self.app_bar.add_right(mode_wrap)
         outer.addWidget(self.app_bar)
 
-        # ---- Sticky header: subtitle + chips + Generate ----
-        self.header = QFrame()
-        self.header.setObjectName("PromptsHeader")
-        hv = QVBoxLayout(self.header)
-        hv.setContentsMargins(28, 14, 28, 14)
-        hv.setSpacing(10)
-
-        self.sub_label = QLabel(self.subtitle)
-        self.sub_label.setObjectName("PageSubtitle")
-        self.sub_label.setWordWrap(True)
-        hv.addWidget(self.sub_label)
-
+        # The gathering block lives in the bottom tray (see `gather_bar`), so
+        # there is no header band between the app bar and the filters — an
+        # empty 28px stripe was all that was left of it.
         # The selection block only appears in multi-select mode.
         self.sel_row_wrap = QWidget()
         self.sel_row_wrap.setObjectName("SelRowWrap")
-        # Use an ID selector so only SelRowWrap itself is transparent, not its
-        # child QPushButtons (which would become invisible with a generic rule).
-        self.sel_row_wrap.setStyleSheet(
-            "QWidget#SelRowWrap { background: transparent; }"
-        )
+        self.sel_row_wrap.setAttribute(Qt.WA_StyledBackground, True)
         sel_outer = QVBoxLayout(self.sel_row_wrap)
         sel_outer.setContentsMargins(0, 0, 0, 0)
         sel_outer.setSpacing(8)
@@ -163,9 +187,7 @@ class CameraPromptsPage(QWidget):
         # if there are too many; the buttons stay pinned to the right.
         self.chips_host = QWidget()
         self.chips_host.setObjectName("ChipsHost")
-        self.chips_host.setStyleSheet(
-            "QWidget#ChipsHost { background: transparent; }"
-        )
+        self.chips_host.setAttribute(Qt.WA_StyledBackground, True)
         self.chips_layout = FlowLayout(self.chips_host, h_spacing=6, v_spacing=6)
         self.chips_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
@@ -176,23 +198,31 @@ class CameraPromptsPage(QWidget):
         action_row.setContentsMargins(0, 0, 0, 0)
         action_row.setSpacing(8)
         action_row.addWidget(self.chips_host, 1, Qt.AlignVCenter)
+        self.order_hint = QLabel("order matters — drag to reorder")
+        self.order_hint.setObjectName("MetaFaint")
+        self.order_hint.setVisible(False)
+        action_row.addWidget(self.order_hint, 0, Qt.AlignVCenter)
         self.clear_btn = QPushButton("Clear")
         self.clear_btn.setObjectName("GhostBtn")
         self.clear_btn.setCursor(Qt.PointingHandCursor)
         self.clear_btn.clicked.connect(self._clear_selections)
         action_row.addWidget(self.clear_btn, 0, Qt.AlignVCenter)
-        self.gen_btn = QPushButton("Combine")
+        self.copy_all_btn = QPushButton("Copy all")
+        self.copy_all_btn.setObjectName("SecondaryBtn")
+        self.copy_all_btn.setCursor(Qt.PointingHandCursor)
+        self.copy_all_btn.setToolTip("Every gathered description, in order — "
+                                    "no network needed")
+        self.copy_all_btn.clicked.connect(self._copy_all)
+        self.copy_all_btn.setVisible(False)
+        action_row.addWidget(self.copy_all_btn, 0, Qt.AlignVCenter)
+        self.gen_btn = QPushButton("Fuse with Gemini")
         self.gen_btn.setObjectName("PrimaryBtn")
-        self.gen_btn.setStyleSheet(primary_button_style(TOOL_ACCENTS["camera"]))
         self.gen_btn.setCursor(Qt.PointingHandCursor)
-        self.gen_btn.setIcon(svg_icon("sparkles", IRIS_FG, 15))
+        self.gen_btn.setIcon(svg_icon("sparkles", WINE_FG, 15))
         self.gen_btn.setLayoutDirection(Qt.RightToLeft)  # icon shows after the text
         self.gen_btn.clicked.connect(self._on_generate)
         action_row.addWidget(self.gen_btn, 0, Qt.AlignVCenter)
         sel_outer.addLayout(action_row)
-
-        hv.addWidget(self.sel_row_wrap)
-        outer.addWidget(self.header)
 
         # ---- Filter pills + search (sticky) ----
         controls = QFrame()
@@ -215,6 +245,17 @@ class CameraPromptsPage(QWidget):
         cv.addWidget(self.search)
         outer.addWidget(controls)
 
+        # The gathering bar is pinned to the bottom, over the gallery: it is a
+        # tray you are filling, and a tray belongs under the thing you are
+        # taking from. It appears only once something is in it.
+        self.gather_bar = QFrame()
+        self.gather_bar.setObjectName("ResultBar")
+        gb = QVBoxLayout(self.gather_bar)
+        gb.setContentsMargins(28, 14, 28, 14)
+        gb.setSpacing(0)
+        gb.addWidget(self.sel_row_wrap)
+        self.gather_bar.setVisible(False)
+
         # ---- Scroll area (the gallery) ----
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -222,6 +263,7 @@ class CameraPromptsPage(QWidget):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
         outer.addWidget(self.scroll, 1)
+        outer.addWidget(self.gather_bar)
 
         wrap = QWidget()
         self.scroll.setWidget(wrap)
@@ -232,7 +274,7 @@ class CameraPromptsPage(QWidget):
         self.scroll_layout = wv
 
         self.empty_msg = QLabel("No shots match your search.")
-        self.empty_msg.setStyleSheet(f"color: {TEXT_DIM}; padding: 18px 0;")
+        self.empty_msg.setObjectName("EmptyHint")
         self.empty_msg.setVisible(False)
         wv.addWidget(self.empty_msg)
 
@@ -252,30 +294,48 @@ class CameraPromptsPage(QWidget):
         wv.addStretch(1)
 
         # ---- Sticky result bar at the bottom (only shown after a generation) ----
-        self.result_bar = QFrame()
-        self.result_bar.setObjectName("ResultBar")
-        rl = QHBoxLayout(self.result_bar)
-        rl.setContentsMargins(28, 12, 28, 12)
-        rl.setSpacing(10)
-        rlabel = QLabel("Prompt")
-        rlabel.setObjectName("ResultBarLabel")
-        rl.addWidget(rlabel)
-        self.result = QLineEdit()
-        self.result.setObjectName("ResultLine")
+        # The fused prompt arrives in a sheet, not a permanent strip: this
+        # tool's output is the clipboard, so the prompt is something you read
+        # once, copy, and dismiss. Nothing is written to disk.
+        self.sheet = QFrame(self)
+        self.sheet.setObjectName("FuseSheet")
+        self.sheet.setVisible(False)
+        sv = QVBoxLayout(self.sheet)
+        sv.setContentsMargins(24, 22, 24, 22)
+        sv.setSpacing(14)
+        sheet_head = QHBoxLayout(); sheet_head.setSpacing(10)
+        st = QLabel("One prompt, fused")
+        st.setObjectName("ResultHead")
+        sheet_head.addWidget(st)
+        sheet_head.addStretch(1)
+        close = QToolButton()
+        close.setObjectName("ChipRemove")
+        close.setText("×")
+        close.setFixedSize(24, 24)
+        close.setCursor(Qt.PointingHandCursor)
+        close.clicked.connect(self._close_sheet)
+        sheet_head.addWidget(close)
+        sv.addLayout(sheet_head)
+        self.result = QPlainTextEdit()
+        self.result.setObjectName("ResultBox")
         self.result.setReadOnly(True)
-        self.result.setPlaceholderText(
-            "Your ready-to-paste prompt will appear here."
-        )
-        rl.addWidget(self.result, 1)
+        self.result.setPlaceholderText("Your ready-to-paste prompt will appear here.")
+        self.result.setMinimumHeight(190)
+        sv.addWidget(self.result, 1)
+        foot = QHBoxLayout(); foot.setSpacing(10)
+        self.result_note = QLabel("")
+        self.result_note.setObjectName("MetaFaint")
+        self.result_note.setWordWrap(True)
+        foot.addWidget(self.result_note, 1)
         self.copy_btn = QPushButton("Copy")
-        self.copy_btn.setObjectName("SecondaryBtn")
-        self.copy_btn.setIcon(svg_icon("copy", TXT_HI, 14))
+        self.copy_btn.setObjectName("PrimaryBtn")
+        self.copy_btn.setIcon(svg_icon("copy", WINE_FG, 14))
         self.copy_btn.setCursor(Qt.PointingHandCursor)
         self.copy_btn.setEnabled(False)
         self.copy_btn.clicked.connect(self._copy_result)
-        rl.addWidget(self.copy_btn)
-        outer.addWidget(self.result_bar)
-        self.result_bar.setVisible(False)  # only after first generation
+        foot.addWidget(self.copy_btn)
+        sv.addLayout(foot)
+        apply_shadow(self.sheet, SHADOW_FLOAT)
 
         # Toast
         self.toast = QLabel(self)
@@ -287,37 +347,8 @@ class CameraPromptsPage(QWidget):
         self._filter = "all"
         self._update_chips()
         self._update_generate_btn()
-        self._set_multi(False)
+        self._sync_selection()
         QTimer.singleShot(0, self._reflow)
-
-    # ---- Mode toggle ----------------------------------------------------
-
-    def _set_multi(self, on: bool):
-        self._multi = on
-        # Sync toggle buttons silently in case this was called programmatically.
-        for b in (self.mode_single, self.mode_multi):
-            b.blockSignals(True)
-        self.mode_multi.setChecked(on)
-        self.mode_single.setChecked(not on)
-        for b in (self.mode_single, self.mode_multi):
-            b.blockSignals(False)
-
-        self.sel_row_wrap.setVisible(on)
-        if not on:
-            # Drop selections, hide result bar — back to a clean gallery.
-            self.selections.clear()
-            self._sync_card_states()
-            self.result_bar.setVisible(False)
-            self.result.clear()
-            self.copy_btn.setEnabled(False)
-            self.sub_label.setText(
-                "Click any shot to copy its prompt. "
-                "Switch to Combine to stack several and let Gemini fuse them."
-            )
-        else:
-            self.sub_label.setText(self.subtitle)
-            self._update_chips()
-            self._update_generate_btn()
 
     # ---- Filter pills ----------------------------------------------------
 
@@ -383,6 +414,8 @@ class CameraPromptsPage(QWidget):
         QTimer.singleShot(0, self._reflow)
         if self.toast.isVisible():
             self._reposition_toast()
+        if self.sheet.isVisible():
+            self._open_sheet()          # keep it centred
 
     def _on_scroll(self, _v: int):
         if self._scroll_spy_lock or self._filter != "all":
@@ -405,30 +438,39 @@ class CameraPromptsPage(QWidget):
     # ---- Selection logic -------------------------------------------------
 
     def _on_card_clicked(self, entry: dict):
-        if not self._multi:
-            # Single-click mode: copy the shot's clean description immediately.
-            text = _clean_description(entry["description"])
-            QApplication.clipboard().setText(text)
+        """A click copies. A ⌘-click gathers, or un-gathers."""
+        if not entry.get("gather"):
+            QApplication.clipboard().setText(_clean_description(entry["description"]))
             self._show_toast(f"Copied · {entry['tag']}")
             return
-        cat = entry["category"]
-        current = self.selections.get(cat)
-        if current and current["tag"] == entry["tag"]:
-            self.selections.pop(cat, None)
+        at = self._index_of(entry["tag"])
+        if at is not None:
+            self.picks.pop(at)
             self._show_toast(f"Removed · {entry['tag']}")
         else:
-            self.selections[cat] = {"tag": entry["tag"],
-                                    "description": entry["description"]}
-            self._show_toast(f"Added · {CATEGORY_LABELS[cat]}: {entry['tag']}")
+            self.picks.append({"tag": entry["tag"],
+                               "description": entry["description"],
+                               "category": entry["category"]})
+            self._show_toast(f"Gathered · {entry['tag']}  ({len(self.picks)})")
+        self._sync_selection()
+
+    def _index_of(self, tag: str) -> Optional[int]:
+        for i, p in enumerate(self.picks):
+            if p["tag"] == tag:
+                return i
+        return None
+
+    def _sync_selection(self):
         self._sync_card_states()
         self._update_chips()
         self._update_generate_btn()
+        self.gather_bar.setVisible(bool(self.picks))
 
     def _sync_card_states(self):
+        order = {p["tag"]: i + 1 for i, p in enumerate(self.picks)}
         for c in self.cards:
-            sel = (c.category in self.selections
-                   and self.selections[c.category]["tag"] == c.tag)
-            c.set_selected(sel)
+            n = order.get(c.tag, 0)
+            c.set_selected(bool(n), n)
 
     def _update_chips(self):
         # Drop existing chip widgets
@@ -439,26 +481,26 @@ class CameraPromptsPage(QWidget):
                 w.setParent(None)
                 w.deleteLater()
 
-        n = len(self.selections)
+        n = len(self.picks)
         if n == 0:
             self.chips_host.setVisible(False)
             self.clear_btn.setVisible(False)
+            self.order_hint.setVisible(False)
             return
         self.chips_host.setVisible(True)
         self.clear_btn.setVisible(True)
+        self.order_hint.setVisible(n > 1)
 
-        for cat in CATEGORY_ORDER:
-            if cat not in self.selections:
-                continue
-            e = self.selections[cat]
-            chip = QFrame()
-            chip.setObjectName("SelectionChip")
-            chip.setToolTip(f"{CATEGORY_LABELS[cat]}: {e['tag']}")
+        for i, e in enumerate(self.picks):
+            cat = e["category"]
+            chip = _OrderChip(i, self._reorder)
+            chip.setToolTip(f"{CATEGORY_LABELS.get(cat, cat)}: {e['tag']} — "
+                            "drag to reorder")
             hl = QHBoxLayout(chip)
             hl.setContentsMargins(12, 5, 6, 5)
             hl.setSpacing(8)
 
-            dot = QLabel("●")
+            dot = QLabel(str(i + 1))
             dot.setObjectName("ChipDot")
             hl.addWidget(dot)
             tag_lbl = QLabel(e["tag"])
@@ -469,7 +511,7 @@ class CameraPromptsPage(QWidget):
             rm.setText("×")
             rm.setCursor(Qt.PointingHandCursor)
             rm.setFixedSize(22, 22)
-            rm.clicked.connect(lambda _=False, c=cat: self._remove_selection(c))
+            rm.clicked.connect(lambda _=False, t=e["tag"]: self._remove_pick(t))
             hl.addWidget(rm)
             self.chips_layout.addWidget(chip)
             chip.show()  # ensure the new chip participates in the next layout pass
@@ -478,55 +520,74 @@ class CameraPromptsPage(QWidget):
         self.chips_host.updateGeometry()
         self.chips_host.adjustSize()
 
-    def _remove_selection(self, cat: str):
-        self.selections.pop(cat, None)
-        self._sync_card_states()
-        self._update_chips()
-        self._update_generate_btn()
-        # If they removed everything, also tear the result down.
-        if not self.selections:
-            self._dismiss_result()
+    def _remove_pick(self, tag: str):
+        at = self._index_of(tag)
+        if at is None:
+            return
+        self.picks.pop(at)
+        self._sync_selection()
+        if not self.picks:
+            self._close_sheet()
+
+    def _reorder(self, src: int, dst: int):
+        """Move the chip at `src` to `dst`.
+
+        Order changes the fused prompt, so this is a real edit rather than
+        cosmetics: a fused prompt reads differently when movement comes before
+        angle."""
+        if src == dst or not (0 <= src < len(self.picks)):
+            return
+        item = self.picks.pop(src)
+        dst = max(0, min(dst, len(self.picks)))
+        self.picks.insert(dst, item)
+        self._sync_selection()
 
     def _clear_selections(self):
-        had_any = bool(self.selections) or self.result_bar.isVisible()
-        self.selections.clear()
-        self._sync_card_states()
-        self._update_chips()
-        self._update_generate_btn()
-        self._dismiss_result()
+        had_any = bool(self.picks) or self.sheet.isVisible()
+        self.picks.clear()
+        self._sync_selection()
+        self._close_sheet()
+        self.result.clear()
+        self.copy_btn.setEnabled(False)
         if had_any:
             self._show_toast("Cleared")
 
-    def _dismiss_result(self):
-        self.result.clear()
-        self.copy_btn.setEnabled(False)
-        self.result_bar.setVisible(False)
+    def _copy_all(self):
+        """Every gathered description, in order, one per line — the honest
+        no-network version of Fuse."""
+        if not self.picks:
+            return
+        text = "\n".join(_clean_description(p["description"]) for p in self.picks)
+        QApplication.clipboard().setText(text)
+        self._show_toast(f"Copied all {len(self.picks)}")
 
     def _update_generate_btn(self):
-        n = len(self.selections)
-        self.gen_btn.setEnabled(n > 0)
-        self.gen_btn.setText("Combine" if n == 0 else f"Combine ({n})")
-
-    # ---- Generation ------------------------------------------------------
+        n = len(self.picks)
+        self.gen_btn.setEnabled(n > 0 and self._thread is None)
+        self.gen_btn.setText("Fuse with Gemini" if n == 0
+                             else f"Fuse {n} with Gemini")
+        self.copy_all_btn.setVisible(n > 0)
+        self.copy_all_btn.setText("Copy all" if n < 2 else f"Copy all {n}")
 
     def _on_generate(self):
-        if not self.selections or self._thread is not None:
+        if not self.picks or self._thread is not None:
             return
         key = read_env_value("GEMINI_API_KEY")
         if not key:
-            self.result_bar.setVisible(True)
-            self.result.setText(
+            self._open_sheet()
+            self.result.setPlainText(
                 "✗ No Gemini key — open Settings (gear icon on Home) and save your key first."
             )
             self.copy_btn.setEnabled(False)
             return
 
+        # In the operator's order, not the taxonomy's: that is the whole point
+        # of the numbered, draggable chips.
         bullets = []
-        for cat in CATEGORY_ORDER:
-            if cat in self.selections:
-                e = self.selections[cat]
-                clean = _clean_description(e["description"])
-                bullets.append(f"- {CATEGORY_LABELS[cat]} → {e['tag']}: {clean}")
+        for e in self.picks:
+            cat = e["category"]
+            clean = _clean_description(e["description"])
+            bullets.append(f"- {CATEGORY_LABELS.get(cat, cat)} → {e['tag']}: {clean}")
         bullets_text = "\n".join(bullets)
 
         user_prompt = (
@@ -550,8 +611,8 @@ class CameraPromptsPage(QWidget):
             "Now write the final prompt:"
         )
 
-        self.result_bar.setVisible(True)
-        self.result.setText("Generating…")
+        self._open_sheet()
+        self.result.setPlainText("Generating…")
         self.copy_btn.setEnabled(False)
         self.gen_btn.setEnabled(False)
         self.gen_btn.setText("Generating…")
@@ -578,21 +639,40 @@ class CameraPromptsPage(QWidget):
 
     @Slot(str)
     def _on_gemini_done(self, text: str):
+        session.note_gemini(self.title)
         compact = " ".join(text.split())  # collapse internal newlines
-        self.result_bar.setVisible(True)
-        self.result.setText(compact)
-        self.result.setCursorPosition(0)
+        self._open_sheet()
+        self.result.setPlainText(compact)
         self.result.setToolTip(compact)
         self.copy_btn.setEnabled(True)
         self._show_toast("Ready · hit Copy to use it")
 
     @Slot(str)
     def _on_gemini_failed(self, err: str):
-        self.result_bar.setVisible(True)
-        self.result.setText(f"✗ Gemini error: {err}")
+        self._open_sheet()
+        self.result.setPlainText(f"✗ Gemini error: {err}")
         self.result.setToolTip(err)
         self.copy_btn.setEnabled(False)
         self._show_toast("Generation failed")
+
+    # ---- the sheet ------------------------------------------------------
+    def _open_sheet(self):
+        """Centre the sheet over the gallery and show it."""
+        w = min(620, max(360, self.width() - 160))
+        h = min(420, max(280, self.height() - 200))
+        self.sheet.setFixedSize(w, h)
+        self.sheet.move((self.width() - w) // 2, (self.height() - h) // 2)
+        self.sheet.setVisible(True)
+        self.sheet.raise_()
+
+    def _close_sheet(self):
+        self.sheet.setVisible(False)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape and self.sheet.isVisible():
+            self._close_sheet()
+            return
+        super().keyPressEvent(e)
 
     def _copy_result(self):
         text = self.result.text().strip()
@@ -605,7 +685,10 @@ class CameraPromptsPage(QWidget):
     def _reposition_toast(self):
         self.toast.adjustSize()
         x = (self.width() - self.toast.width()) // 2
-        y = self.height() - self.toast.height() - 28
+        # Sit above the gathering bar when there is one, so the confirmation
+        # never covers the thing it is confirming.
+        bar_h = self.gather_bar.height() if self.gather_bar.isVisible() else 0
+        y = self.height() - bar_h - self.toast.height() - 24
         self.toast.move(max(10, x), max(10, y))
 
     def _show_toast(self, message: str):

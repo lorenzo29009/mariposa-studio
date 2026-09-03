@@ -89,9 +89,11 @@ class RoundedImage(QWidget):
 
 class PromptCard(QFrame):
     clicked = Signal(dict)
-    CARD_W = 196
-    CARD_H = 232
-    THUMB_H = 124
+    # Five per row in the 1200px window, with the picture given the room:
+    # (1200 − 56 padding − 4 × 14 gaps) ÷ 5.
+    CARD_W = 216
+    CARD_H = 248
+    THUMB_H = 132
 
     def __init__(self, entry: dict, category: str):
         super().__init__()
@@ -142,18 +144,29 @@ class PromptCard(QFrame):
             v.addWidget(desc_lbl)
         v.addStretch(1)
 
-    def set_selected(self, on: bool):
-        if on == self._selected:
-            return
+    def set_selected(self, on: bool, order: int = 0):
+        """`order` is the position in the gathering bar, 1-based.
+
+        The badge carries the number rather than a tick, because a fused prompt
+        reads differently when movement comes before angle — so the card has to
+        say *where* in the stack it is, not merely that it is in one."""
         self._selected = on
         self.setProperty("selected", on)
         self.style().unpolish(self)
         self.style().polish(self)
+        self.badge.setText(str(order) if order else "✓")
         self.badge.setVisible(on)
 
     def mouseReleaseEvent(self, e):
+        """Clicking copies; ⌘-clicking (Ctrl on Windows) gathers.
+
+        The modifier travels with the click so the page does not have to guess
+        at handler time — and there is no mode to enter and then remember to
+        leave, which was a tax on the fast case."""
+        mods = e.modifiers()
+        gather = bool(mods & (Qt.ControlModifier | Qt.MetaModifier))
         self.clicked.emit({"tag": self.tag, "description": self.description,
-                           "category": self.category})
+                           "category": self.category, "gather": gather})
         super().mouseReleaseEvent(e)
 
 

@@ -24,12 +24,13 @@ from PySide6.QtWidgets import (
 )
 
 from design import (
-    IRIS_FG, BG, PANEL, TEXT, ACCENT, load_fonts,
+    CANVAS, CARD_RAISED, TXT_HI, WINE, WINE_FG, load_fonts,
 )
 
 from stylesheet import build_stylesheet
 from core import (
-    APP_DIR, IS_WINDOWS, APP_USER_MODEL_ID, ensure_windows_shortcut,
+    APP_DIR, EXPORTS_DIR, IS_WINDOWS, APP_USER_MODEL_ID,
+    ensure_windows_shortcut, open_folder,
     FLOW_CROPPER_DIR, CAPTIONS_DIR, EXTRACT_DIR, CAMERA_PROMPT_DIR,
 )
 from flow_cropper_page import FlowCropperPage
@@ -37,15 +38,46 @@ from captions_page import CaptionsPage
 from extract_frame_page import ExtractFramePage
 from camera_page import CameraPromptsPage
 from animator_page import AnimatorPage
-from launcher import SettingsPage, LauncherPage, SpotlightOverlay
+from clip_cutter_page import ClipCutterPage, PIPELINE_AVAILABLE
+from launcher import LauncherPage, SpotlightOverlay
+from settings_page import SettingsPage
+from first_run import FirstRunPage, should_show as first_run_needed
 from updater import UpdateBanner, attach_updater
+
+
+# The window is deliberately fixed — every page is laid out for one size. But
+# "fixed" must never mean "taller than the screen": a Windows laptop at 1920x1080
+# with the usual 150% scaling reports 1280x720 logical pixels, and a 800px window
+# there would put the Run button under the taskbar with no way to resize. So take
+# the design size where it fits and the largest size that fits where it does not.
+WINDOW_W, WINDOW_H = 1200, 800
+# availableGeometry already excludes the menu bar, the Dock and the taskbar, so
+# the only thing left to leave room for is the window frame itself: a title bar
+# (~28px on macOS, ~31px on Windows) and the thin side borders. Keep this tight —
+# any larger and it would shrink the window on screens where 1200x800 does fit.
+_MARGIN_W, _MARGIN_H = 8, 36
+
+
+def _window_size() -> QSize:
+    """The design size, shrunk only as far as the screen actually requires."""
+    screen = QApplication.primaryScreen()
+    if screen is None:
+        return QSize(WINDOW_W, WINDOW_H)
+    avail = screen.availableGeometry()
+    # The floors are a sanity guard against a bogus 0x0 geometry, not a minimum
+    # anyone should hit — the screen always wins over the design size.
+    return QSize(min(WINDOW_W, max(640, avail.width() - _MARGIN_W)),
+                 min(WINDOW_H, max(480, avail.height() - _MARGIN_H)))
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mariposa Studio")
-        self.setFixedSize(QSize(980, 720))   # locked canvas, per request
+        # Larger and still fixed, as asked. Captions' log column, Clip Cutter's
+        # three buckets and Script Animator's script-plus-storyboard all want
+        # two columns, and 980 could not give them one.
+        self.setFixedSize(_window_size())
         self._anim_busy = False
 
         self.central = QWidget()
@@ -60,14 +92,18 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
 
+        # The fixed home order — and therefore what ⌘1–⌘6 mean. It never
+        # re-sorts by recency: a grid that moves under your hands costs more
+        # than it saves for people who already know where things are.
         specs = [
-            ("Flow Cropper",     "flow",     FlowCropperPage,    (FLOW_CROPPER_DIR / "crop.py").exists()),
-            ("Captions",         "caption",  CaptionsPage,       (CAPTIONS_DIR / "caption.py").exists()),
-            ("Extract Frame",    "frame",    ExtractFramePage,   (EXTRACT_DIR / "extract_last_frame.py").exists()),
-            ("Camera Prompts",   "camera",   CameraPromptsPage,  (CAMERA_PROMPT_DIR / "prompts.json").exists()),
-            ("Script Animator",  "animator", AnimatorPage,       True),
+            ("Script Animator",  "animator",   AnimatorPage,      True),
+            ("Camera Prompts",   "camera",     CameraPromptsPage, (CAMERA_PROMPT_DIR / "prompts.json").exists()),
+            ("Extract Frame",    "frame",      ExtractFramePage,  (EXTRACT_DIR / "extract_last_frame.py").exists()),
+            ("Flow Cropper",     "flow",       FlowCropperPage,   (FLOW_CROPPER_DIR / "crop.py").exists()),
+            ("Captions",         "caption",    CaptionsPage,      (CAPTIONS_DIR / "caption.py").exists()),
+            ("Clip Cutter",      "clipcutter", ClipCutterPage,    PIPELINE_AVAILABLE),
         ]
-        self._settings_index = len(specs) + 1   # launcher=0, tools=1..5, settings=6
+        self._settings_index = len(specs) + 1   # launcher=0, tools=1..N, settings=N+1
 
         self.launcher = LauncherPage(
             specs=specs,
@@ -76,19 +112,40 @@ class MainWindow(QMainWindow):
             on_spotlight=self._toggle_spotlight,
         )
         self.stack.addWidget(self.launcher)
-        for _label, _key, cls, _avail in specs:
-            self.stack.addWidget(cls(on_back=self._go_home))
+        self.pages: dict[str, QWidget] = {}
+        for _label, key, cls, _avail in specs:
+            page = cls(on_back=self._go_home)
+            self.pages[key] = page
+            self.stack.addWidget(page)
         self.stack.addWidget(SettingsPage(on_back=self._go_home))
+
+        # First run: one field and a look at what installs itself, shown only
+        # on a machine with neither a key nor a finished setup. It is the last
+        # page in the stack so every other index keeps its meaning.
+        self._first_run_index = self.stack.count()
+        self.stack.addWidget(FirstRunPage(on_done=self._leave_first_run))
         root.addWidget(self.stack, 1)
+        if first_run_needed():
+            self.stack.setCurrentIndex(self._first_run_index)
 
         # Spotlight overlay + system shortcuts
         entries = [(label, key, i) for i, (label, key, _c, _a) in enumerate(specs, start=1)]
         entries.append(("Settings", "settings", self._settings_index))
-        self.spotlight = SpotlightOverlay(self.central, entries, self._open_app)
+        self.spotlight = SpotlightOverlay(
+            self.central, entries, self._open_app,
+            actions=[
+                ("Open the scene panel over Chrome", "⌥⌘T", self._float_scene_panel),
+                ("Open the exports folder", "", lambda: open_folder(EXPORTS_DIR)),
+            ],
+        )
 
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self._toggle_spotlight)
         QShortcut(QKeySequence("Meta+K"), self, activated=self._toggle_spotlight)
         QShortcut(QKeySequence("Escape"), self, activated=self._go_home)
+        # The scene panel is the one thing you reach for while the app is *not*
+        # in front of you, so it gets a shortcut of its own.
+        QShortcut(QKeySequence("Ctrl+Alt+T"), self, activated=self._float_scene_panel)
+        QShortcut(QKeySequence("Meta+Alt+T"), self, activated=self._float_scene_panel)
         for i in range(1, len(specs) + 1):
             QShortcut(QKeySequence(f"Ctrl+{i}"), self, activated=lambda idx=i: self._open_app(idx))
             QShortcut(QKeySequence(f"Meta+{i}"), self, activated=lambda idx=i: self._open_app(idx))
@@ -142,6 +199,20 @@ class MainWindow(QMainWindow):
             return
         self._transition(0, 0.96)     # app shrinks away → launcher
 
+    def _leave_first_run(self):
+        self._transition(0, 0.96)
+
+    def _float_scene_panel(self):
+        """Open Script Animator's floating panel over whatever is in front.
+
+        A no-op with a spoken reason when there are no scenes yet — the panel
+        exists to keep your place across Flow generations, and there is no
+        place to keep before a build."""
+        page = self.pages.get("animator")
+        opener = getattr(page, "open_float_panel", None)
+        if callable(opener):
+            opener()
+
     def _toggle_spotlight(self):
         if self.spotlight.isVisible():
             self.spotlight.hide()
@@ -176,12 +247,12 @@ def main():
     load_fonts()
     app.setStyleSheet(build_stylesheet())
     pal = app.palette()
-    pal.setColor(QPalette.Window, QColor(BG))
-    pal.setColor(QPalette.WindowText, QColor(TEXT))
-    pal.setColor(QPalette.Base, QColor(PANEL))
-    pal.setColor(QPalette.Text, QColor(TEXT))
-    pal.setColor(QPalette.Highlight, QColor(ACCENT))
-    pal.setColor(QPalette.HighlightedText, QColor(IRIS_FG))
+    pal.setColor(QPalette.Window, QColor(CANVAS))
+    pal.setColor(QPalette.WindowText, QColor(TXT_HI))
+    pal.setColor(QPalette.Base, QColor(CARD_RAISED))
+    pal.setColor(QPalette.Text, QColor(TXT_HI))
+    pal.setColor(QPalette.Highlight, QColor(WINE))
+    pal.setColor(QPalette.HighlightedText, QColor(WINE_FG))
     app.setPalette(pal)
     win = MainWindow()
     win.show()

@@ -54,19 +54,26 @@ TRAIL_MIN = 0.0
 MIN_PIECE_DUR = 0.6
 
 # ─── Real-screen line width model ────────────────────────────────────────────
-# The .srt is rendered as a CapCut-style caption: bold black text on a white
-# rounded box, centred, 1–2 lines, on a 9:16 / 4:5 vertical video. Measuring
-# rendered boxes in a finished video (720-px-wide frame) gave a clean fit:
-# box width ≈ 26 px per "width unit" + ~15 px padding/side, and the style wraps
-# once a line passes ~80% of frame width — the widest rendered lines were
-# "Stoffwechsel wieder läuft" (25 chars) and "Behandlungs-regeln für die"
-# (26 chars), both ≈ 21 units. So we budget a line by *real width*, not by raw
-# character count: narrow German letters (i, l, t, r, f, …) cost ~half a wide
-# letter (m, w), and a line of 25–26 average chars fits where 20 was the old,
-# too-conservative cap.
+# A line is budgeted by *real width*, not by raw character count: narrow German
+# letters (i, l, t, r, f, …) cost ~half a wide letter (m, w), so 25 narrow chars
+# can fit where 20 wide ones do not.
+#
+# The BUDGET is the width at which the renderer itself wraps. Getting it wrong is
+# not cosmetic: a line over budget is re-wrapped downstream, and a 2-line caption
+# lands on screen as 3 or 4 lines. It was 22.5 for a long time, taken from an old
+# CapCut style (black text on a white rounded box, measured on a 720-px frame:
+# ≈26 px per unit + 15 px padding/side). The house style is now white text with a
+# black stroke in a box that wraps at `line_max_width` = 0.82 of the frame, and
+# that font is ~12% wider per unit. Measured on the rendered C1040:
+#     "und außer Herzrasen hat"     19.5 u  fits
+#     "ich habe mich gerade so"     19.9 u  fits
+#     "mit meinem Arzt gestritten"  20.7 u  WRAPS
+#     "und außer Herzrasen hat mir" 22.4 u  WRAPS
+# so the real ceiling sits just above 20. Re-measure (one screenshot of a burned
+# caption is enough) if the caption font or `line_max_width` ever changes.
 NARROW_CHARS = set("iIlj.,'!:;|ftr ()[]-")
 WIDE_CHARS = set("mwMW—")
-LINE_W_MAX = 22.5     # max width units on one visible line (~84% of frame width)
+LINE_W_MAX = 20.0     # max width units on one visible line (~82% of frame width)
 ORPHAN_W_MAX = 7.0    # a single word this narrow is too short to stand alone
 # A multi-word line can wrap at a space, so it may use the full LINE_W_MAX. A
 # single long compound word CANNOT — if its real (bold CapCut) width tops the
@@ -74,7 +81,7 @@ ORPHAN_W_MAX = 7.0    # a single word this narrow is too short to stand alone
 # 21 units / 25 chars, did exactly that). So a solo compound is hyphenated with a
 # safety margin BELOW the line budget; shorter ones ("Wassereinlagerungen",
 # 17.4) still sit whole on their own line.
-SOLO_WORD_W_MAX = 20.0
+SOLO_WORD_W_MAX = 17.5
 
 
 def text_width(s: str) -> float:
@@ -379,22 +386,24 @@ def pack_lines(text: str) -> str:
                 out += s
         return out
 
-    strict, relaxed = [], []
+    # Only splits where BOTH halves fit the budget are candidates. There used to be
+    # a "relaxed" pool here that accepted up to 1.35x the budget when no real split
+    # existed — it turned a caption that is simply too long for two lines into two
+    # over-wide lines, which the renderer then wrapped again into three or four.
+    # A caption this long is a segmentation problem (enforce_two_lines splits it);
+    # if one still reaches here, three lines inside the budget beat two outside it,
+    # because the renderer leaves those alone.
+    strict = []
     for split in range(1, n):
         a = build(0, split).rstrip()
         b = build(split, n).rstrip()
         wa, wb = text_width(a), text_width(b)
-        max_w = max(wa, wb)
-        diff = abs(wa - wb)
-        if max_w <= LINE_W_MAX:
-            strict.append((a, b, diff))
-        elif max_w <= LINE_W_MAX * 1.35:
-            relaxed.append((a, b, diff))
+        if max(wa, wb) <= LINE_W_MAX:
+            strict.append((a, b, abs(wa - wb)))
 
-    pool = strict or relaxed
-    if pool:
-        pool.sort(key=lambda x: x[2])
-        return pool[0][0] + "\n" + pool[0][1]
+    if strict:
+        strict.sort(key=lambda x: x[2])
+        return strict[0][0] + "\n" + strict[0][1]
 
     lines, current = [], ""
     for t, sep in tokens:
@@ -1228,10 +1237,13 @@ def _flat_text(seg: dict) -> str:
 
 
 def _fits_two_lines(text: str) -> bool:
-    """True if `text` packs into at most two lines that each fit the width
-    budget — i.e. it can absorb a merged orphan without overflowing."""
-    packed = pack_lines(text)
-    lines = packed.split("\n")
+    """True if `text` lands on at most two lines that each fit the width budget.
+
+    Mirrors what finalize_caption actually writes — auto-hyphenation included, so
+    a long compound that WILL be broken across the two lines is not counted as
+    overflowing. Used both to decide whether a caption can absorb a merged orphan
+    and to decide whether it must be split (enforce_two_lines)."""
+    lines = pack_lines(apply_auto_hyphenation(text)).split("\n")
     return len(lines) <= 2 and all(text_width(l) <= LINE_W_MAX for l in lines)
 
 
@@ -1675,23 +1687,47 @@ def _split_one_line(tokens: list) -> list:
     return [tokens[:k]] + _split_one_line(tokens[k:])
 
 
-def enforce_single_line(segments: list, words: list) -> list:
-    """Single-line mode: split any caption wider than one line into several
-    one-line captions at safe, balanced word boundaries, re-deriving each piece's
-    word-index range so timing stays correct. A piece that genuinely cannot fit
-    one line (a bound pair, or a single word wider than a line) is kept whole and
-    rendered on two lines by finalize_caption. This makes the one-line result
-    deterministic rather than relying on the model to count characters."""
+def _split_two_lines(tokens: list) -> list:
+    """Split a token list into the fewest consecutive pieces that each fit TWO
+    lines, cutting at the most BALANCED safe boundary — never right after a word
+    that binds to what follows. The two-line counterpart of _split_one_line: it
+    fires only on a caption too long for two lines, where the alternative is a
+    line over the budget that the renderer wraps again into three or four. A run
+    that cannot be broken safely is returned whole. Returns a list of token lists."""
+    if len(tokens) < 2 or _fits_two_lines(" ".join(tokens)):
+        return [tokens]
+    best = None
+    for k in range(1, len(tokens)):
+        if _binds_forward(tokens[k - 1]):
+            continue  # can't end a caption on a forward-binding word
+        left = tokens[:k]
+        if not _fits_two_lines(" ".join(left)):
+            continue  # left piece must itself fit to make progress
+        cost = abs(text_width(" ".join(left)) - text_width(" ".join(tokens[k:])))
+        if best is None or cost < best[0]:
+            best = (cost, k)
+    if best is None:
+        return [tokens]  # no safe break — keep whole
+    k = best[1]
+    return [tokens[:k]] + _split_two_lines(tokens[k:])
+
+
+def _enforce_width(segments: list, words: list, chunker, fits_whole) -> list:
+    """Split every caption `chunker` can break into narrower pieces, re-deriving
+    each piece's word-index range so timing stays correct. A piece that genuinely
+    cannot be reduced (a bound pair, or a single word wider than the budget) is
+    kept whole and laid out by finalize_caption. Shared by the one-line and the
+    two-line enforcement so both stay deterministic rather than relying on the
+    model to count characters."""
     out = []
     for seg in segments:
         flat = " ".join(flatten_lines(seg["text"]).split())
         tokens = flat.split()
         s, e = seg["start"], seg["end"]
-        chunks = _split_one_line(tokens) if len(tokens) >= 2 else [tokens]
-        # Need one distinct word index per chunk; if the caption already fits one
-        # line, can't be reduced, or spans fewer words than chunks, leave it whole.
-        if (text_width(flat) <= LINE_W_MAX or len(chunks) < 2
-                or len(chunks) > (e - s + 1)):
+        chunks = chunker(tokens) if len(tokens) >= 2 else [tokens]
+        # Need one distinct word index per chunk; if the caption already fits,
+        # can't be reduced, or spans fewer words than chunks, leave it whole.
+        if fits_whole(flat) or len(chunks) < 2 or len(chunks) > (e - s + 1):
             out.append({**seg, "text": flat})
             continue
         # Map token cut points to word indices ~1:1 within [s, e], strictly
@@ -1711,10 +1747,9 @@ def enforce_single_line(segments: list, words: list) -> list:
         for j, ch in enumerate(chunks):
             en = e if j == len(chunks) - 1 else starts[j + 1] - 1
             pieces.append({**seg, "start": starts[j], "end": en, "text": " ".join(ch)})
-        # Duration guard: a one-line piece that flashes by too briefly to read is
-        # WORSE than a readable two-line caption. If splitting would create such a
-        # piece, keep the caption whole (finalize lays it out on ≤2 lines). This is
-        # the "two lines only when needed" rule applied to timing, not just width.
+        # Duration guard: a piece that flashes by too briefly to read is WORSE than
+        # one wide caption. If splitting would create such a piece, keep the caption
+        # whole (finalize lays it out as best it can).
         def _piece_dur(p):
             try:
                 d = words[p["end"]]["end"] - words[p["start"]]["start"]
@@ -1726,6 +1761,24 @@ def enforce_single_line(segments: list, words: list) -> list:
             continue
         out.extend(pieces)
     return out
+
+
+def enforce_single_line(segments: list, words: list) -> list:
+    """Single-line mode: split any caption wider than one line into several
+    one-line captions at safe, balanced word boundaries. A piece that genuinely
+    cannot fit one line is kept whole and rendered on two lines."""
+    return _enforce_width(segments, words, _split_one_line,
+                          lambda t: text_width(t) <= LINE_W_MAX)
+
+
+def enforce_two_lines(segments: list, words: list) -> list:
+    """Hybrid mode: split any caption too long for TWO lines into several captions.
+
+    The SOP is two lines. Gemini is asked for 4-7 word units but nothing enforced
+    it, so a 10-word / 59-char caption reached the packer, which had no honest way
+    to lay it out — it emitted two over-wide lines and the renderer wrapped them
+    into four. This is the enforcement: fix the grouping, not the packing."""
+    return _enforce_width(segments, words, _split_two_lines, _fits_two_lines)
 
 
 def learn_and_relabel_case(segments: list) -> list:
@@ -1923,10 +1976,15 @@ def main():
     segments = split_emphasis_repeats(segments)
     segments = merge_orphans(segments)
     segments = merge_short_durations(segments, words)
-    # Single-line mode: deterministically break any still-too-wide caption into
-    # one-line pieces (timing re-derived), so we don't rely on the model to count.
+    # Deterministically break any still-too-wide caption into pieces (timing
+    # re-derived), so we don't rely on the model to count: one-line pieces in
+    # single-line mode, two-line pieces otherwise. Without this a caption the
+    # model grouped too generously reached the packer with no way to lay it out,
+    # and came out as over-wide lines the renderer wrapped a second time.
     if LINE_MODE == "1":
         segments = enforce_single_line(segments, words)
+    else:
+        segments = enforce_two_lines(segments, words)
     # German casing — two layers. First the deterministic learner (always; sets
     # LEARNED_UPPER, fixes obvious caption-initial words; the offline floor).
     segments = learn_and_relabel_case(segments)

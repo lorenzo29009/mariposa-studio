@@ -25,7 +25,41 @@ IS_LINUX   = sys.platform.startswith("linux")
 # --- Paths (modules live in src/, so the repo root is one level up from here) ---
 APP_DIR     = Path(__file__).resolve().parent.parent
 TOOLS_DIR   = APP_DIR / "tools"
-EXPORTS_DIR = APP_DIR / "exports"
+
+
+def _exports_dir() -> Path:
+    """Where every tool writes. `exports/` beside the app unless told otherwise.
+
+    The exports folder is the only thing this app leaves behind and it grows
+    forever, so Settings can point it somewhere with room — a drive, a synced
+    folder. Read once at import, deliberately: a path that moved under a
+    running job would be worse than one that needs a relaunch.
+
+    The .env file is read by hand here rather than through `read_env_value`,
+    which is defined further down and would make this a forward reference.
+    """
+    override = os.environ.get("MARIPOSA_EXPORTS_DIR", "").strip()
+    if not override:
+        env = TOOLS_DIR / "captions-de" / ".env"
+        try:
+            for line in env.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("MARIPOSA_EXPORTS_DIR="):
+                    override = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+        except OSError:
+            override = ""
+    if override:
+        try:
+            p = Path(override).expanduser()
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        except OSError:
+            pass          # unreachable drive, bad path — fall back, don't fail
+    return APP_DIR / "exports"
+
+
+EXPORTS_DIR = _exports_dir()
 
 
 def _venv_python(venv_dir: Path) -> Path:

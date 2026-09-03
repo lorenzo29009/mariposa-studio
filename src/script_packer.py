@@ -77,7 +77,7 @@ __all__ = [
     "infer_link", "leftover_symbols", "merge_scenes", "nearest_slot",
     "overruns", "pack_block", "pack_sentences", "parse_pronunciation",
     "pause_between", "performance_beats", "relabel", "set_duration",
-    "split_long_sentence", "split_scene", "split_sentences",
+    "best_seam", "split_long_sentence", "split_scene", "split_sentences",
     "timing_source", "verbatim_gaps",
 ]
 
@@ -588,6 +588,29 @@ def split_scene(scenes: list[dict], index: int, at: int,
     head["block"] = tail["block"] = block
     out = scenes[:index] + [head, tail] + scenes[index + 1:]
     return relabel(out)
+
+
+def best_seam(scene: dict) -> int:
+    """The sentence index a by-hand split should cut at, or 0 if there is none.
+
+    Offered by the scene card, so it has to be the cut a person would make: the
+    seam that leaves the two halves as even as possible (minimising the longer
+    half), with the strongest link grade breaking a tie. Cutting at the first
+    seam regardless — which is what the card used to offer — routinely put one
+    short sentence in a 4s clip and left the rest still over its ceiling, i.e.
+    a split that fixed nothing."""
+    sentences = scene.get("sentences") or []
+    if len(sentences) < 2:
+        return 0
+    best, best_key = 0, None
+    for at in range(1, len(sentences)):
+        head = _run_seconds(sentences[:at])
+        tail = _run_seconds(sentences[at:])
+        # A weaker link is a better place to cut, so the grade sorts ascending.
+        key = (max(head, tail), int(sentences[at].get("link", LINK_NEW_POINT)))
+        if best_key is None or key < best_key:
+            best, best_key = at, key
+    return best
 
 
 def set_duration(scenes: list[dict], index: int, seconds: int) -> list[dict]:

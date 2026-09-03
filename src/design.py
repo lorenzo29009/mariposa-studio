@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """Mariposa Studio — Design System (single source of truth).
 
-Brand:  "Club Paper" — Warm. Crafted. Unhurried.
-A warm paper-cream workspace with one bottle-green accent ("Court") and a
-serif display face (Fraunces) for big titles. No rainbow gradients; tools are
-told apart by a Lucide icon in a tinted chip.
+Brand:  "Atelier" — the tool wears the brand it makes ads for.
+miavola's own visual language: the same cream as the product photography, one
+wine accent, the butterfly mark, Cabinet Grotesk over Satoshi, 8px corners.
+No serif anywhere (Qt renders it badly at UI sizes), and no per-tool hues —
+a tool says *which tool* by the shape of its glyph, never by its colour.
+
+The one rule: **colour only ever marks what's running, what's done, or what
+stopped.** Identity comes from name and place. Four state colours exist —
+sage done, wine running, butter needs-a-look, red stopped — and nothing else
+on screen is coloured.
 
 Everything visual is derived from the tokens in this file:
   - COLORS / type / spacing / radii / shadows / motion  → design tokens
   - svg_icon()                                          → Lucide icon system
-  - build_stylesheet()                                  → the app-wide QSS
+  - build_stylesheet()  (stylesheet.py)                 → the app-wide QSS
 
-studio.py imports from here and never hard-codes a hex value. To re-skin the whole
-app, edit the tokens below — nothing else needs to change.
+Nothing outside this file hard-codes a hex value. To re-skin the whole app,
+edit the tokens below — nothing else needs to change.
 """
 from __future__ import annotations
 
@@ -28,146 +34,236 @@ ICON_DIR  = BRAND_DIR / "icons"
 FONT_DIR  = BRAND_DIR / "fonts"
 
 
+#: The families Qt actually registered from brand/fonts/, filled in by
+#: load_fonts(). Empty until it runs — and empty under the offscreen platform,
+#: where addApplicationFont() always fails. It is what lets the type check in
+#: `stylesheet.font_health()` tell "a face WE ship came out at the wrong
+#: weight" (our bug) from "a system face has no such weight" (not ours: the
+#: mono role is deliberately a host font).
+BUNDLED_FAMILIES: set[str] = set()
+
+
 def load_fonts() -> None:
     """Register the bundled brand fonts (brand/fonts/*.ttf) with Qt.
 
     Must run after QApplication exists and BEFORE the stylesheet is applied,
     otherwise Qt resolves the font-family names against system fonts and
-    silently falls back. Missing files are skipped."""
+    silently falls back. The paths must be absolute — Qt returns -1 for a
+    relative one. Missing files are skipped.
+
+    The TTFs are cut from the two variable sources in brand/fonts/_src/ by
+    scripts/build_fonts.py; see docs/BRAND.md.
+
+    Qt names each file from its TYPOGRAPHIC name records + usWeightClass, so one
+    file per weight collapses into a single family carrying four styles. The
+    names it chose are recorded in BUNDLED_FAMILIES rather than assumed.
+    """
     from PySide6.QtGui import QFontDatabase
     for ttf in sorted(FONT_DIR.glob("*.ttf")):
-        QFontDatabase.addApplicationFont(str(ttf))
+        fid = QFontDatabase.addApplicationFont(str(ttf.resolve()))
+        if fid != -1:
+            BUNDLED_FAMILIES.update(QFontDatabase.applicationFontFamilies(fid))
+
+
+def tint(hex_color: str, alpha: float) -> str:
+    """A QSS `rgba(...)` string — `hex_color` at `alpha` (0.0–1.0) opacity.
+
+    QSS has no color-mix, so every soft fill in the sheet comes from here
+    rather than from a second hard-coded hex."""
+    c = QColor(hex_color)
+    return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha:.3f})"
+
 
 # ===========================================================================
 # 1. COLOR TOKENS
 # ===========================================================================
-# Neutrals — a warm "club paper" ramp on light. Each step has one job.
-PAPER_CANVAS = "#F6F3EC"   # app background — warm cream
-PAPER_WELL   = "#0E1F19"   # deepest wells — console output stays a dark pit
-PAPER_PANEL  = "#FBFAF6"   # sticky bars / top chrome — near-white warm
-PAPER_CARD   = "#FFFFFF"   # cards, default raised surface
-PAPER_CARD2  = "#F1EDE3"   # hovered / selected surface
-PAPER_RAISED = "#FFFFFF"   # popovers, dropdown menus (deeper shadow, not darker)
-PAPER_LINE   = "#E5E0D3"   # subtle hairline divider
-PAPER_LINE2  = "#CFC9B9"   # stronger / hover border
+# --- Surfaces: the studio light. Warm cream, layered, never grey. ----------
+CANVAS      = "#FFFCF9"   # app background — the main ground everywhere
+CARD_SOFT   = "#FCF7F2"   # cards and asides on the canvas (light cream)
+CARD_RAISED = "#FFFFFF"   # cards that sit *on* a cream aside — the top layer
+BLUSH       = "#F6ECE8"   # blush aside: selected rows, wine-adjacent fills
+FILL        = "#EDE4D9"   # quiet fill / secondary button ground / progress track
+HAIRLINE    = "#F0E7DD"   # the 1px rule between regions
+RULE_SOFT   = "#F4ECE3"   # the even softer rule *inside* a card
+WELL        = "#FCF7F2"   # the log ground. Cream, in daylight — not a dark pit.
 
-# Text — a 4-step legibility ramp: green-cast ink on cream.
-TXT_HI       = "#13241D"   # headings, primary
-TXT_BODY     = "#33423A"   # body copy
-TXT_DIM      = "#67756C"   # secondary / labels
-TXT_FAINT    = "#98A39A"   # tertiary / placeholder
-TXT_DISABLED = "#BDC5BC"
+# --- Ink: a six-step warm-grey ramp. ---------------------------------------
+TXT_HI       = "#1A1714"   # headings, tool names
+TXT_STRONG   = "#2A2522"   # script lines, prompts — body at its most readable
+TXT_BODY     = "#3F3833"   # body copy, labels on cream
+TXT_DIM      = "#6B605A"   # secondary copy, explanatory second lines
+TXT_META     = "#8C8079"   # meta: counts, durations, "and 8 more"
+TXT_FAINT    = "#A99E93"   # faint meta, placeholders, shortcut hints
+TXT_DISABLED = "#B8ADA5"   # disabled text and dividers
 
-# Accent — "Court", one bottle green (from the reference brand). The ONLY brand
-# color. Used for the primary action, focus rings, selection, the signal dot.
-GREEN        = "#046C4E"
-GREEN_HI     = "#0B7F5E"   # hover
-GREEN_DIM    = "#03543C"   # pressed
-GREEN_FG     = "#FFFFFF"   # text/icon on green
-GREEN_TINT   = "rgba(4, 108, 78, 0.10)"    # soft fill behind selected things
-GREEN_TINT_HI = "rgba(4, 108, 78, 0.16)"
-GREEN_LINE   = "rgba(4, 108, 78, 0.45)"    # selection borders
+# --- The one accent: wine. -------------------------------------------------
+WINE         = "#7A3343"   # the primary action, the running state, every glyph
+WINE_HI      = "#8E4756"   # hover
+WINE_PRESSED = "#4A1F2A"   # pressed
+WINE_SOFT    = "#A45A6A"   # the lighter wine — eyebrows on cream, "Studio"
+WINE_FG      = "#FFFFFF"   # text/icon on wine
+WINE_TINT    = tint(WINE, 0.10)   # soft fill behind a selected thing
+WINE_TINT_HI = tint(WINE, 0.16)
+WINE_LINE    = "#E6CDD2"   # the selection outline (a solid, not a tint)
+GOLD_LIGHT   = "#EFD8AE"   # the only accent allowed *on* a wine ground
 
-# Semantic — deep enough to read on white cards and cream canvas.
-SUCCESS      = "#067647"
-SUCCESS_TINT = "rgba(6, 118, 71, 0.10)"
-WARNING      = "#B45309"
-DANGER       = "#D92D20"
-DANGER_TINT  = "rgba(217, 45, 32, 0.08)"
+# --- State. These four meanings are the only other colours in the app. -----
+DONE       = "#87A35D"   # sage — done, installed, generated
+DONE_TINT  = "#E6EFD9"   # the sage chip fill
+DONE_SOFT  = "#C4D6A8"   # the idle/ready dot: sage, at rest
+RUNNING    = WINE        # running · current — deliberately the same wine
+WAIT       = "#F4DC7A"   # butter — missing, unassigned, worth a look
+WAIT_TEXT  = "#9A7B1E"   # readable butter, for text on the butter chip
+WAIT_FILL  = "#FBEECA"   # the butter chip fill
+STOP       = "#B54D4D"   # stopped, failed, destructive
+STOP_FILL  = "#FBEEEE"   # the failure card ground
 
-# Per-tool hues — used ONLY as a small icon-chip tint + glyph color for wayfinding.
-# Never as a full-bleed gradient. Deepened so each reads on white at equal weight.
-TOOL_ACCENTS = {
-    "flow":     "#4F46E5",   # indigo  — Flow Cropper
-    "caption":  "#0284C7",   # sky     — Captions
-    "frame":    "#0F766E",   # teal    — Extract Frame
-    "camera":   "#B45309",   # amber   — Camera Prompts
-    "animator": "#7C3AED",   # violet  — Script Animator
-}
-# Lucide icon name per tool.
+# Lucide icon name per tool. One shape each, all in the same wine: the shape
+# distinguishes, the colour never does. New tool, new glyph, no new token.
 TOOL_ICONS = {
-    "flow":     "scissors",
-    "caption":  "captions",
-    "frame":    "film",
-    "camera":   "camera",
-    "animator": "clapperboard",
+    "animator":   "file-text",
+    "camera":     "video",
+    "frame":      "film",
+    "flow":       "crop",
+    "caption":    "captions",
+    "clipcutter": "scissors",
 }
+
+# The six per-tool hues are gone: indigo/sky/teal/amber/violet were a
+# wayfinding system nobody could perceive at 46px. Every tool is wine now.
+# The mapping survives only so call sites keep working while the badges are
+# removed screen by screen; it holds one colour, not six.
+TOOL_ACCENTS = {key: WINE for key in TOOL_ICONS}
 
 # ---------------------------------------------------------------------------
-# Back-compat aliases — names from the previous dark "Studio Instrument" theme
-# now point at the new tokens, so existing call sites keep working.
-INK_CANVAS   = PAPER_CANVAS
-INK_SUNKEN   = PAPER_WELL
-INK_PANEL    = PAPER_PANEL
-INK_SURFACE  = PAPER_CARD
-INK_SURFACE2 = PAPER_CARD2
-INK_RAISED   = PAPER_RAISED
-INK_BORDER   = PAPER_LINE
-INK_BORDER2  = PAPER_LINE2
-IRIS         = GREEN
-IRIS_HI      = GREEN_HI
-IRIS_DIM     = GREEN_DIM
-IRIS_FG      = GREEN_FG
-IRIS_TINT    = GREEN_TINT
-IRIS_TINT_HI = GREEN_TINT_HI
-IRIS_LINE    = GREEN_LINE
-BG         = PAPER_CANVAS
-PANEL      = PAPER_PANEL
-CARD       = PAPER_CARD
-CARD_HI    = PAPER_CARD2
-BORDER     = PAPER_LINE
+# Back-compat aliases. Names from the earlier "Club Paper" (green) and
+# "Studio Instrument" (dark) themes now point at Atelier tokens, so the
+# modules that still import them keep working. New code uses the names above.
+PAPER_CANVAS = CANVAS
+PAPER_WELL   = WELL
+PAPER_PANEL  = CANVAS
+PAPER_CARD   = CARD_RAISED
+PAPER_CARD2  = CARD_SOFT
+PAPER_RAISED = CARD_RAISED
+PAPER_LINE   = HAIRLINE
+PAPER_LINE2  = FILL
+INK_CANVAS   = CANVAS
+INK_SUNKEN   = WELL
+INK_PANEL    = CANVAS
+INK_SURFACE  = CARD_RAISED
+INK_SURFACE2 = CARD_SOFT
+INK_RAISED   = CARD_RAISED
+INK_BORDER   = HAIRLINE
+INK_BORDER2  = FILL
+GREEN         = WINE          # "Court green" is retired; the accent is wine
+GREEN_HI      = WINE_HI
+GREEN_DIM     = WINE_PRESSED
+GREEN_FG      = WINE_FG
+GREEN_TINT    = WINE_TINT
+GREEN_TINT_HI = WINE_TINT_HI
+GREEN_LINE    = WINE_LINE
+IRIS         = WINE
+IRIS_HI      = WINE_HI
+IRIS_DIM     = WINE_PRESSED
+IRIS_FG      = WINE_FG
+IRIS_TINT    = WINE_TINT
+IRIS_TINT_HI = WINE_TINT_HI
+IRIS_LINE    = WINE_LINE
+SUCCESS      = DONE
+SUCCESS_TINT = DONE_TINT
+WARNING      = WAIT_TEXT
+DANGER       = STOP
+DANGER_TINT  = STOP_FILL
+BG         = CANVAS
+PANEL      = CANVAS
+CARD       = CARD_RAISED
+CARD_HI    = CARD_SOFT
+BORDER     = HAIRLINE
 TEXT       = TXT_HI
 TEXT_DIM   = TXT_DIM
 TEXT_FAINT = TXT_FAINT
-ACCENT     = GREEN
-ACCENT_HI  = GREEN_HI
-OK_COLOR   = SUCCESS
-ERR_COLOR  = DANGER
+ACCENT     = WINE
+ACCENT_HI  = WINE_HI
+OK_COLOR   = DONE
+ERR_COLOR  = STOP
 
 # ===========================================================================
 # 2. TYPOGRAPHY
 # ===========================================================================
-# UI: Inter (bundled in brand/fonts/, registered by load_fonts()).
-# Display: Fraunces — the serif voice for big titles only (≥ ~16px).
-# Mono: a developer mono for console output and technical/numeric values.
-FONT_UI      = '"Inter", -apple-system, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Arial, sans-serif'
-FONT_DISPLAY = '"Fraunces", "Playfair Display", Georgia, serif'
-FONT_MONO    = '"JetBrains Mono", "SF Mono", "Menlo", "Consolas", monospace'
+# Display: Cabinet Grotesk — headings, tool names, the wordmark, big numbers.
+# Interface: Satoshi — everything else. Both bundled in brand/fonts/.
+# Mono: a *system* face, not a shipped one. It appears only where the text is
+# literally machine output: paths, logs, versions, clip keys.
+FONT_DISPLAY = '"Cabinet Grotesk", "Satoshi", "Inter", system-ui, sans-serif'
+FONT_UI      = '"Satoshi", "Inter", -apple-system, "Segoe UI", system-ui, sans-serif'
+FONT_MONO    = '"SF Mono", "Menlo", "Consolas", ui-monospace, monospace'
 
-# Type scale (px). Pair size + weight + tracking so headings stay tight.
+# Type scale (px). Size + weight + tracking travel together so a heading
+# can't be set tight at the wrong size.
 TYPE = {
-    "display": {"size": 30, "weight": 700, "spacing": "-0.6px"},
-    "title":   {"size": 20, "weight": 700, "spacing": "-0.3px"},
-    "heading": {"size": 15, "weight": 700, "spacing": "-0.2px"},
-    "body":    {"size": 13, "weight": 400, "spacing": "0px"},
-    "label":   {"size": 12, "weight": 600, "spacing": "0px"},
-    "caption": {"size": 11, "weight": 500, "spacing": "0px"},
-    "micro":   {"size": 10, "weight": 700, "spacing": "1.5px"},  # uppercase eyebrows
+    "hero":    {"size": 34, "weight": 600, "spacing": "-0.85px"},  # first-run, big numbers
+    "display": {"size": 26, "weight": 600, "spacing": "-0.55px"},  # first-run headline
+    "title":   {"size": 18, "weight": 600, "spacing": "-0.36px"},  # screen + tool titles
+    "toolname":{"size": 17, "weight": 600, "spacing": "-0.34px"},  # the home tiles
+    "section": {"size": 15, "weight": 600, "spacing": "-0.15px"},  # section headings
+    "body":    {"size": 14, "weight": 400, "spacing": "0px"},      # script lines, prompts
+    "label":   {"size": 13, "weight": 500, "spacing": "0px"},      # labels and buttons
+    "meta":    {"size": 13, "weight": 400, "spacing": "0px"},      # times, counts (12.5 in the
+                                                                   # board; Qt rounds fractional px)
+    "mono":    {"size": 12, "weight": 400, "spacing": "0px"},      # paths, logs
+    "eyebrow": {"size": 12, "weight": 600, "spacing": "1.2px"},    # uppercase eyebrows
+    # Kept so older call sites that ask for these roles still resolve.
+    "heading": {"size": 15, "weight": 600, "spacing": "-0.15px"},
+    "caption": {"size": 12, "weight": 400, "spacing": "0px"},
+    "micro":   {"size": 11, "weight": 600, "spacing": "1.1px"},
 }
 
 # ===========================================================================
 # 3. SPACE · RADIUS · SHADOW · MOTION
 # ===========================================================================
-# 4px spacing grid.
-SPACE = {1: 4, 2: 8, 3: 12, 4: 16, 5: 20, 6: 24, 8: 32, 10: 40}
+# The board's ramp: 4 · 8 · 12 · 16 · 22 · 28. Keys are the step number.
+SPACE = {1: 4, 2: 8, 3: 12, 4: 16, 5: 22, 6: 28, 8: 32, 10: 40}
 
-# Radii — tighter & more consistent than the old 18–20px everywhere.
-R_SM    = 8     # buttons, inputs, chips, pills
-R_MD    = 12    # cards, tiles, menus, console
-R_LG    = 16    # tiles / float panel
-R_XL    = 20    # large surfaces
-R_FULL  = 999   # circular
+# One rule: everything gets 8px. Cards get 12. Chips — and only chips — a pill.
+R_SM   = 8
+R_MD   = 12
+R_LG   = 12    # legacy name; collapsed onto the card radius
+R_XL   = 12    # legacy name; collapsed onto the card radius
+# The board writes the pill as 99px, which is how CSS says "fully round".
+# Qt is not CSS here: it *ignores* a border-radius bigger than half the box
+# rather than capping it, so 99px renders a square chip — and so does any
+# radius above half the chip's height. A pill therefore needs a *known*
+# height, which is why chips are given one: CHIP_H tall, R_FULL = half of it.
+CHIP_H = 26
+R_FULL = CHIP_H // 2
 
-# Shadows are applied via QGraphicsDropShadowEffect (Qt can't box-shadow in QSS).
-# On light, shadows are whisper-soft: a green-grey haze, never a hard drop.
-SHADOW_CARD  = {"blur": 24, "color": (24, 36, 30, 38), "y": 6}
-SHADOW_SM    = {"blur": 12, "color": (24, 36, 30, 30), "y": 3}
-SHADOW_POP   = {"blur": 40, "color": (24, 36, 30, 70), "y": 14}
+# Three shadows, applied via QGraphicsDropShadowEffect (QSS has no box-shadow).
+# Warm-tinted off the ink, never a grey haze and never a coloured glow.
+SHADOW_REST  = {"blur": 12, "color": (26, 23, 20, 26), "y": 2}   # a resting card
+SHADOW_SEL   = {"blur": 34, "color": (26, 23, 20, 34), "y": 8}   # selected / gathered
+SHADOW_FLOAT = {"blur": 62, "color": (26, 23, 20, 64), "y": 18}  # floating panel
+SHADOW_CARD  = SHADOW_REST   # legacy names
+SHADOW_SM    = SHADOW_REST
+SHADOW_POP   = SHADOW_FLOAT
 
-# Motion — short, confident, OutCubic.
-DUR_FAST = 120
-DUR_BASE = 180
-DUR_SLOW = 300
+# Motion — 220ms, ease-out, on geometry and opacity only.
+DUR_FAST = 140
+DUR_BASE = 220
+DUR_SLOW = 420
+
+
+def apply_shadow(widget, spec: dict = SHADOW_REST) -> None:
+    """Attach one of the SHADOW_* specs to a widget.
+
+    Centralised so the three shadow depths stay the only three in the app."""
+    from PySide6.QtWidgets import QGraphicsDropShadowEffect
+    from PySide6.QtGui import QColor as _QColor
+    eff = QGraphicsDropShadowEffect(widget)
+    eff.setBlurRadius(spec["blur"])
+    eff.setColor(_QColor(*spec["color"]))
+    eff.setOffset(0, spec["y"])
+    widget.setGraphicsEffect(eff)
+
 
 # ===========================================================================
 # 4. ICON SYSTEM (Lucide, rendered crisply at any size/color)

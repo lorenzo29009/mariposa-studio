@@ -184,7 +184,20 @@ without trouble.
 No estimator settles ±1 slot, so every scene row carries a clip-length menu
 (`set_duration`, pinned lengths survive edits), *merge with the next clip*
 (`merge_scenes`, refused across blocks) and a *cut here* button per sentence
-seam (`split_scene`). Scenes therefore keep the `sentences` they were built
+seam (`split_scene`).
+
+- **The only length a clip can be wrong for is its own.** Every slot 4/6/8/10 is
+  one generation, so there is no separate "window" a clip has to fit inside and
+  nine seconds of copy is not a problem — it is a 10 s clip. A card therefore
+  offers *Split here* exactly when `est > ceiling(duration)`, the same test as
+  `overruns()`/`flag_for` and the same one the export refuses on, so the meter,
+  the dot, the warning and the export can never disagree. (This replaced a fixed
+  `FLOW_WINDOW = 8`, which called well-packed 10 s clips broken and said they
+  "will need two generations".)
+- **The seam it offers is `best_seam()`**, the cut that leaves the two halves as
+  even as possible with the link grade breaking ties. Offering seam 1 regardless
+  — what the button used to do — routinely stranded one short sentence in a 4 s
+  clip and left the rest still over its ceiling: a split that fixed nothing. Scenes therefore keep the `sentences` they were built
 from — that, plus lengths from the measured clock, is why the session log is
 **`LOG_VERSION = 4`** (`animator_common.py`) and a v3 log is not carried
 forward: its lengths came from the old predictor, which ran ~16 % fast.
@@ -288,12 +301,34 @@ the calm comes from white cards on cream, hairline separators and a single
 accent, never from more boxes:
 
 - **Stage 1 — Script.** Four sections (Hooks · Body · Call to action · Shot
-  style), each an eyebrow line (title · hint · count) over **one** `#AniCard`.
+  style), each an eyebrow line (title · hint · count) over **one** `#AniCard`,
+  and a narrow right-hand column with the ad's runtime.
   A `BlockRow` is a screenplay row inside that card: a mono gutter tag (green
   once filled), chromeless auto-growing copy, a trash button, and a hairline as
   the separator — no editor-inside-a-card-inside-a-card. "Add a hook" is a quiet
   text action in the same card, and it hides at the cap rather than greying out.
   The footer holds the one primary action.
+- **The cards need an edge.** `CARD_RAISED` (white) on `CANVAS` (`#FFFCF9`) is a
+  one per cent step: on its own it is not a card, and a page of blocks reads as
+  one flat field — which is what made the tool hard to use. So `#AniCard` and
+  `#SceneCard` carry a 1px `FILL` edge *and* `SHADOW_REST`, the row separator is
+  `FILL` rather than `RULE_SOFT` (inside a white card the softer rule is
+  invisible), and the gutter tag carries the state: `TXT_META` empty, `TXT_BODY`
+  filled, `WINE` while that row has the caret. The caret marker is on the **tag**
+  and not the row's background on purpose — the first and last rows sit flush
+  against the card's rounded corners and would paint square ones over them.
+- **Spoken length while you write.** Each row shows its own length and clip count
+  (`BlockRow.set_timing`), and the right-hand column shows the **runtime of the
+  ad** — but only once there *is* an ad (a hook, the body and a CTA); until then
+  it says what is missing, because a total that climbs as you type reads as an
+  answer when it is a subtotal. A hook is an alternative opening, so the total is
+  the longest of the hook × CTA combinations and the line underneath names which
+  one. It is all `pack_block` + `speech_clock` — measured, cached, offline, no
+  Gemini — which is why it can run on a 420 ms debounce. Two rules it earned:
+  `_recompute_timing` must end in `_sync_scrolls()` (the chips appear a beat
+  after the keystroke and take width off the copy, so an unmeasured row hides its
+  last line), and a wrapping `QLabel` in the column needs its height pinned from
+  `heightForWidth` for the same reason `fit_scroll_content` exists.
 - **Stage 2 — Scenes.** A bar (← Script · Scenes · `N scenes · runtime` ·
   Export · Floating window) over one `SceneCard` per clip, grouped by block with
   an eyebrow + rule. A card shows the clip length pill, the label, the beat and
@@ -320,7 +355,11 @@ accent, never from more boxes:
 
 - A `BlockRow` must re-run `_autogrow()` on **resize** — the wrap point moves
   with the width, and a row measured before the column was laid out clips its
-  copy behind an inner scrollbar.
+  copy behind an inner scrollbar. **The editor's own resize counts too**
+  (`eventFilter`): the length chip appears after the row exists and narrows the
+  editor without changing the row. The inner scrollbar is switched off below the
+  height cap, since below it the row grows to fit and the bar was a sliver of
+  chrome beside every filled line.
 - The centred column is done with the scroll holder's own **margins**
   (`AnimatorPage._centre()`), not a nested stretch layout, so
   `fit_scroll_content()` still measures the children at exactly the width they

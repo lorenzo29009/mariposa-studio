@@ -278,6 +278,31 @@ def normalize_creative_id(value: str) -> str:
     return v
 
 
+# Characters Windows refuses in a filename. macOS only objects to "/" and ":",
+# so a briefing field holding "Problem/Solution" or "Worth it?" produced a name
+# that saved fine on a Mac and raised OSError on Windows. Every generated name
+# goes through here, including the sentinel _build_index_pattern renders, so the
+# two platforms agree on what a run has already produced.
+_FS_ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+# Reserved device names: CON, PRN, AUX, NUL, COM1-9, LPT1-9 — with or without an
+# extension, a file so named cannot exist on Windows.
+_FS_RESERVED = re.compile(r'^(con|prn|aux|nul|com[1-9]|lpt[1-9])$', re.I)
+
+
+def fs_safe(name: str) -> str:
+    """`name` as a filename both platforms accept. Same string when it already is."""
+    stem, dot, ext = name.rpartition(".")
+    if not dot:                          # no extension — treat it all as the stem
+        stem, ext = name, ""
+    stem = _FS_ILLEGAL.sub("-", stem)
+    # Windows silently drops trailing dots and spaces, which would make the name
+    # the app looks for and the name on disk disagree.
+    stem = stem.rstrip(" .")
+    if _FS_RESERVED.match(stem):
+        stem += "_"
+    return f"{stem}.{ext}" if ext else stem
+
+
 def creative_name(aspect: str, creative_id: str, i: int, *, ad_format: str,
                   avatar: str, angle: str, creator: str, awareness: str,
                   product: str, cta: str = "") -> str:
@@ -285,7 +310,7 @@ def creative_name(aspect: str, creative_id: str, i: int, *, ad_format: str,
     Cr906…), used verbatim. `creator` is optional (AI creatives have none)."""
     creator_part = f"_{creator}" if creator else ""
     cta_part = f"-{cta}" if cta else ""
-    return (
+    return fs_safe(
         f"{ad_format} - {avatar} - {angle} - {aspect}{creator_part}_{creative_id}{cta_part}-{i} "
         f"- {awareness} - {product}.mp4"
     )
@@ -297,7 +322,7 @@ def simple_name(aspect: str, creative_id: str, i: int, *, fmt: str,
         {aspect} - {id}[-{CTA}]-{i} - {format}.mp4
     e.g.  9x16 - AI63-2 - Pharmacist.mp4  /  9x16 - AI63-CTA1-2 - Pharmacist.mp4"""
     cta_part = f"-{cta}" if cta else ""
-    return f"{aspect} - {creative_id}{cta_part}-{i} - {fmt}.mp4"
+    return fs_safe(f"{aspect} - {creative_id}{cta_part}-{i} - {fmt}.mp4")
 
 
 # ── Processing ────────────────────────────────────────────────────────────────
