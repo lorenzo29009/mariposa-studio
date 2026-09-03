@@ -187,10 +187,20 @@ stay that way unless explicitly asked.
 
 ## Adding a new tool
 
-Subclass `ToolPage` in a new `src/<tool>_page.py` (or write a bespoke `QWidget`
-starting with an `AppBar`), register it in the `specs` list in
-`MainWindow.__init__` (`src/studio.py`), and add its hue/icon/tagline in
-`src/design.py`. See README "Adding a new tool".
+1. Subclass `ToolPage` (`src/tool_page.py`) in a new `src/<tool>_page.py` — for
+   an input -> action -> output "job runner" — or build a bespoke `QWidget` that
+   starts with an `AppBar`. Set `title`, `subtitle`, `tool_key` and
+   `action_label`; build the form in `build_form()`; return
+   `(program, args, cwd)` from `build_command()`.
+2. Add a `("Name", "key", ClassName, available)` entry to the `specs` list in
+   `MainWindow.__init__` (`src/studio.py`). That alone puts it on the launcher,
+   in the Cmd-K overlay, and gives it a `Cmd-n` shortcut.
+3. Register its look in `src/design.py`: an icon name in `TOOL_ICONS["key"]` and
+   a one-liner in `APP_TAGLINES["key"]` (`TOOL_ACCENTS` holds one colour now,
+   not six -- see `docs/DESIGN.md`).
+
+That is the whole extension surface. Keep the tool itself self-contained under
+`tools/`; the Studio only shells out to it.
 
 ## Not done yet
 
