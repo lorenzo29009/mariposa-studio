@@ -60,15 +60,15 @@ Captions DE: WhisperX + Gemini -> .srt, run in the separate WhisperX venv.
 
 `whisperx_arch_ok`:37 · `CaptionsPage`:83 · `CaptionsPage.build_form`:122 · `CaptionsPage.validate`:305 · `CaptionsPage.build_command`:323 · `CaptionsPage.advance_batch`:346 · `CaptionsPage.env_lines`:355 · `CaptionsPage.can_fix`:372 · `CaptionsPage.apply_fix`:375 · `CaptionsPage.after_finished`:393 · `CaptionsPage.progress_from_line`:445
 
-### `src/clip_cutter_page.py` — 1071 lines
+### `src/clip_cutter_page.py` — 1109 lines
 Clip Cutter: assemble a UGC creative from a clip folder and hand it to CapCut.
 
-`ClipCutterPage`:215 · `ClipCutterPage.build_form`:313 · `ClipCutterPage.validate`:905 · `ClipCutterPage.build_command`:935 · `ClipCutterPage.after_finished`:978 · `ClipCutterPage.can_fix`:1013 · `ClipCutterPage.apply_fix`:1062
+`hook_number`:185 · `ClipCutterPage`:227 · `ClipCutterPage.build_form`:326 · `ClipCutterPage.validate`:943 · `ClipCutterPage.build_command`:973 · `ClipCutterPage.after_finished`:1016 · `ClipCutterPage.can_fix`:1051 · `ClipCutterPage.apply_fix`:1100
 
-### `src/clip_cutter_widgets.py` — 528 lines
+### `src/clip_cutter_widgets.py` — 536 lines
 Clip Cutter's drag-and-drop assembly widgets.
 
-`video_urls`:38 · `register_thumb`:63 · `ClipChip`:101 · `PoolCard`:154 · `DropArea`:172 · `DropArea.names`:215 · `DropArea.set_names`:218 · `DropArea.add_name`:222 · `DropArea.remove_name`:228 · `BodyStrip`:368 · `SlotRow`:397 · `SlotRow.set_code`:458 · `SlotRow.names`:462 · `SlotRow.headline_text`:465 · `DropCue`:469 · `DashedButton`:522
+`video_urls`:39 · `register_thumb`:64 · `ClipChip`:102 · `PoolCard`:162 · `DropArea`:180 · `DropArea.names`:223 · `DropArea.set_names`:226 · `DropArea.add_name`:230 · `DropArea.remove_name`:236 · `BodyStrip`:376 · `SlotRow`:405 · `SlotRow.set_code`:466 · `SlotRow.names`:470 · `SlotRow.headline_text`:473 · `DropCue`:477 · `DashedButton`:530
 
 ### `src/core.py` — 373 lines
 Shared foundation for Mariposa Studio: paths, the .env helpers, and the small platform/icon helpers used across every page module.
@@ -80,10 +80,10 @@ Mariposa Studio — Design System (single source of truth).
 
 `load_fonts`:46 · `tint`:68 · `apply_shadow`:255 · `svg_icon`:293 · `svg_pixmap`:298 · `app_accent`:303 · `primary_button_style`:309 · `brand_pixmap`:318
 
-### `src/diagnostics.py` — 407 lines
+### `src/diagnostics.py` — 414 lines
 One error report, complete enough to fix a bug from — and safe to paste.
 
-`redact`:83 · `note_log`:101 · `note_error`:108 · `last_error`:120 · `report`:194 · `save_report`:266 · `start_log`:347 · `install_hooks`:372
+`redact`:83 · `note_log`:101 · `note_error`:108 · `last_error`:120 · `report`:194 · `save_report`:266 · `start_log`:351 · `install_hooks`:376
 
 ### `src/extract_frame_page.py` — 367 lines
 Extract Frame: pull the last, first, random or every-N-seconds frame (OpenCV).
@@ -155,10 +155,10 @@ The app-wide QSS, built from the tokens in `design`.
 
 `build_stylesheet`:34 · `font_pairs`:1015 · `font_health`:1038 · `font_problems`:1072
 
-### `src/tool_page.py` — 582 lines
+### `src/tool_page.py` — 597 lines
 `ToolPage` — the base every subprocess-backed tool page is built on.
 
-`ToolPage`:86 · `ToolPage.build_side`:209 · `ToolPage.env_lines`:213 · `ToolPage.set_env_lines`:219 · `ToolPage.build_form`:224 · `ToolPage.build_command`:227 · `ToolPage.validate`:230 · `ToolPage.after_finished`:240 · `ToolPage.extra_action_buttons`:243 · `ToolPage.add_row`:248 · `ToolPage.add_widget`:254 · `ToolPage.settings_card`:258 · `ToolPage.group_label`:268 · `ToolPage.section_heading`:274 · `ToolPage.grid_2col`:280 · `ToolPage.divider`:300 · `ToolPage.progress_from_line`:376 · `ToolPage.on_output_line`:406 · `ToolPage.log_text`:433 · `ToolPage.advance_batch`:437 · `ToolPage.clear_cards`:496 · `ToolPage.show_result`:501 · `ToolPage.record_artefact`:508 · `ToolPage.show_failure`:511 · `ToolPage.can_fix`:566 · `ToolPage.apply_fix`:571
+`ToolPage`:86 · `ToolPage.build_side`:212 · `ToolPage.env_lines`:216 · `ToolPage.set_env_lines`:222 · `ToolPage.build_form`:227 · `ToolPage.build_command`:230 · `ToolPage.validate`:233 · `ToolPage.after_finished`:243 · `ToolPage.extra_action_buttons`:246 · `ToolPage.add_row`:251 · `ToolPage.add_widget`:257 · `ToolPage.settings_card`:261 · `ToolPage.group_label`:271 · `ToolPage.section_heading`:277 · `ToolPage.grid_2col`:283 · `ToolPage.divider`:303 · `ToolPage.progress_from_line`:383 · `ToolPage.on_output_line`:413 · `ToolPage.log_text`:440 · `ToolPage.advance_batch`:444 · `ToolPage.clear_cards`:506 · `ToolPage.show_result`:511 · `ToolPage.record_artefact`:518 · `ToolPage.show_failure`:521 · `ToolPage.can_fix`:581 · `ToolPage.apply_fix`:586
 
 ### `src/updater.py` — 315 lines
 In-app auto-update for Mariposa Studio (Strategy A: source overlay).
@@ -202,20 +202,25 @@ Headless smoke test: construct and show MainWindow offscreen, then quit.
 
 _No public symbols._
 
-### `scripts/test_clipcutter_gate.py` — 140 lines
+### `scripts/test_clipcutter_gate.py` — 190 lines
 The one thing Clip Cutter can still ask of a person, and how it asks.
 
-`check`:48 · `make_project`:53
+`check`:49 · `make_project`:54 · `card_buttons`:155
 
 ### `scripts/test_clock.py` — 209 lines
 Offline checks for speech_clock — no Qt, no network, no API key.
 
 `check`:33
 
-### `scripts/test_diagnostics.py` — 146 lines
+### `scripts/test_diagnostics.py` — 153 lines
 Is the error report complete — and is it safe to paste?
 
 `check`:41
+
+### `scripts/test_export_geometry.py` — 106 lines
+What the exporter inherits from the donor project, and what it must not.
+
+`check`:32
 
 ### `scripts/test_failures.py` — 64 lines
 Offline checks for the failure table (no Qt, no display needed).
@@ -334,10 +339,10 @@ edits.json — the human+auto edit overlay that survives re-planning.
 
 `path_for`:27 · `load_edits`:31 · `save_edits`:42 · `next_cut_id`:46 · `append_cut`:57 · `project`:85 · `bake_src_cuts`:148 · `apply_removals_to_clips`:180 · `effective_plan`:210
 
-### `tools/clip-cutter/scripts/export_capcut.py` — 1335 lines
+### `tools/clip-cutter/scripts/export_capcut.py` — 1360 lines
 Export a caption-ugc edit as a CapCut project, for manual revision by an editor.
 
-`gid`:49 · `us`:53 · `newest_template`:60 · `place_media`:112 · `describe_media`:141 · `make_cover`:152 · `cover_source`:177 · `audible`:193 · `pick_video_template`:209 · `pick_text_template`:236 · `template_token`:266 · `clone_extras`:297 · `build_text_content`:316 · `make_caption`:334 · `house_layout`:371 · `check_caption_widths`:396 · `make_headline`:433 · `wrap_headline`:459 · `build_timeline`:476 · `make_compound`:585 · `collect_media`:642 · `write_project`:662 · `meta_path`:719 · `reclaim`:738 · `register`:766 · `main`:820
+`gid`:49 · `us`:53 · `newest_template`:60 · `place_media`:112 · `describe_media`:141 · `make_cover`:152 · `cover_source`:177 · `as_shot`:204 · `pick_video_template`:234 · `pick_text_template`:261 · `template_token`:291 · `clone_extras`:322 · `build_text_content`:341 · `make_caption`:359 · `house_layout`:396 · `check_caption_widths`:421 · `make_headline`:458 · `wrap_headline`:484 · `build_timeline`:501 · `make_compound`:610 · `collect_media`:667 · `write_project`:687 · `meta_path`:744 · `reclaim`:763 · `register`:791 · `main`:845
 
 ### `tools/clip-cutter/scripts/fix.py` — 312 lines
 fix.py — the fast correction loop. One short command per fix, then `build.py`.

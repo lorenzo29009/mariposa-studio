@@ -39,6 +39,7 @@ app = QApplication.instance() or QApplication([])
 import failures                             # noqa: E402
 import studio                               # noqa: E402
 import clip_cutter_page as ccp              # noqa: E402
+from tool_page import ToolPage             # noqa: E402
 sys.path.insert(0, str(ccp.PIPELINE_SCRIPTS))
 import portable                             # noqa: E402
 
@@ -117,6 +118,55 @@ for name, (title, body, fix, label) in ccp._FIX_HINTS.items():
         continue                       # only reachable from a broken install
     check("'%s' offers a button" % name, bool(fix and label), f"{label!r}")
     check("'%s' is honoured by the page" % name, page.can_fix(fix), fix)
+
+print("\na hook lands in the slot its own filename names")
+# The reported case: h1 misnamed, h2..h5 correct. Filling slots in list order
+# put h2 in H1 — and the slot number names the variant in the export, so every
+# variant was delivered under the wrong name.
+folder = TMP / "hooks-only"
+folder.mkdir(exist_ok=True)
+for stem in ("h1test", "h2", "h3", "h4", "h5"):
+    (folder / (stem + ".mp4")).write_bytes(b"x")
+page._on_folder(str(folder))
+slots = {i: r.names() for i, r in enumerate(page._hook_rows, 1)}
+check("H1 is left empty, not back-filled", slots.get(1) == [], str(slots.get(1)))
+for n in (2, 3, 4, 5):
+    check("h%d is in slot H%d" % (n, n), slots.get(n) == ["h%d" % n],
+          str(slots.get(n)))
+check("the unmatched clip waits in Unassigned", page.pool.names() == ["h1test"],
+      str(page.pool.names()))
+
+print("\nunnumbered names still fill in order (the old behaviour, kept)")
+plain_folder = TMP / "plain"
+plain_folder.mkdir(exist_ok=True)
+for stem in ("intro", "middle", "outro"):
+    (plain_folder / (stem + ".mp4")).write_bytes(b"x")
+page._on_folder(str(plain_folder))
+check("nothing is lost when no name carries a number",
+      sorted(page.pool.names()) == ["intro", "middle", "outro"],
+      str(page.pool.names()))
+
+print("\na form that isn't filled in is NOT dressed as a crash")
+page._folder = folder
+page._on_folder(str(folder))
+page._on_run()
+
+from PySide6.QtWidgets import QPushButton
+def card_buttons():
+    return [b.text() for b in page.findChildren(QPushButton)
+            if b.text() and b.parent() is not None
+            and type(b.parent().parent()).__name__ == "FailureCard"]
+
+labels = [b.text() for b in page.findChildren(QPushButton)]
+check("the state says not-ready, not stopped",
+      page.STATUS_LABELS["notready"] == "Not ready yet")
+# The reported complaint: an unfilled form showed a card AND a duplicate red
+# log line AND a "Copy error report" button for something no maintainer can fix.
+check("no 'Copy error report' is offered for an unfilled form",
+      "Copy error report" not in labels, str([l for l in labels if "report" in l]))
+check("...and the same sentence is not printed a second time in the log",
+      sum(1 for l in page._log_buffer if "still empty" in l) == 0,
+      str(page._log_buffer[-3:]))
 
 print("\nwhen a run succeeds, the user is told WHERE the result is")
 page._name = "C1042"

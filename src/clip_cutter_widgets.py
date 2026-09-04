@@ -21,6 +21,7 @@ from PySide6.QtGui import (QColor, QDrag, QPainter, QPainterPath, QPen,
                            QPixmap)
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)
+from shiboken6 import isValid
 
 from design import (
     PAPER_LINE, PAPER_LINE2, R_MD, R_SM, SPACE, TXT_DIM, TXT_HI, WINE,
@@ -144,6 +145,13 @@ class ClipChip(QFrame):
         drag.setHotSpot(self._press)
         self.setCursor(Qt.ClosedHandCursor)
         drag.exec(Qt.MoveAction)
+        # `drag.exec()` BLOCKS until the drop is finished, and the drop handler
+        # rebuilds the board — which deletes this very chip. So by the time this
+        # returns, `self` may be a Python wrapper around a freed C++ object, and
+        # touching it raises "Internal C++ object (PoolCard) already deleted".
+        # It surfaced as a crash on every successful drag out of the pool.
+        if not isValid(self):
+            return
         self.setCursor(Qt.OpenHandCursor)
         self._press = None
 

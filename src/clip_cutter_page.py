@@ -182,8 +182,20 @@ RE_BODY = re.compile(r"^C?\d*B(\d+)$", re.I)
 RE_CTA = re.compile(r"^C?\d*CTA(\d+)(?:[._-](\d+))?$", re.I)
 
 
+def hook_number(stem: str) -> int:
+    """The N in `h3` / `C1H3`, or 0 when the name doesn't carry one."""
+    m = RE_HOOK.match(stem)
+    return int(m.group(1)) if m else 0
+
+
 def _sort_clips(stems: list[str]) -> tuple[list[str], list[str], dict, list[str]]:
-    """-> (hooks, body, {cta_code: [parts]}, unassigned) from the filenames alone."""
+    """-> (hooks, body, {cta_code: [parts]}, unassigned) from the filenames alone.
+
+    `hooks` is ordered by the number in the name, and that number is what
+    decides which SLOT the clip lands in — see `_place_hooks`. Filling slots in
+    list order instead put `h2` in H1 whenever `h1` was missing or misnamed,
+    which silently renamed every variant in the export.
+    """
     hooks, body, ctas, pool = [], [], {}, []
     for s in stems:
         m = RE_CTA.match(s)
@@ -222,6 +234,7 @@ class ClipCutterPage(ToolPage):
     action_label = "Export CapCut project"
 
     START_HOOKS = 3          # the board opens with three empty hooks to fill
+    MAX_HOOK_SLOTS = 12      # beyond this, honouring the numbers is a wall of empty rows
     START_CTAS = 1           # ...and the one ending every ad has
     LANGUAGES = ["German", "English", "Italiano", "Français"]
     LANG_CODES = {"German": "de", "English": "en", "Italiano": "it", "Français": "fr"}
@@ -650,10 +663,7 @@ class ClipCutterPage(ToolPage):
         for row in list(self._cta_rows):
             self._remove_row(row, self._cta_rows, self.cta_container)
 
-        for h in hooks:
-            self._add_hook([h])
-        while len(self._hook_rows) < self.START_HOOKS:
-            self._add_hook()
+        self._place_hooks(hooks)
         self.body.set_names(body)
         for code, parts in ctas.items():
             self._add_cta(parts, code)
@@ -666,6 +676,34 @@ class ClipCutterPage(ToolPage):
         self._sync_meta()
         self._sync_counts()
         self._queue_thumbs(p, stems)
+
+    def _place_hooks(self, hooks: list[str]):
+        """Put each hook in the slot its own filename names: `h3` -> H3.
+
+        The slot number is not cosmetic — it names the variant in the export, so
+        a clip that slides up a slot is delivered under the wrong name. When the
+        numbers are sane (1..N, nothing absurd) the board mirrors the filenames
+        exactly, gaps included: a missing `h1` leaves H1 empty and waiting, which
+        is also the cue for dragging the unmatched clip into it.
+
+        Anything else — no numbers at all, or a number high enough to make a
+        wall of empty rows — falls back to filling in order, which is what this
+        always used to do.
+        """
+        numbered = [(hook_number(h), h) for h in hooks]
+        highest = max((n for n, _ in numbered), default=0)
+        sane = all(n > 0 for n, _ in numbered) and highest <= self.MAX_HOOK_SLOTS
+        if not sane:
+            for h in hooks:
+                self._add_hook([h])
+            while len(self._hook_rows) < self.START_HOOKS:
+                self._add_hook()
+            return
+
+        by_slot = {n: h for n, h in numbered}
+        for slot in range(1, max(highest, self.START_HOOKS) + 1):
+            h = by_slot.get(slot)
+            self._add_hook([h] if h else None)
 
     # ---- clips dragged in one at a time ------------------------------------
     def _adopt_files(self, paths: list, target, at: int):

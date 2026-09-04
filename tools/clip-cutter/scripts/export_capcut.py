@@ -190,19 +190,44 @@ def cover_source(segs, eff, plan, fps):
     return None, 0.0
 
 
-def audible(sg):
-    """Pin the defaults that say "this clip just plays".
+#: A clip's geometry with nothing done to it. Read off a real hand-made CapCut
+#: project rather than invented, so the field names and types are CapCut's own.
+NEUTRAL_CLIP = {
+    "scale": {"x": 1.0, "y": 1.0},
+    "rotation": 0.0,
+    "transform": {"x": 0.0, "y": 0.0},
+    "flip": {"vertical": False, "horizontal": False},
+    "alpha": 1.0,
+}
 
-    The template segment is a real clip from a hand-made project, so it can carry
-    that editor's choices -- a B-roll shot ducked under a voiceover clones in at
-    `volume: 0.0` and every clip in the export is silent. Geometry is inherited
-    (it matches), loudness is not.
+
+def as_shot(sg):
+    """Pin the defaults that say "this clip just plays, as shot".
+
+    The template segment is a real clip from someone's hand-made project, so it
+    carries that editor's choices. Loudness was always reset here: a B-roll shot
+    ducked under a voiceover cloned in at `volume: 0.0` and every clip in the
+    export came out silent.
+
+    GEOMETRY IS RESET TOO — and this docstring used to claim the exact opposite,
+    "geometry is inherited (it matches)". It does not match. A donor project
+    whose clip had been zoomed or nudged exported EVERY clip at that zoom and
+    offset; it reached a user as Scale 316% and Position X -1120 on footage that
+    needed neither. Any project made in a hurry just to satisfy the preflight is
+    likely to be exactly that. The donor exists for the caption style and the
+    schema's field defaults, never for the framing of clips it has never seen.
+
+    The canvas is built from the clips' own dimensions (`eff`), so neutral here
+    means "fills the frame" — the same thing the user would get dragging the
+    clip in by hand.
     """
     sg["volume"] = 1.0
     sg["last_nonzero_volume"] = 1.0
     sg["speed"] = 1.0
     sg["visible"] = True
     sg["reverse"] = False
+    sg["clip"] = json.loads(json.dumps(NEUTRAL_CLIP))
+    sg["uniform_scale"] = {"on": True, "value": 1.0}
     return sg
 
 
@@ -514,7 +539,7 @@ def build_timeline(segs, eff, plan, edits, proj, tpl, fps, snap_ms, want_caption
                 m["videos"].append(v)
             n = c["trimAfter"] - c["trimBefore"]
             dur_us = us(n, fps)
-            sg = audible(json.loads(json.dumps(tpl_vseg)))
+            sg = as_shot(json.loads(json.dumps(tpl_vseg)))
             sg["id"] = gid()
             sg["material_id"] = v["id"]
             sg["source_timerange"] = {"start": us(c["trimBefore"], fps), "duration": dur_us}
@@ -1008,7 +1033,7 @@ def main():
             for c in seg_list:
                 for cl in eff["segments"][c]["clips"]:
                     media_used[cl["src"]] = True
-            sg = audible(json.loads(json.dumps(tpl_vseg)))
+            sg = as_shot(json.loads(json.dumps(tpl_vseg)))
             sg["id"] = gid()
             sg["material_id"] = ph["id"]
             sg["source_timerange"] = {"start": 0, "duration": dur}
@@ -1141,7 +1166,7 @@ def main():
         for c in eff["segments"][seg]["clips"]:
             n = c["trimAfter"] - c["trimBefore"]
             dur_us = us(n, fps)
-            s = audible(json.loads(json.dumps(tpl_vseg)))
+            s = as_shot(json.loads(json.dumps(tpl_vseg)))
             s["id"] = gid()
             s["material_id"] = vid_by_src[c["src"]]["id"]
             s["source_timerange"] = {"start": us(c["trimBefore"], fps),

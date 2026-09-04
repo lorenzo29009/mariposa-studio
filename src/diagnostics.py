@@ -297,8 +297,12 @@ class _Tee:
                 self._stream.write(text)
         except Exception:
             pass
+        # REDACTED on the way to the file, not just on the way to the report.
+        # This wrote `text` raw, so anything printed to stderr — a traceback
+        # carrying the Gemini key in its request URL — landed in the log file in
+        # full, and the log file is the thing people attach to a message.
         try:
-            self._fh.write(text)
+            self._fh.write(redact(text))
             self._fh.flush()
         except Exception:
             pass
@@ -395,7 +399,10 @@ def install_hooks(on_crash=None) -> None:
 
     def excepthook(exc_type, exc, tb):
         handle(exc_type, exc, tb)
-        sys.__excepthook__(exc_type, exc, tb)
+        # NOT sys.__excepthook__ as well. It writes its own copy of the same
+        # traceback to stderr, which the tee then files a second time — every
+        # crash appeared twice in the log, once from us and once from Python.
+        # `handle` has already recorded it, verbatim and redacted.
 
     sys.excepthook = excepthook
 

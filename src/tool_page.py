@@ -104,6 +104,9 @@ class ToolPage(QWidget):
         "undoing": "Undoing the last run…",
         "done": "Done",
         "error": "Stopped",
+        # Nothing ran, so nothing "stopped". A form that isn't filled in yet is
+        # not a failure and must not be dressed as one.
+        "notready": "Not ready yet",
     }
 
     def __init__(self, on_back: Callable[[], None]):
@@ -327,18 +330,22 @@ class ToolPage(QWidget):
     def _on_run(self):
         err = self.validate()
         if err:
-            # `validate()` may answer with a sentence, or with a (headline,
-            # one quiet line under it) pair. The headline alone goes to the log:
-            # printing the advice twice, once in the card and once in the log,
-            # is how a small "not ready yet" turned into a wall of red text.
+            # `validate()` may answer with a sentence, a (headline, quiet
+            # line) pair, or a whole Failure carrying a button.
             if isinstance(err, failures.Failure):
                 failure = err
             else:
                 title, body = err if isinstance(err, tuple) else (err, "")
                 failure = failures.Failure(key="invalid", title=title, body=body)
-            self._log(f"✗ {failure.title}", color=STOP)
-            self._set_status("error")
-            self.show_failure(failure)
+            # ONE surface, not two. This used to put the sentence in the log as
+            # well as on the card directly above it, so "these slots are still
+            # empty" arrived twice in a row and read like the app was broken.
+            # The card is the message; the report still gets its copy.
+            diagnostics.note_log(f"not ready: {failure.title}")
+            self._set_status("notready")
+            # And no "Copy error report" here: an empty slot is not something a
+            # maintainer can fix. That button belongs on real failures only.
+            self.show_failure(failure, report=False)
             return
         cmd = self.build_command()
         if not cmd:
@@ -459,8 +466,11 @@ class ToolPage(QWidget):
             self._log("✓ Done", color=DONE)
             self._set_status("done")
         else:
-            self._log(f"✗ Exited with code {code}", color=STOP)
             self._set_status("error")
+            # The card states the cause; the log already holds the output it was
+            # read from. "Exited with code 1" directly above a written cause was
+            # a second red line that said less than the first.
+            diagnostics.note_log(f"exited with code {code}")
             self.show_failure(failures.describe(self.log_text(), code))
         self.run_btn.setEnabled(True)
         self.process = None
@@ -508,7 +518,7 @@ class ToolPage(QWidget):
     def record_artefact(self, label: str, path: Path | str):
         session.record(self.title, label, path)
 
-    def show_failure(self, failure: "failures.Failure"):
+    def show_failure(self, failure: "failures.Failure", *, report: bool = True):
         """Draw a cause and, where we have one, a button that fixes it.
 
         The fix keys are handled by `apply_fix()`, which a subclass overrides
@@ -520,12 +530,17 @@ class ToolPage(QWidget):
         if failure.fix and self.can_fix(failure.fix):
             fix_label = failure.fix_label
             on_fix = lambda k=failure.fix: self.apply_fix(k)
-        diagnostics.note_error(self.title, failure.title, self.log_text()[-4000:])
-        # Always offered, next to whatever specific fix we may have: the one
-        # button that turns "it broke" into something a maintainer can act on.
+        extra = []
+        if report:
+            # Real failures only. Next to whatever specific fix we have, this is
+            # the button that turns "it broke" into something a maintainer can
+            # act on — offering it for an unfilled form is noise.
+            diagnostics.note_error(self.title, failure.title,
+                                   self.log_text()[-4000:])
+            extra.append(("Copy error report", self._copy_report))
         target.show_card(FailureCard(
             failure.title, failure.body, fix_label=fix_label, on_fix=on_fix,
-            extra=[("Copy error report", self._copy_report)]))
+            extra=extra))
 
     def _copy_report(self):
         """The whole picture on the clipboard, and a copy saved to disk."""

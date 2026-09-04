@@ -103,7 +103,8 @@ QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/smoketest.py   # must print 
 ./venv/bin/python scripts/test_gemini.py    # after gemini.py — model chain, 429/404 text
 QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_settings.py   # after settings_page/prefs
 QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_diagnostics.py  # after diagnostics.py — REDACTION
-QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_clipcutter_gate.py  # after _FIX_HINTS/preflight wording
+QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_clipcutter_gate.py  # after _FIX_HINTS/preflight/hook slots
+./venv/bin/python scripts/test_export_geometry.py   # after export_capcut's as_shot()/donor inheritance
 ./venv/bin/python scripts/test_portable.py  # after tools/clip-cutter/scripts/portable.py
 ./venv/bin/python scripts/test_fonts.py     # after brand/fonts/ or build_fonts.py — NOT offscreen
 ./venv/bin/python scripts/test_windows.py   # after any Windows branch, or a new spawn
@@ -221,6 +222,23 @@ manual step, and the friction around it is what gets removed instead: an
 **Open CapCut** button, and `_recheck_on_return()` clearing the blocker by
 itself when the user comes back to the window. `TEMPLATE_DIR` in `portable.py`
 is dead — it points at Remotion `.tsx`, not a CapCut draft.
+
+**The donor project is for STYLE and SCHEMA, never for decisions about the
+footage.** `export_capcut.as_shot()` is the one gate: it resets loudness,
+playback AND geometry on every cloned segment. Two fields have already escaped
+it in production — a donor clip ducked under a voiceover made every export
+silent, and a donor clip zoomed/nudged made every export land at Scale 316%,
+X -1120. `scripts/test_export_geometry.py` guards it. Inherit unknown fields;
+reset anything that is a judgement about a clip the donor never saw.
+
+**A hook's slot number is not cosmetic** — it names the variant in the export.
+`_place_hooks()` puts `h3` in H3, leaving gaps empty, because filling slots in
+list order silently renamed every variant when `h1` was missing or misnamed.
+
+**"Not ready" is not a failure.** `validate()` returning something routes to the
+`notready` state with ONE surface and no "Copy error report" — an unfilled form
+is not a bug a maintainer can fix, and printing the sentence on a card *and* in
+the log made the app look broken.
 
 **Never hardcode a path inside `tools/clip-cutter/`.** Everything it needs —
 ffmpeg, ffprobe, the captioner, the cropper, CapCut's draft folder and its font —

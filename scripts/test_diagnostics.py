@@ -110,13 +110,20 @@ path = d.start_log()
 check("a log file is opened", path is not None and path.exists(), str(path))
 print("hello from stdout")
 sys.stderr.write("a traceback would land here\n")
+# The key must ACTUALLY go through the stream. The previous version of this
+# check never wrote it, so it asserted nothing and passed on an unredacted file.
+print(f'  url = "https://x/v1beta/models/y:generateContent?key={KEY}"')
+sys.stderr.write(f"GEMINI_API_KEY={KEY}\n")
+sys.stdout.flush(); sys.stderr.flush()
 body = path.read_text(encoding="utf-8")
 check("stdout is captured", "hello from stdout" in body)
 check("stderr is captured", "a traceback would land here" in body)
 sys.stdout, sys.stderr = sys.__stdout__, sys.__stderr__
 print("  (streams restored)")
-check("a key written to stdout is redacted on the way to the file",
-      KEY not in body)
+check("a key written to stdout is redacted IN THE FILE",
+      KEY not in body, body[-160:].replace("\n", " | "))
+check("...and the redaction marker is actually there",
+      "REDACTED" in body)
 # print() emits the text and the newline as two writes; splitting each write
 # into lines used to shred every logged line in half.
 check("a printed line is kept whole, not split at the newline",
