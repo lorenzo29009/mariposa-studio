@@ -651,6 +651,8 @@ class CameraPromptsPage(QWidget):
 
     @Slot(str)
     def _on_gemini_failed(self, err: str):
+        import diagnostics
+        diagnostics.note_error(self.title, (err or "").splitlines()[0][:200], err)
         self._open_sheet()
         self.result.setPlainText(f"✗ Gemini error: {err}")
         self.result.setToolTip(err)

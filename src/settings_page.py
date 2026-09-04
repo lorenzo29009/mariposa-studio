@@ -149,6 +149,7 @@ class SettingsPage(QWidget):
         v.addWidget(self._key_section())
         v.addWidget(self._exports_section())
         v.addWidget(self._while_running_section())
+        v.addWidget(self._trouble_section())
         v.addStretch(1)
 
         # Everything is capped so a wide window doesn't stretch a form across
@@ -410,6 +411,77 @@ class SettingsPage(QWidget):
                                 self.autoquit, label_width=420))
         col.addWidget(card)
         return _panel(col)
+
+    # ---- 4. when something goes wrong --------------------------------------
+    def _trouble_section(self) -> QWidget:
+        """One button that turns "it broke" into something fixable.
+
+        Reachable at any time, not only while a failure is on screen: half the
+        problems worth reporting are "it behaves oddly", which never produces a
+        failure card at all.
+        """
+        col = QVBoxLayout()
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(13)
+        head = QLabel("If something goes wrong")
+        head.setObjectName("SectionHeading")
+        col.addWidget(head)
+
+        card = QFrame()
+        card.setObjectName("Card")
+        cv = QVBoxLayout(card)
+        cv.setContentsMargins(22, 20, 22, 20)
+        cv.setSpacing(12)
+
+        blurb = QLabel(
+            "The report describes this machine, every tool Mariposa depends on "
+            "and where it found them, and the last few hundred lines of output. "
+            "Your API key is removed from it before you get it.")
+        blurb.setObjectName("Meta")
+        blurb.setWordWrap(True)
+        cv.addWidget(blurb)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(9)
+        self.report_btn = QPushButton("Copy error report")
+        self.report_btn.setObjectName("PrimaryBtn")
+        self.report_btn.setCursor(Qt.PointingHandCursor)
+        self.report_btn.clicked.connect(self._copy_report)
+        row.addWidget(self.report_btn)
+        logs = QPushButton("Open logs folder")
+        logs.setObjectName("OnCardBtn")
+        logs.setCursor(Qt.PointingHandCursor)
+        logs.clicked.connect(self._open_logs)
+        row.addWidget(logs)
+        row.addStretch(1)
+        cv.addLayout(row)
+
+        self.report_note = QLabel("")
+        self.report_note.setObjectName("Meta")
+        self.report_note.setWordWrap(True)
+        self.report_note.hide()
+        cv.addWidget(self.report_note)
+
+        col.addWidget(card)
+        return _panel(col)
+
+    def _copy_report(self):
+        from PySide6.QtWidgets import QApplication
+        import diagnostics
+        QApplication.clipboard().setText(diagnostics.report("opened from Settings"))
+        path = diagnostics.save_report("opened from Settings")
+        self.report_note.setText(
+            "Copied — paste it into the chat."
+            + (f" A copy is saved as {path.name}." if path else ""))
+        self.report_note.show()
+        self.report_btn.setText("Copied")
+        QTimer.singleShot(1600, lambda: self.report_btn.setText("Copy error report"))
+
+    def _open_logs(self):
+        import diagnostics
+        diagnostics.DIAG_DIR.mkdir(parents=True, exist_ok=True)
+        open_folder(diagnostics.DIAG_DIR)
 
     # ---- the app bar's one line --------------------------------------------
     def _refresh_health(self):

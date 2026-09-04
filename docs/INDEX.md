@@ -15,10 +15,10 @@ Script Animator — the constants and the one Qt helper its modules share.
 
 `fit_scroll_content`:53
 
-### `src/animator_page.py` — 1002 lines
+### `src/animator_page.py` — 1025 lines
 Script Animator page: a structured ad script (hook variations, body, CTA variants) -> duration-slotted scene prompts.
 
-`AnimatorPage`:117 · `AnimatorPage.language_name`:522 · `AnimatorPage.tail`:525 · `AnimatorPage.pronunciation`:528
+`AnimatorPage`:117 · `AnimatorPage.language_name`:531 · `AnimatorPage.tail`:534 · `AnimatorPage.pronunciation`:537
 
 ### `src/animator_panel.py` — 450 lines
 Script Animator - the always-visible floating step-through panel.
@@ -40,7 +40,7 @@ Script Animator - the row and card widgets of the two stages.
 
 `BlockRow`:28 · `BlockRow.value`:99 · `BlockRow.set_value`:102 · `BlockRow.set_tag`:105 · `BlockRow.tag`:108 · `BlockRow.set_timing`:111 · `BlockRow.set_removable`:130 · `BlockRow.set_last`:133 · `FillMeter`:188 · `SceneCard`:236 · `SceneCard.set_generated`:382 · `SceneCard.offer_split`:386 · `SceneCard.refresh_prompt`:457 · `SceneCard.set_expanded`:461 · `SceneCard.set_selected`:465
 
-### `src/camera_page.py` — 731 lines
+### `src/camera_page.py` — 733 lines
 Camera Prompts page: a searchable gallery of shot/angle references that composes a Gemini prompt.
 
 `GeminiWorker`:69 · `GeminiWorker.run`:80 · `CameraPromptsPage`:151
@@ -79,6 +79,11 @@ Shared foundation for Mariposa Studio: paths, the .env helpers, and the small pl
 Mariposa Studio — Design System (single source of truth).
 
 `load_fonts`:46 · `tint`:68 · `apply_shadow`:255 · `svg_icon`:293 · `svg_pixmap`:298 · `app_accent`:303 · `primary_button_style`:309 · `brand_pixmap`:318
+
+### `src/diagnostics.py` — 407 lines
+One error report, complete enough to fix a bug from — and safe to paste.
+
+`redact`:83 · `note_log`:101 · `note_error`:108 · `last_error`:120 · `report`:194 · `save_report`:266 · `start_log`:347 · `install_hooks`:372
 
 ### `src/extract_frame_page.py` — 367 lines
 Extract Frame: pull the last, first, random or every-N-seconds frame (OpenCV).
@@ -130,7 +135,7 @@ What this launch has made — held in memory, and only in memory.
 
 `Artefact`:29 · `Artefact.is_dir`:37 · `record`:49 · `items`:59 · `clear`:67 · `note_gemini`:74 · `gemini_note`:79 · `ago`:87
 
-### `src/settings_page.py` — 460 lines
+### `src/settings_page.py` — 532 lines
 Settings — still one field, because there is still only one thing to set.
 
 `pref`:48 · `set_pref`:55 · `notify_if_enabled`:59 · `folder_size`:72 · `human_size`:93 · `stale_entries`:100 · `SettingsPage`:118
@@ -140,20 +145,20 @@ How long a line takes to say — **measured**, not estimated.
 
 `Engine`:78 · `Engine.path`:118 · `Engine.available`:131 · `Engine.voice_for`:134 · `Engine.command`:138 · `engine_named`:189 · `available_engine`:193 · `reset_engine_probe`:200 · `engine_note`:205 · `load_calibration`:258 · `calibration_for`:269 · `wav_speech_seconds`:294 · `flush_cache`:353 · `clear_cache`:368 · `measure_raw`:386 · `measure`:431 · `duration_of`:444
 
-### `src/studio.py` — 268 lines
+### `src/studio.py` — 294 lines
 Mariposa Studio - one hub for the editing-pipeline tools.
 
-`MainWindow`:73 · `main`:243
+`MainWindow`:73 · `main`:263
 
 ### `src/stylesheet.py` — 1076 lines
 The app-wide QSS, built from the tokens in `design`.
 
 `build_stylesheet`:34 · `font_pairs`:1015 · `font_health`:1038 · `font_problems`:1072
 
-### `src/tool_page.py` — 564 lines
+### `src/tool_page.py` — 579 lines
 `ToolPage` — the base every subprocess-backed tool page is built on.
 
-`ToolPage`:85 · `ToolPage.build_side`:208 · `ToolPage.env_lines`:212 · `ToolPage.set_env_lines`:218 · `ToolPage.build_form`:223 · `ToolPage.build_command`:226 · `ToolPage.validate`:229 · `ToolPage.after_finished`:239 · `ToolPage.extra_action_buttons`:242 · `ToolPage.add_row`:247 · `ToolPage.add_widget`:253 · `ToolPage.settings_card`:257 · `ToolPage.group_label`:267 · `ToolPage.section_heading`:273 · `ToolPage.grid_2col`:279 · `ToolPage.divider`:299 · `ToolPage.progress_from_line`:372 · `ToolPage.on_output_line`:402 · `ToolPage.log_text`:428 · `ToolPage.advance_batch`:432 · `ToolPage.clear_cards`:491 · `ToolPage.show_result`:496 · `ToolPage.record_artefact`:503 · `ToolPage.show_failure`:506 · `ToolPage.can_fix`:548 · `ToolPage.apply_fix`:553
+`ToolPage`:86 · `ToolPage.build_side`:209 · `ToolPage.env_lines`:213 · `ToolPage.set_env_lines`:219 · `ToolPage.build_form`:224 · `ToolPage.build_command`:227 · `ToolPage.validate`:230 · `ToolPage.after_finished`:240 · `ToolPage.extra_action_buttons`:243 · `ToolPage.add_row`:248 · `ToolPage.add_widget`:254 · `ToolPage.settings_card`:258 · `ToolPage.group_label`:268 · `ToolPage.section_heading`:274 · `ToolPage.grid_2col`:280 · `ToolPage.divider`:300 · `ToolPage.progress_from_line`:373 · `ToolPage.on_output_line`:403 · `ToolPage.log_text`:430 · `ToolPage.advance_batch`:434 · `ToolPage.clear_cards`:493 · `ToolPage.show_result`:498 · `ToolPage.record_artefact`:505 · `ToolPage.show_failure`:508 · `ToolPage.can_fix`:563 · `ToolPage.apply_fix`:568
 
 ### `src/updater.py` — 315 lines
 In-app auto-update for Mariposa Studio (Strategy A: source overlay).
@@ -202,6 +207,11 @@ Offline checks for speech_clock — no Qt, no network, no API key.
 
 `check`:33
 
+### `scripts/test_diagnostics.py` — 146 lines
+Is the error report complete — and is it safe to paste?
+
+`check`:41
+
 ### `scripts/test_failures.py` — 64 lines
 Offline checks for the failure table (no Qt, no display needed).
 
@@ -212,7 +222,7 @@ Assert the stylesheet gets the type it asks for, on THIS machine.
 
 `check`:45
 
-### `scripts/test_gemini.py` — 204 lines
+### `scripts/test_gemini.py` — 218 lines
 Offline checks for `src/gemini.py`'s model chain and its error sentences.
 
 `check`:36 · `http_error`:44 · `FakeTransport`:63 · `FakeTransport.urlopen`:72 · `FakeTransport.sleep`:81 · `run`:99 · `main`:118
@@ -249,10 +259,10 @@ Upsert a KEY=VALUE into tools/captions-de/.env, preserving every other line.
 
 ## Bundled tool scripts (`tools/`) — separate processes, not imported
 
-### `tools/captions-de/caption.py` — 2005 lines
+### `tools/captions-de/caption.py` — 2024 lines
 Generate TikTok-style captions (SRT) from a video file. German is the default; Polish, French, Italian (plus English and Spanish) are selected with --language a
 
-`text_width`:87 · `auto_hyphenate`:207 · `apply_auto_hyphenation`:227 · `join_soft_hyphens`:247 · `flatten_lines`:265 · `drop_midline_hyphens`:285 · `strip_punct`:296 · `clean_for_output`:302 · `normalize_case`:334 · `insert_compound_hyphens`:348 · `tokenize_for_packing`:356 · `pack_lines`:372 · `format_caption`:423 · `fmt_time`:427 · `get_video_duration`:437 · `run_whisperx`:463 · `load_words`:521 · `build_generic_prompt`:623 · `segment_with_ai`:709 · `review_grouping`:781 · `segment_heuristic`:956 · `compute_boundaries`:987 · `fix_line_break`:1019 · `normalize_text_preserve_breaks`:1055 · `apply_canonical_terms`:1152 · `project_terms_block`:1199 · `finalize_caption`:1213 · `move_trailing_binders`:1402 · `split_emphasis_repeats`:1428 · `merge_orphans`:1470 · `merge_split_numbers`:1578 · `merge_short_durations`:1605 · `enforce_single_line`:1766 · `enforce_two_lines`:1774 · `learn_and_relabel_case`:1784 · `recase_with_ai`:1862 · `write_srt`:1901 · `main`:1908
+`text_width`:87 · `auto_hyphenate`:207 · `apply_auto_hyphenation`:227 · `join_soft_hyphens`:247 · `flatten_lines`:265 · `drop_midline_hyphens`:285 · `strip_punct`:296 · `clean_for_output`:302 · `normalize_case`:334 · `insert_compound_hyphens`:348 · `tokenize_for_packing`:356 · `pack_lines`:372 · `format_caption`:423 · `fmt_time`:427 · `get_video_duration`:437 · `run_whisperx`:463 · `load_words`:521 · `build_generic_prompt`:623 · `segment_with_ai`:728 · `review_grouping`:800 · `segment_heuristic`:975 · `compute_boundaries`:1006 · `fix_line_break`:1038 · `normalize_text_preserve_breaks`:1074 · `apply_canonical_terms`:1171 · `project_terms_block`:1218 · `finalize_caption`:1232 · `move_trailing_binders`:1421 · `split_emphasis_repeats`:1447 · `merge_orphans`:1489 · `merge_split_numbers`:1597 · `merge_short_durations`:1624 · `enforce_single_line`:1785 · `enforce_two_lines`:1793 · `learn_and_relabel_case`:1803 · `recase_with_ai`:1881 · `write_srt`:1920 · `main`:1927
 
 ### `tools/captions-de/caption_qa.py` — 342 lines
 PROTOTYPE — Approach B: Gemini-based caption QA pass.

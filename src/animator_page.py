@@ -288,6 +288,15 @@ class AnimatorPage(ScenesStage, QWidget):
         self.status_lbl = QLabel("")
         self.status_lbl.setObjectName("StageMeta")
         fl.addWidget(self.status_lbl)
+        # Only ever visible after a failure. A build is the one long wait in the
+        # app and its failures are the ones that reach the maintainer as a
+        # photograph of the screen — this is the button that replaces that.
+        self._report_btn = QPushButton("Copy error report")
+        self._report_btn.setObjectName("GhostBtn")
+        self._report_btn.setCursor(Qt.PointingHandCursor)
+        self._report_btn.setVisible(False)
+        self._report_btn.clicked.connect(self._copy_report)
+        fl.addWidget(self._report_btn)
         self.to_scenes_btn = QPushButton("  Scenes")
         self.to_scenes_btn.setObjectName("GhostBtn")
         self.to_scenes_btn.setCursor(Qt.PointingHandCursor)
@@ -858,13 +867,27 @@ class AnimatorPage(ScenesStage, QWidget):
         # dot stayed grey ("nothing has used it yet") after ten good builds,
         # because only Camera Prompts ever said it had used the key; and the
         # notification switch never fired for the longest wait in the app.
+        self._report_btn.setVisible(False)
         session.note_gemini(self.title)
         self._announce(f"{len(self.scenes)} clips cut" if self.scenes else "")
 
     @Slot(str)
     def _on_failed(self, err: str):
+        import diagnostics
+        diagnostics.note_error(self.title, err.splitlines()[0][:200] if err else "build failed", err)
         self._set_status(f"Gemini failed — {err[:160]}", err=True)
         self._announce("the build stopped")
+        self._report_btn.setVisible(True)
+
+    def _copy_report(self):
+        """Hand over everything about this failure, in one click."""
+        import diagnostics
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(
+            diagnostics.report(f"{self.title} — pressed Build scenes"))
+        path = diagnostics.save_report(f"{self.title} — pressed Build scenes")
+        self._set_status("Error report copied to the clipboard"
+                         + (f" · saved as {path.name}" if path else ""))
 
     def _announce(self, body: str):
         """Honour the Settings notification switch, as every other tool does."""

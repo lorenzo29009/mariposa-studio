@@ -71,6 +71,7 @@ speech_clock ← script_text ← script_packer ← animator_*   (no Qt, no netwo
 | `stylesheet.py` | `build_stylesheet()` → the app-wide QSS, keyed by objectName. Applied once in `studio.main()`. |
 | `widgets.py` | Reusable widgets: `Card`, `RaisedCard`, `FormRow`, `SettingRow`, `DropZone` (hero *or* collapsed row), `Segmented`, `Field`, `ChipGroup`, `Switch`, `ConsoleView`, `AppBar`, `Select`, and `AskDialog`/`ask_text()`/`ask_confirm()` — the app's own modal, which is how a question gets asked (never `QInputDialog`/`QMessageBox`). Has `__all__`. |
 | `widgets_status.py` | The job runner's honest surfaces: `LogColumn` (the log in daylight), `ProgressLine` (determinate + elapsed + estimate), `ResultCard`, `FailureCard`, `DryRunCard`, `StatusStrip`. |
+| `diagnostics.py` | The error report: `redact()` (secrets out of EVERY string — the key travels in URLs and tracebacks), `report()`/`save_report()`, `start_log()` (tees stdout/stderr per launch — **on Windows `pythonw.exe` has no console, so this is the only place a traceback survives**) and `install_hooks()`. Buildable from a crash handler, so it imports no page. |
 | `failures.py` | A matched-pattern table turning a stack trace into a sentence and one real fix. No Qt — `scripts/test_failures.py` covers it. |
 | `session.py` | What this launch made, in memory only: feeds ⌘K's "From this session" and the done-state cards. No Qt. |
 | `tool_page.py` | `ToolPage` — the job-runner base: form on the left, the permanent log column on the right, determinate progress from the counted lines the scripts already print, `advance_batch()` for a job that is several runs. |
@@ -101,6 +102,7 @@ QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/smoketest.py   # must print 
 ./venv/bin/python scripts/test_failures.py  # after failures.py
 ./venv/bin/python scripts/test_gemini.py    # after gemini.py — model chain, 429/404 text
 QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_settings.py   # after settings_page/prefs
+QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_diagnostics.py  # after diagnostics.py — REDACTION
 ./venv/bin/python scripts/test_portable.py  # after tools/clip-cutter/scripts/portable.py
 ./venv/bin/python scripts/test_fonts.py     # after brand/fonts/ or build_fonts.py — NOT offscreen
 ./venv/bin/python scripts/test_windows.py   # after any Windows branch, or a new spawn

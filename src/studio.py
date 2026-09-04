@@ -240,9 +240,35 @@ def _apply_app_identity(app: QApplication) -> None:
             pass
 
 
+def _crash_dialog(summary: str, path):
+    """Put an unhandled error on screen instead of losing it to a dead stderr.
+
+    It cannot re-raise and it must never raise itself — this runs from the
+    excepthook, after something has already gone wrong.
+    """
+    try:
+        from widgets import ask_confirm
+        from core import open_folder
+        where = ("The full report was saved to %s." % path.name if path
+                 else "The report could not be saved.")
+        if ask_confirm(
+                None, "Something went wrong",
+                "%s\n\n%s Send it over and it can be fixed." % (summary[:300], where),
+                ok_label="Show me the report", cancel_label="Ignore") and path:
+            open_folder(path)
+    except Exception:
+        pass
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Mariposa Studio")
+    # Before anything else can fail: this launch gets a log file, and an
+    # unhandled exception gets captured instead of printed to the console that
+    # pythonw.exe does not have.
+    import diagnostics
+    diagnostics.start_log()
+    diagnostics.install_hooks(_crash_dialog)
     _apply_app_identity(app)
     load_fonts()
     app.setStyleSheet(build_stylesheet())

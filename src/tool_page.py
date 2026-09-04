@@ -47,6 +47,7 @@ from design import (
 from core import IS_WINDOWS, make_qprocess_env
 from widgets import Card, FormRow, AppBar, _panel
 from widgets_status import FailureCard, LogColumn, ResultCard, StatusStrip
+import diagnostics
 import failures
 import session
 
@@ -421,6 +422,7 @@ class ToolPage(QWidget):
 
     def _log(self, line: str, *, color: Optional[str] = None):
         self._log_buffer.append(line)
+        diagnostics.note_log(line)
         target = self.log or self.strip
         if target:
             target.append(line, color=color)
@@ -515,8 +517,21 @@ class ToolPage(QWidget):
         if failure.fix and self.can_fix(failure.fix):
             fix_label = failure.fix_label
             on_fix = lambda k=failure.fix: self.apply_fix(k)
-        target.show_card(FailureCard(failure.title, failure.body,
-                                     fix_label=fix_label, on_fix=on_fix))
+        diagnostics.note_error(self.title, failure.title, self.log_text()[-4000:])
+        # Always offered, next to whatever specific fix we may have: the one
+        # button that turns "it broke" into something a maintainer can act on.
+        target.show_card(FailureCard(
+            failure.title, failure.body, fix_label=fix_label, on_fix=on_fix,
+            extra=[("Copy error report", self._copy_report)]))
+
+    def _copy_report(self):
+        """The whole picture on the clipboard, and a copy saved to disk."""
+        from PySide6.QtWidgets import QApplication
+        text = diagnostics.report(f"{self.title} — pressed {self.action_label}")
+        QApplication.clipboard().setText(text)
+        path = diagnostics.save_report(f"{self.title} — pressed {self.action_label}")
+        self._log("✎ Error report copied to the clipboard"
+                  + (f" and saved to {path.name}" if path else ""))
 
     # ---- leaving ------------------------------------------------------------
     def _announce(self, ok: bool):
