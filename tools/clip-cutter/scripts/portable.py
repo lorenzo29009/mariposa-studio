@@ -334,6 +334,32 @@ def _draft_count(root):
     return n
 
 
+@functools.lru_cache(maxsize=None)
+def capcut_app():
+    """The CapCut the user can be sent to, or "" if it isn't installed.
+
+    Only ever used to OPEN CapCut for someone who has to make their first
+    project. Discovered the same way as everything else here: the documented
+    location, then a glob for the versioned folder Windows installs into.
+    """
+    if IS_WINDOWS:
+        local = _local_appdata()
+        program = os.environ.get("ProgramFiles", r"C:\Program Files")
+        cands = []
+        for base in (os.path.join(local, "CapCut"), os.path.join(program, "CapCut")):
+            cands.append(os.path.join(base, "CapCut.exe"))
+            # Installs land in Apps/<version>/, and the version moves.
+            cands += sorted(glob.glob(os.path.join(base, "Apps", "*", "CapCut.exe")),
+                            reverse=True)
+        return _first_existing(cands) or ""
+    if IS_MAC:
+        return _first_existing([
+            "/Applications/CapCut.app",
+            os.path.expanduser("~/Applications/CapCut.app"),
+        ]) or ""
+    return ""
+
+
 # The house caption + headline face, by file and by the name CapCut lists it
 # under. Both are written into the draft: the path is what CapCut prefers, the
 # title is what it falls back to when the path is gone — which is the whole
@@ -476,7 +502,8 @@ def reset_cache():
     Called by the app before each preflight (src/clip_cutter_page.py). Cheap:
     the caches exist to spare a script forty PATH walks, not to spare the app one.
     """
-    for fn in (ffmpeg, ffprobe, whisperx_python, capcut_projects, capcut_font):
+    for fn in (ffmpeg, ffprobe, whisperx_python, capcut_projects, capcut_font,
+               capcut_app):
         fn.cache_clear()
 
 

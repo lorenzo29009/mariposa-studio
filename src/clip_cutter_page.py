@@ -21,11 +21,13 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QPushButton, QScrollArea, QSizePolicy,
                                QVBoxLayout, QWidget)
 
-from core import EXPORTS_DIR, IS_WINDOWS, TOOLS_DIR, studio_python
+import failures
+from core import (EXPORTS_DIR, IS_MAC, IS_WINDOWS, TOOLS_DIR,
+                  studio_python)
 from design import (
     PAPER_LINE, PAPER_LINE2, PAPER_PANEL, R_FULL, R_MD, SPACE, TXT_DIM,
     TXT_HI, TYPE, WINE_FG, svg_icon,
@@ -71,25 +73,44 @@ def _portable():
         return None
 
 
-#: What to say when a preflight row comes back not-ok, keyed by its name.
-#: A headline the user reads, and one quiet line underneath. The pipeline
-#: reports FACTS (`portable.preflight`); the sentences are ours.
+#: What to say when a preflight row comes back not-ok, keyed by its name, and
+#: the button that resolves it. A headline the user reads, one quiet line
+#: underneath, then a fix key the page can honour. The pipeline reports FACTS
+#: (`portable.preflight`); the sentences and the buttons are ours.
 _FIX_HINTS = {
     "ffmpeg": ("ffmpeg isn't installed",
-               "Run the Mariposa installer again — it fetches ffmpeg."),
+               "The installer fetches it.",
+               "install_deps", "Run the installer"),
     "ffprobe": ("ffmpeg isn't installed",
-                "Run the Mariposa installer again — it fetches ffmpeg."),
+                "The installer fetches it.",
+                "install_deps", "Run the installer"),
     "the captioner": ("The captions tool is missing",
-                      "Reinstall Mariposa Studio."),
+                      "Reinstall Mariposa Studio.", "", ""),
     "WhisperX": ("WhisperX isn't installed",
-                 "Open Captions and run its installer once."),
-    "CapCut": ("CapCut wasn't found",
-               "Open CapCut once so it creates its projects folder."),
+                 "The installer builds it. It is a big download, once.",
+                 "install_deps", "Run the installer"),
+    "CapCut": ("CapCut hasn't been opened yet",
+               "Open it once and it will create its projects folder. "
+               "Come back here — this clears by itself.",
+               "open_capcut", "Open CapCut"),
     "a CapCut project to take the style from": (
-        "No CapCut project to copy the style from",
-        "Clip Cutter matches an existing project's look. Make one in CapCut "
-        "with a clip and a caption, then try again."),
+        "CapCut has no project to copy the style from yet",
+        "Clip Cutter copies the look of one of your own CapCut projects, so it "
+        "needs one to exist. In CapCut: new project, drag any clip in, add one "
+        "text layer, close it. Once only — this clears by itself when you come "
+        "back.",
+        "open_capcut", "Open CapCut"),
 }
+
+
+def _capcut_app() -> str:
+    """Where CapCut is, per the pipeline's own resolver. "" when absent."""
+    try:
+        sys.path.insert(0, str(PIPELINE_SCRIPTS))
+        import portable as p            # type: ignore
+        return p.capcut_app()
+    except Exception:
+        return ""
 
 
 def _preflight():
@@ -207,7 +228,15 @@ class ClipCutterPage(ToolPage):
 
     def __init__(self, on_back):
         super().__init__(on_back)
+        self._blocked_on = None
         self._rehome_body()
+        # The one thing this tool can still ask of a person — "make a project in
+        # CapCut first" — is done in ANOTHER app. So the answer arrives while
+        # Mariposa is in the background, and the user should not have to press
+        # anything to be told. Coming back to the window re-asks the question.
+        app = QApplication.instance()
+        if app is not None:
+            app.applicationStateChanged.connect(self._recheck_on_return)
         # ToolPage puts its status card at the bottom of the scrolling body. On this
         # page the body is a tall board, so the card sat below the fold and pressing
         # Export looked like nothing happened. Re-home it just above the footer,
@@ -885,8 +914,13 @@ class ClipCutterPage(ToolPage):
         for name, ok, _detail in _preflight():
             if ok:
                 continue
-            return _FIX_HINTS.get(name, ("%s is missing." % name.capitalize(),
-                                         "Reinstall Mariposa Studio."))
+            self._blocked_on = name
+            title, body, fix, fix_label = _FIX_HINTS.get(
+                name, ("%s is missing" % name.capitalize(),
+                       "Reinstall Mariposa Studio.", "", ""))
+            return failures.Failure(key="preflight", title=title, body=body,
+                                    fix=fix, fix_label=fix_label)
+        self._blocked_on = None
         if not self._hook_rows or not any(r.names() for r in self._hook_rows):
             return "Give at least one hook a clip."
         if not self.body.names():
@@ -963,9 +997,53 @@ class ClipCutterPage(ToolPage):
         # the likeliest stop of all. The installer that fetches them is one
         # button; without this the page names the cause and then leaves the
         # user to find the installer in the folder.
-        return key in ("install_deps", "open_settings")
+        return key in ("install_deps", "open_settings", "open_capcut")
+
+    def _launch_capcut(self):
+        """Open CapCut for someone who has to make their first project."""
+        import subprocess
+        app = _capcut_app()
+        if not app:
+            self._sentence("CapCut doesn't seem to be installed on this machine.")
+            return
+        try:
+            if IS_MAC:
+                subprocess.run(["open", "-a", app], check=False)
+            elif IS_WINDOWS:
+                os.startfile(app)          # type: ignore[attr-defined]
+            else:
+                subprocess.run(["xdg-open", app], check=False)
+            self._sentence("Opening CapCut — make one project with a clip and a "
+                           "caption, then come back here.")
+        except Exception:
+            self._sentence("Couldn't open CapCut from here — open it yourself.")
+
+    def _recheck_on_return(self, state):
+        """Re-ask the preflight when the user comes back to Mariposa.
+
+        Only when this page is the one on screen, nothing is running, and we
+        were actually blocked — so it costs nothing on every other window focus.
+        """
+        if state != Qt.ApplicationActive:
+            return
+        if self._blocked_on is None or not self.isVisible():
+            return
+        if getattr(self, "process", None) is not None:
+            return
+        was = self._blocked_on
+        for name, ok, _detail in _preflight():
+            if not ok:
+                self._blocked_on = name
+                return                      # still blocked, on this or another
+        self._blocked_on = None
+        self.clear_cards()
+        self._sentence("%s — sorted. Ready when you are."
+                       % (was[0].upper() + was[1:]))
 
     def apply_fix(self, key: str):
+        if key == "open_capcut":
+            self._launch_capcut()
+            return
         if key == "install_deps":
             from first_run import run_installer
             run_installer()

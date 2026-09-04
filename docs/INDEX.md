@@ -60,10 +60,10 @@ Captions DE: WhisperX + Gemini -> .srt, run in the separate WhisperX venv.
 
 `whisperx_arch_ok`:37 · `CaptionsPage`:83 · `CaptionsPage.build_form`:122 · `CaptionsPage.validate`:305 · `CaptionsPage.build_command`:323 · `CaptionsPage.advance_batch`:346 · `CaptionsPage.env_lines`:355 · `CaptionsPage.can_fix`:372 · `CaptionsPage.apply_fix`:375 · `CaptionsPage.after_finished`:393 · `CaptionsPage.progress_from_line`:445
 
-### `src/clip_cutter_page.py` — 974 lines
+### `src/clip_cutter_page.py` — 1052 lines
 Clip Cutter: assemble a UGC creative from a clip folder and hand it to CapCut.
 
-`ClipCutterPage`:194 · `ClipCutterPage.build_form`:283 · `ClipCutterPage.validate`:875 · `ClipCutterPage.build_command`:900 · `ClipCutterPage.after_finished`:943 · `ClipCutterPage.can_fix`:960 · `ClipCutterPage.apply_fix`:968
+`ClipCutterPage`:215 · `ClipCutterPage.build_form`:312 · `ClipCutterPage.validate`:904 · `ClipCutterPage.build_command`:934 · `ClipCutterPage.after_finished`:977 · `ClipCutterPage.can_fix`:994 · `ClipCutterPage.apply_fix`:1043
 
 ### `src/clip_cutter_widgets.py` — 528 lines
 Clip Cutter's drag-and-drop assembly widgets.
@@ -155,10 +155,10 @@ The app-wide QSS, built from the tokens in `design`.
 
 `build_stylesheet`:34 · `font_pairs`:1015 · `font_health`:1038 · `font_problems`:1072
 
-### `src/tool_page.py` — 579 lines
+### `src/tool_page.py` — 582 lines
 `ToolPage` — the base every subprocess-backed tool page is built on.
 
-`ToolPage`:86 · `ToolPage.build_side`:209 · `ToolPage.env_lines`:213 · `ToolPage.set_env_lines`:219 · `ToolPage.build_form`:224 · `ToolPage.build_command`:227 · `ToolPage.validate`:230 · `ToolPage.after_finished`:240 · `ToolPage.extra_action_buttons`:243 · `ToolPage.add_row`:248 · `ToolPage.add_widget`:254 · `ToolPage.settings_card`:258 · `ToolPage.group_label`:268 · `ToolPage.section_heading`:274 · `ToolPage.grid_2col`:280 · `ToolPage.divider`:300 · `ToolPage.progress_from_line`:373 · `ToolPage.on_output_line`:403 · `ToolPage.log_text`:430 · `ToolPage.advance_batch`:434 · `ToolPage.clear_cards`:493 · `ToolPage.show_result`:498 · `ToolPage.record_artefact`:505 · `ToolPage.show_failure`:508 · `ToolPage.can_fix`:563 · `ToolPage.apply_fix`:568
+`ToolPage`:86 · `ToolPage.build_side`:209 · `ToolPage.env_lines`:213 · `ToolPage.set_env_lines`:219 · `ToolPage.build_form`:224 · `ToolPage.build_command`:227 · `ToolPage.validate`:230 · `ToolPage.after_finished`:240 · `ToolPage.extra_action_buttons`:243 · `ToolPage.add_row`:248 · `ToolPage.add_widget`:254 · `ToolPage.settings_card`:258 · `ToolPage.group_label`:268 · `ToolPage.section_heading`:274 · `ToolPage.grid_2col`:280 · `ToolPage.divider`:300 · `ToolPage.progress_from_line`:376 · `ToolPage.on_output_line`:406 · `ToolPage.log_text`:433 · `ToolPage.advance_batch`:437 · `ToolPage.clear_cards`:496 · `ToolPage.show_result`:501 · `ToolPage.record_artefact`:508 · `ToolPage.show_failure`:511 · `ToolPage.can_fix`:566 · `ToolPage.apply_fix`:571
 
 ### `src/updater.py` — 315 lines
 In-app auto-update for Mariposa Studio (Strategy A: source overlay).
@@ -201,6 +201,11 @@ Build the distributable release zip for Mariposa Studio.
 Headless smoke test: construct and show MainWindow offscreen, then quit.
 
 _No public symbols._
+
+### `scripts/test_clipcutter_gate.py` — 125 lines
+The one thing Clip Cutter can still ask of a person, and how it asks.
+
+`check`:48 · `make_project`:53
 
 ### `scripts/test_clock.py` — 209 lines
 Offline checks for speech_clock — no Qt, no network, no API key.
@@ -369,10 +374,10 @@ The plan.json contract — one owner for the schema and the segments.ts emitter.
 
 `seg_recipe`:21 · `segment_spans`:34 · `total_frames`:44 · `write_segments_ts`:48 · `write_plan`:57 · `load_plan`:61 · `validate_plan`:66
 
-### `tools/clip-cutter/scripts/portable.py` — 568 lines
+### `tools/clip-cutter/scripts/portable.py` — 595 lines
 Where everything is, on whatever machine this is running on.
 
-`ffmpeg`:111 · `ffprobe`:122 · `caption_tool`:131 · `cropper`:136 · `whisperx_python`:142 · `no_window_kwargs`:162 · `concat_line`:167 · `draft_file`:213 · `draft_file_name`:226 · `capcut_projects`:266 · `capcut_font`:417 · `capcut_installed`:461 · `reset_cache`:467 · `capcut_template_count`:483 · `preflight`:493 · `missing`:534 · `require`:539
+`ffmpeg`:111 · `ffprobe`:122 · `caption_tool`:131 · `cropper`:136 · `whisperx_python`:142 · `no_window_kwargs`:162 · `concat_line`:167 · `draft_file`:213 · `draft_file_name`:226 · `capcut_projects`:266 · `capcut_app`:338 · `capcut_font`:443 · `capcut_installed`:487 · `reset_cache`:493 · `capcut_template_count`:510 · `preflight`:520 · `missing`:561 · `require`:566
 
 ### `tools/clip-cutter/scripts/report.py` — 293 lines
 Build manifest.json + review.tsv + a short review.md.

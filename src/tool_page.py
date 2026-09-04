@@ -230,10 +230,10 @@ class ToolPage(QWidget):
     def validate(self):
         """Why this run can't start yet, or None when it can.
 
-        Either a sentence, or a `(headline, hint)` pair when there is something
-        worth adding under it — the headline is what the user reads, the hint is
-        the small line below. Keep the headline to a phrase: it is shown on a
-        card AND in the log.
+        A sentence; a `(headline, hint)` pair when there is something worth
+        adding under it; or a whole `failures.Failure` when the page can also
+        offer a button that resolves it. The headline is what the user reads —
+        keep it to a phrase, it goes on a card AND in the log.
         """
         return None
 
@@ -331,11 +331,14 @@ class ToolPage(QWidget):
             # one quiet line under it) pair. The headline alone goes to the log:
             # printing the advice twice, once in the card and once in the log,
             # is how a small "not ready yet" turned into a wall of red text.
-            title, body = err if isinstance(err, tuple) else (err, "")
-            self._log(f"✗ {title}", color=STOP)
+            if isinstance(err, failures.Failure):
+                failure = err
+            else:
+                title, body = err if isinstance(err, tuple) else (err, "")
+                failure = failures.Failure(key="invalid", title=title, body=body)
+            self._log(f"✗ {failure.title}", color=STOP)
             self._set_status("error")
-            self.show_failure(failures.Failure(key="invalid", title=title,
-                                               body=body))
+            self.show_failure(failure)
             return
         cmd = self.build_command()
         if not cmd:

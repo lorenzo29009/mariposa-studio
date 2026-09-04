@@ -103,6 +103,7 @@ QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/smoketest.py   # must print 
 ./venv/bin/python scripts/test_gemini.py    # after gemini.py — model chain, 429/404 text
 QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_settings.py   # after settings_page/prefs
 QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_diagnostics.py  # after diagnostics.py — REDACTION
+QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_clipcutter_gate.py  # after _FIX_HINTS/preflight wording
 ./venv/bin/python scripts/test_portable.py  # after tools/clip-cutter/scripts/portable.py
 ./venv/bin/python scripts/test_fonts.py     # after brand/fonts/ or build_fonts.py — NOT offscreen
 ./venv/bin/python scripts/test_windows.py   # after any Windows branch, or a new spawn
@@ -210,6 +211,16 @@ That is the whole extension surface. Keep the tool itself self-contained under
 
 P3 — a shared pattern/manifest across the tools in `tools/` (they still have
 divergent structures and separate installers) — is deferred to a future session.
+
+**Clip Cutter asks the user for exactly ONE thing, and it cannot be automated:**
+a CapCut project to copy the look from. Not shippable — the draft schema is
+undocumented and version-tagged per CapCut build, and the
+`##_draftpath_placeholder_<UUID>_##` token belongs to the *installation* (a
+foreign one made every compound export come up empty). So it stays a one-off
+manual step, and the friction around it is what gets removed instead: an
+**Open CapCut** button, and `_recheck_on_return()` clearing the blocker by
+itself when the user comes back to the window. `TEMPLATE_DIR` in `portable.py`
+is dead — it points at Remotion `.tsx`, not a CapCut draft.
 
 **Never hardcode a path inside `tools/clip-cutter/`.** Everything it needs —
 ffmpeg, ffprobe, the captioner, the cropper, CapCut's draft folder and its font —
