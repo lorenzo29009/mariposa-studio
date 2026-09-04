@@ -682,26 +682,45 @@ def _gemini_generate(prompt: str, retries: int = 3, timeout: int = 180):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.0, "response_mime_type": "application/json"},
     }).encode("utf-8")
-    # Floating alias — dated models get retired for new API keys; this one stays
-    # available. See the note in src/gemini.py.
-    model_id = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}"
-    for attempt in range(1, retries + 1):
-        try:
-            req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-            return payload["candidates"][0]["content"]["parts"][0]["text"]
-        except urllib.error.HTTPError as e:
-            transient = e.code in (408, 429, 500, 502, 503, 504)
-            print(f"Gemini API error: {e.code} {e.reason}"
-                  + (f" — retrying ({attempt}/{retries})" if transient and attempt < retries else ""))
-            if not transient:
-                return None
-        except Exception as e:
-            print(f"Gemini attempt {attempt}/{retries} failed: {e}")
-        if attempt < retries:
-            time.sleep(min(2 * attempt, 6))  # 2s, 4s, 6s backoff
+    # The same chain, for the same reason, as src/gemini.py's MODEL_CHAIN: a
+    # pinned model gets retired for new keys (404), and a "-latest" alias walks
+    # onto whichever Flash launched most recently — the one least likely to have
+    # free-tier quota (429). Written out here rather than imported: this script
+    # runs in its own process and must not import the app.
+    #
+    # It matters more quietly here than in the Studio. A refusal doesn't fail
+    # the job, it drops the whole run to the heuristic segmentation — so a free
+    # key silently produced degraded SRTs with nothing on screen saying why.
+    pin = os.environ.get("GEMINI_MODEL", "").strip()
+    models = [pin] if pin else ["gemini-3.5-flash", "gemini-2.5-flash",
+                                "gemini-3.1-flash-lite"]
+    for i, model_id in enumerate(models):
+        more = i < len(models) - 1
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}"
+        for attempt in range(1, retries + 1):
+            try:
+                req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                if i:
+                    print(f"[gemini] using {model_id}")
+                return payload["candidates"][0]["content"]["parts"][0]["text"]
+            except urllib.error.HTTPError as e:
+                # Retired, or no quota for this key on this model. Another model
+                # may well answer, and waiting here would only delay finding out.
+                if e.code in (404, 429) and more:
+                    print(f"[gemini] {model_id} unavailable on this key "
+                          f"({e.code}) — trying {models[i + 1]}")
+                    break
+                transient = e.code in (408, 429, 500, 502, 503, 504)
+                print(f"Gemini API error: {e.code} {e.reason}"
+                      + (f" — retrying ({attempt}/{retries})" if transient and attempt < retries else ""))
+                if not transient:
+                    return None
+            except Exception as e:
+                print(f"Gemini attempt {attempt}/{retries} failed: {e}")
+            if attempt < retries:
+                time.sleep(min(2 * attempt, 6))  # 2s, 4s, 6s backoff
     print(f"Gemini gave up after {retries} attempts.")
     return None
 

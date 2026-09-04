@@ -192,6 +192,20 @@ def main():
     finally:
         gemini._WORKING_MODEL = None
 
+    print("\nthe captioner, which has its own copy of the transport")
+    cap = (os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "tools", "captions-de", "caption.py"))
+    with open(cap, encoding="utf-8") as fh:
+        csrc = fh.read()
+    check("no floating alias left in the captioner",
+          "gemini-flash-latest" not in csrc,
+          "a refusal there does not fail the job — it silently degrades the SRT")
+    check("it walks the same chain",
+          all(m in csrc for m in gemini.MODEL_CHAIN),
+          "chain: %s" % (gemini.MODEL_CHAIN,))
+    check("...and falls through on 404/429",
+          "404, 429" in csrc or "(404, 429)" in csrc)
+
     print()
     if FAILURES:
         print("FAILED: %s" % ", ".join(FAILURES))
