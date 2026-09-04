@@ -118,6 +118,21 @@ for name, (title, body, fix, label) in ccp._FIX_HINTS.items():
     check("'%s' offers a button" % name, bool(fix and label), f"{label!r}")
     check("'%s' is honoured by the page" % name, page.can_fix(fix), fix)
 
+print("\nwhen a run succeeds, the user is told WHERE the result is")
+page._name = "C1042"
+page.after_finished(0)
+msg = page.status_detail.text()
+check("the project is named", "C1042" in msg, msg[:60])
+check("it says the result is in CapCut", "in CapCut" in msg, msg[:60])
+check("it says CapCut must be restarted to see it",
+      "reopen" in msg and "launch" in msg, msg)
+check("the button opens CapCut, not a folder",
+      page.extra_btn.text() == "Open CapCut", page.extra_btn.text())
+# `_edit` is this run's scratch: plan.json, half-rendered segments, no CapCut
+# project. Sending someone there after a SUCCESSFUL export reads as a failure.
+check("the done state never points at the scratch folder",
+      "_edit" not in msg and "folder" not in page.extra_btn.text().lower(), msg)
+
 shutil.rmtree(TMP, ignore_errors=True)
 print()
 if FAIL:

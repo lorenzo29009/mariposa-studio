@@ -60,10 +60,10 @@ Captions DE: WhisperX + Gemini -> .srt, run in the separate WhisperX venv.
 
 `whisperx_arch_ok`:37 · `CaptionsPage`:83 · `CaptionsPage.build_form`:122 · `CaptionsPage.validate`:305 · `CaptionsPage.build_command`:323 · `CaptionsPage.advance_batch`:346 · `CaptionsPage.env_lines`:355 · `CaptionsPage.can_fix`:372 · `CaptionsPage.apply_fix`:375 · `CaptionsPage.after_finished`:393 · `CaptionsPage.progress_from_line`:445
 
-### `src/clip_cutter_page.py` — 1052 lines
+### `src/clip_cutter_page.py` — 1071 lines
 Clip Cutter: assemble a UGC creative from a clip folder and hand it to CapCut.
 
-`ClipCutterPage`:215 · `ClipCutterPage.build_form`:312 · `ClipCutterPage.validate`:904 · `ClipCutterPage.build_command`:934 · `ClipCutterPage.after_finished`:977 · `ClipCutterPage.can_fix`:994 · `ClipCutterPage.apply_fix`:1043
+`ClipCutterPage`:215 · `ClipCutterPage.build_form`:313 · `ClipCutterPage.validate`:905 · `ClipCutterPage.build_command`:935 · `ClipCutterPage.after_finished`:978 · `ClipCutterPage.can_fix`:1013 · `ClipCutterPage.apply_fix`:1062
 
 ### `src/clip_cutter_widgets.py` — 528 lines
 Clip Cutter's drag-and-drop assembly widgets.
@@ -202,7 +202,7 @@ Headless smoke test: construct and show MainWindow offscreen, then quit.
 
 _No public symbols._
 
-### `scripts/test_clipcutter_gate.py` — 125 lines
+### `scripts/test_clipcutter_gate.py` — 140 lines
 The one thing Clip Cutter can still ask of a person, and how it asks.
 
 `check`:48 · `make_project`:53

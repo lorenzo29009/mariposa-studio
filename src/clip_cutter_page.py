@@ -229,6 +229,7 @@ class ClipCutterPage(ToolPage):
     def __init__(self, on_back):
         super().__init__(on_back)
         self._blocked_on = None
+        self._extra_hooked = False
         self._rehome_body()
         # The one thing this tool can still ask of a person — "make a project in
         # CapCut first" — is done in ANOTHER app. So the answer arrives while
@@ -975,20 +976,38 @@ class ClipCutterPage(ToolPage):
         return studio_python(), args, PIPELINE_SCRIPTS
 
     def after_finished(self, code: int):
-        if code == 0:
-            self.status_detail.setText(
-                "CapCut project written. Quit CapCut and reopen it to see the project.")
-            self.extra_btn.setText("Open project folder")
-            self.extra_btn.setIcon(svg_icon("folder-open", TXT_HI, 14))
-            self.extra_btn.setVisible(True)
+        if code != 0:
+            return
+        # WHERE THE RESULT IS is the whole message here, and it is not obvious:
+        # the project is written INTO CapCut's own drafts folder and appears in
+        # CapCut's project list — nothing lands beside the clips. The button
+        # used to open `_edit`, this run's scratch directory, which holds
+        # plan.json and half-rendered segments and no CapCut project at all.
+        # Someone who followed it reasonably concluded the export had failed.
+        name = getattr(self, "_name", "") or "the project"
+        self.status_detail.setText(
+            "Done — “%s” is now in CapCut. Quit CapCut completely and reopen "
+            "it: the project is in your projects list. (CapCut only reads its "
+            "list at launch, so it will not appear until you do.)" % name)
+        self.extra_btn.setText("Open CapCut")
+        self.extra_btn.setIcon(svg_icon("external-link", TXT_HI, 14))
+        self.extra_btn.setVisible(True)
+        # Disconnect only what we connected. A blanket disconnect() on a button
+        # with no connections makes libpyside print a warning on every good run,
+        # which now lands in the diagnostics log as noise.
+        if getattr(self, "_extra_hooked", False):
             try:
-                self.extra_btn.clicked.disconnect()
-            except Exception:
+                self.extra_btn.clicked.disconnect(self._launch_capcut_done)
+            except (RuntimeError, TypeError):
                 pass
-            from core import open_folder
-            proj = getattr(self, "_last_proj", None)
-            if proj:
-                self.extra_btn.clicked.connect(lambda: open_folder(proj))
+        self.extra_btn.clicked.connect(self._launch_capcut_done)
+        self._extra_hooked = True
+
+    def _launch_capcut_done(self):
+        """Open CapCut from the done state — the result lives inside it."""
+        self._launch_capcut(
+            "Opening CapCut. If it was already running, quit it completely "
+            "first — it only reads its project list at launch.")
 
     # ------------------------------------------------------------ fixes
     def can_fix(self, key: str) -> bool:
@@ -999,8 +1018,8 @@ class ClipCutterPage(ToolPage):
         # user to find the installer in the folder.
         return key in ("install_deps", "open_settings", "open_capcut")
 
-    def _launch_capcut(self):
-        """Open CapCut for someone who has to make their first project."""
+    def _launch_capcut(self, said: str = ""):
+        """Open CapCut. `said` is what to report once it is on its way."""
         import subprocess
         app = _capcut_app()
         if not app:
@@ -1013,8 +1032,8 @@ class ClipCutterPage(ToolPage):
                 os.startfile(app)          # type: ignore[attr-defined]
             else:
                 subprocess.run(["xdg-open", app], check=False)
-            self._sentence("Opening CapCut — make one project with a clip and a "
-                           "caption, then come back here.")
+            self._sentence(said or "Opening CapCut — make one project with a "
+                                    "clip and a caption, then come back here.")
         except Exception:
             self._sentence("Couldn't open CapCut from here — open it yourself.")
 
