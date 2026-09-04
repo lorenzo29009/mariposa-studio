@@ -4,8 +4,8 @@ Every value here was read out of that project's own text material (the one with
 background_color #ff0022), not invented — so a headline written by this skill matches
 the house look exactly. Re-extract with:
 
-    python3 -c "import json,os,portable as P;d=json.load(open(os.path.join(
-      P.capcut_projects(),'C96','draft_info.json')));
+    python3 -c "import json,os,portable as P;d=json.load(open(
+      P.draft_file(os.path.join(P.capcut_projects(),'C96'))));
       print([t for t in d['materials']['texts']
              if (t.get('background_color') or '').lower()=='#ff0022'][0])"
 

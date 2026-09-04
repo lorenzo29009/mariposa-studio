@@ -81,9 +81,9 @@ speech_clock ← script_text ← script_packer ← animator_*   (no Qt, no netwo
 | `script_packer.py` | Every cut: the DP, `ceiling()`, hook collapsing, merge/split/pin, the `overruns()` invariant, prompt/markdown output. Deterministic. |
 | `script_text.py` | The language layer: syllables, sentence splitting, seams, pronunciation map, copy guards. |
 | `speech_clock.py` | How long a line takes to say, **measured** via an offline synthesiser. Must NOT import `core` (that would drag PySide6 into the offline tests). |
-| `gemini.py` | The one Gemini HTTPS transport: `generate_text()` / `generate_json()`, TLS context, retry/backoff. No Qt. |
+| `gemini.py` | The one Gemini HTTPS transport: `generate_text()` / `generate_json()`, TLS context, retry/backoff, and `MODEL_CHAIN` — named models tried in order, because a pin dies on retirement (404) and a `…-latest` alias dies on free-tier quota (429). No Qt. |
 | `launcher.py` | Home (`LauncherPage`, `AppIcon`, `APP_TAGLINES`/`APP_DESCS`) and the ⌘K overlay (`SpotlightOverlay`). |
-| `settings_page.py` | Settings: the key + whether it *works*, the exports folder (size, change, clean up), and two switches about leaving. |
+| `settings_page.py` | Settings: the key + whether it *works*, the exports folder (size, change, clean up), and two switches about leaving. `notify_if_enabled()` is the ONE gate for the notification switch — a tool that calls `core.notify` directly silently ignores the user. |
 | `first_run.py` | The one-time setup screen: the key, and the real state of ffmpeg / eSpeak / WhisperX. |
 | `studio.py` | Thin entrypoint: `MainWindow` (shell + nav) and `main()`. Tools are registered in the `specs` list in `MainWindow.__init__`. |
 | `updater.py` | In-app auto-update (stdlib only). Repo coords in `REPO_OWNER`/`REPO_NAME`. |
@@ -99,6 +99,8 @@ QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/smoketest.py   # must print 
 ./venv/bin/python scripts/test_packer.py    # after script_packer/script_text
 ./venv/bin/python scripts/test_clock.py     # after speech_clock
 ./venv/bin/python scripts/test_failures.py  # after failures.py
+./venv/bin/python scripts/test_gemini.py    # after gemini.py — model chain, 429/404 text
+QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_settings.py   # after settings_page/prefs
 ./venv/bin/python scripts/test_portable.py  # after tools/clip-cutter/scripts/portable.py
 ./venv/bin/python scripts/test_fonts.py     # after brand/fonts/ or build_fonts.py — NOT offscreen
 ./venv/bin/python scripts/test_windows.py   # after any Windows branch, or a new spawn

@@ -25,7 +25,7 @@ from typing import Callable
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QVBoxLayout, QWidget,
 )
 
@@ -34,7 +34,7 @@ from design import DONE, STOP, TXT_META, WINE, svg_icon
 from core import (
     APP_VERSION, EXPORTS_DIR, open_folder, read_env_value, write_env_value,
 )
-from widgets import AppBar, SettingRow, Switch, _panel
+from widgets import AppBar, SettingRow, Switch, ask_confirm, _panel
 
 #: Preference keys, stored in the same .env everything else uses.
 KEY_NOTIFY = "MARIPOSA_NOTIFY_ON_FINISH"
@@ -54,6 +54,19 @@ def pref(key: str, default: bool = False) -> bool:
 
 def set_pref(key: str, value: bool) -> None:
     write_env_value(key, "1" if value else "0")
+
+
+def notify_if_enabled(title: str, body: str = "") -> None:
+    """Fire a finished-job notification, if the user asked for one.
+
+    The single gate for the "Notify me when something finishes" switch. Every
+    tool that finishes something calls THIS — a tool that reaches for
+    `core.notify` directly would ignore the switch, and a tool that never calls
+    either is a switch the user watches do nothing.
+    """
+    if pref(KEY_NOTIFY, True):
+        from core import notify
+        notify(title, body)
 
 
 def folder_size(path: Path) -> tuple[int, int]:
@@ -265,6 +278,17 @@ class SettingsPage(QWidget):
         row.addWidget(openb)
         cv.addLayout(row)
 
+        # Changing the folder cannot take effect until the next launch (every
+        # tool resolves it once, at import). That used to be said in a system
+        # modal and then forgotten, while the path on screen had already
+        # changed — so the app looked moved while every tool still wrote to the
+        # old place. Now it stays on screen until it is true.
+        self.pending_lbl = QLabel("")
+        self.pending_lbl.setObjectName("Meta")
+        self.pending_lbl.setWordWrap(True)
+        self.pending_lbl.hide()
+        cv.addWidget(self.pending_lbl)
+
         bottom = QHBoxLayout()
         bottom.setContentsMargins(0, 0, 0, 0)
         bottom.setSpacing(9)
@@ -281,7 +305,26 @@ class SettingsPage(QWidget):
         col.addWidget(card)
         return _panel(col)
 
+    def _show_pending(self, chosen: str) -> None:
+        """Say where new jobs WILL go, for as long as it isn't yet true."""
+        if Path(chosen) == Path(EXPORTS_DIR):
+            self.pending_lbl.hide()
+            return
+        self.pending_lbl.setText(
+            f"New jobs will write to {_tilde(Path(chosen))} the next time you "
+            f"open Mariposa Studio. Until then this is still the folder in use, "
+            f"and anything already in it stays where it is.")
+        self.pending_lbl.show()
+
     def _refresh_exports(self):
+        # The pref can name a folder the running app has not picked up yet —
+        # set in a previous visit, or in a previous session that was never
+        # relaunched. Either way it is still pending, so still says so.
+        chosen = read_env_value(KEY_EXPORTS).strip()
+        if chosen:
+            self._show_pending(chosen)
+        else:
+            self.pending_lbl.hide()
         size, folders = folder_size(EXPORTS_DIR)
         stale = stale_entries(EXPORTS_DIR)
         parts = ["Every tool makes its own folder in here."]
@@ -302,28 +345,24 @@ class SettingsPage(QWidget):
         if not chosen:
             return
         write_env_value(KEY_EXPORTS, chosen)
-        self.path_lbl.setText(_tilde(Path(chosen)))
         # Deliberately not applied live: a path that moved under a running job
-        # would leave half a batch in one place and half in another.
-        QMessageBox.information(
-            self, "Saved",
-            "New jobs will write here the next time you open Mariposa Studio.\n"
-            "Anything already in the old folder stays where it is.")
+        # would leave half a batch in one place and half in another. So the
+        # label keeps showing where the tools ARE writing, and the new folder is
+        # shown as what it is — pending.
+        self._show_pending(chosen)
 
     def _clear_old(self):
         """Destructive, so it asks — and it names what it will delete."""
         stale = stale_entries(EXPORTS_DIR)
         if not stale:
             return
-        names = "\n".join(f"  · {p.name}" for p in stale[:12])
-        more = f"\n  … and {len(stale) - 12} more" if len(stale) > 12 else ""
-        answer = QMessageBox.question(
-            self, "Delete these for good?",
-            f"{len(stale)} thing{'' if len(stale) == 1 else 's'} in "
-            f"{EXPORTS_DIR.name}/ have not been touched in {STALE_DAYS} days:\n\n"
-            f"{names}{more}\n\nThis cannot be undone.",
-            QMessageBox.Cancel | QMessageBox.Yes, QMessageBox.Cancel)
-        if answer != QMessageBox.Yes:
+        n = len(stale)
+        if not ask_confirm(
+                self, "Delete these for good?",
+                f"{n} thing{'' if n == 1 else 's'} in {EXPORTS_DIR.name}/ "
+                f"{'has' if n == 1 else 'have'} not been touched in "
+                f"{STALE_DAYS} days. This cannot be undone.",
+                ok_label=f"Delete {n}", cancel_label="Keep them"):
             return
         failed = 0
         for p in stale:
@@ -333,8 +372,11 @@ class SettingsPage(QWidget):
                 failed += 1
         self._refresh_exports()
         if failed:
-            QMessageBox.warning(self, "Partly done",
-                                f"{failed} could not be removed.")
+            # A second modal to report a partial result is one modal too many.
+            self.size_lbl.setText(
+                self.size_lbl.text()
+                + f" {failed} could not be removed — something still has "
+                  f"{'it' if failed == 1 else 'them'} open.")
 
     # ---- 3. while a job runs ------------------------------------------------
     def _while_running_section(self) -> QWidget:

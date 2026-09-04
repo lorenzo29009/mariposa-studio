@@ -20,6 +20,7 @@ and Windows builds. Add a caller here, not another copy.
 from __future__ import annotations
 
 import json
+import os
 import ssl
 import sys
 import time
@@ -27,13 +28,29 @@ import urllib.error
 import urllib.request
 
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
-# A *floating* alias, deliberately: Google retires dated/versioned models (e.g.
-# "gemini-2.5-flash" stopped being served to newly-created API keys, so every
-# teammate on a fresh key hit "this model is no longer available to new users").
-# "gemini-flash-latest" always resolves to the current stable Flash and stays
-# available to new keys, so a model retirement can't break the app again. It
-# supports everything we send (response_schema, seed, thinkingBudget:0).
-DEFAULT_MODEL = "gemini-flash-latest"
+
+# A CHAIN of named models, tried in order — not a single pin and not a floating
+# alias. Both of those have already failed here, in opposite directions:
+#
+#   * a pin ("gemini-2.5-flash") went 404 when Google stopped serving it to
+#     newly-created keys, so every teammate on a fresh key was dead;
+#   * the alias that replaced it ("gemini-flash-latest") follows Google onto
+#     whatever Flash launched most recently — which is the model LEAST likely to
+#     have free-tier quota switched on yet. Free keys then get an instant 429
+#     "you exceeded your current quota" on the first request of the day.
+#
+# Both failures are per-key and per-model, and both are invisible from a paid
+# key. A chain survives them without a release: the good model is tried first,
+# and a key that can't use it falls through to one it can. Every entry is
+# verified to accept the exact request shape this module sends (response_schema,
+# seed, thinkingBudget: 0) — `gemini-flash-lite-latest`, for one, does not.
+MODEL_CHAIN = ("gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.1-flash-lite")
+DEFAULT_MODEL = MODEL_CHAIN[0]
+
+# The chain member that last answered. The Animator makes two calls per build
+# and expects the same cut from the same script, so once a model has worked it
+# is tried first for the rest of the session rather than re-walking the chain.
+_WORKING_MODEL: "str | None" = None
 
 # Gemini answers a demand spike with 503 ("high demand … try again later") and
 # throttling with 429. Both clear on their own in a second or two, so they must
@@ -105,16 +122,78 @@ def ssl_context() -> ssl.SSLContext:
 # --- transport -------------------------------------------------------------
 
 class GeminiError(RuntimeError):
-    """Anything the caller should show the user verbatim."""
+    """Anything the caller should show the user verbatim.
+
+    Carries the HTTP status too, so `_post` can tell "this model won't work for
+    this key" (404/429 — try the next one) from "this request is wrong" (400 —
+    trying another model would only waste two more round trips)."""
+
+    def __init__(self, message: str, code: int = 0):
+        super().__init__(message)
+        self.code = code
+
+
+# A model answering with one of these is making a statement about ITSELF and
+# this key — it's retired, or the key has no quota on it. Another model in the
+# chain may well answer. Anything else is about the request, and repeating it
+# against a different model would just fail three times instead of once.
+MODEL_FATAL = (404, 429)
+
+
+def models_to_try(model: str) -> tuple[str, ...]:
+    """The models `_post` should walk, in order, for a caller asking `model`.
+
+    An explicit model — a caller's argument, or GEMINI_MODEL in the environment
+    — is a pin: it is tried alone, because someone who names a model wants that
+    model's answer and wants to be told when it can't be had. Only the default
+    fans out to the chain, led by whatever already worked this session.
+    """
+    override = (os.environ.get("GEMINI_MODEL") or "").strip()
+    if override:
+        return (override,)
+    if model != DEFAULT_MODEL:
+        return (model,)
+    if _WORKING_MODEL and _WORKING_MODEL in MODEL_CHAIN:
+        return (_WORKING_MODEL,) + tuple(
+            m for m in MODEL_CHAIN if m != _WORKING_MODEL)
+    return MODEL_CHAIN
 
 
 def _post(api_key: str, model: str, body: dict, timeout: int,
           retries: bool) -> dict:
-    """POST one generateContent request; return the parsed envelope."""
+    """POST one generateContent request; return the parsed envelope.
+
+    Walks `models_to_try()` and returns the first model's answer. A 404 or 429
+    from a model that isn't the last one costs no backoff at all — waiting 17
+    seconds on a model this key has no quota for, when the next model in the
+    chain would answer at once, is the failure this is here to avoid.
+    """
+    global _WORKING_MODEL
+    models = models_to_try(model)
+    last: "GeminiError | None" = None
+
+    for i, name in enumerate(models):
+        more = i < len(models) - 1
+        try:
+            payload = _post_one(api_key, name, body, timeout,
+                                retries=retries, quota_is_fatal=more)
+        except GeminiError as e:
+            if more and e.code in MODEL_FATAL:
+                last = e
+                continue
+            raise
+        _WORKING_MODEL = name
+        return payload
+
+    raise last or GeminiError("No response from Gemini.")
+
+
+def _post_one(api_key: str, model: str, body: dict, timeout: int, *,
+              retries: bool, quota_is_fatal: bool) -> dict:
+    """One model's turn: POST, with backoff on the codes worth waiting out."""
     url = f"{API_ROOT}/{model}:generateContent?key={api_key}"
     data = json.dumps(body).encode("utf-8")
     backoff = BACKOFF_S if retries else ()
-    last_error: "Exception | None" = None
 
     for attempt in range(len(backoff) + 1):
         req = urllib.request.Request(
@@ -124,35 +203,49 @@ def _post(api_key: str, model: str, body: dict, timeout: int,
                                         context=ssl_context()) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
-            if e.code not in RETRY_CODES or attempt >= len(backoff):
-                raise _http_error(e) from e
-            last_error = e
+            spent = attempt >= len(backoff)
+            if (e.code not in RETRY_CODES or spent
+                    or (e.code == 429 and quota_is_fatal)):
+                raise _http_error(e, model) from e
             time.sleep(backoff[attempt])
 
-    raise last_error or GeminiError("No response from Gemini.")
+    raise GeminiError("No response from Gemini.")
 
 
-def _http_error(e: urllib.error.HTTPError) -> GeminiError:
+def _http_error(e: urllib.error.HTTPError, model: str = "") -> GeminiError:
     try:
         detail = e.read().decode("utf-8", "ignore")[:600]
     except Exception:
         detail = ""
-    # A per-day quota doesn't clear by waiting a few seconds, and the raw JSON
-    # tells the user nothing they can act on.
-    if e.code == 429 and "PerDay" in detail:
+    if e.code == 429:
+        # A per-day quota doesn't clear by waiting a few seconds, and the raw
+        # JSON tells the user nothing they can act on.
+        if "PerDay" in detail:
+            return GeminiError(
+                "Gemini's free daily quota for this key is used up. It resets "
+                "tomorrow — or add billing to the Google project. A build costs "
+                "two requests.", 429)
+        # Not a daily cap. Either the per-minute allowance (clears in a minute)
+        # or a key with NO free-tier quota on these models at all (never clears
+        # by waiting) — and the two are told apart by when it happens, which is
+        # something only the person at the keyboard knows. So say both.
         return GeminiError(
-            "Gemini's free daily quota for this key is used up. It resets "
-            "tomorrow — or add billing to the Google project. A build costs "
-            "two requests.")
-    # A retired model. This shouldn't happen with the "…-latest" default, but a
-    # stale GEMINI_MODEL override or a future retirement would land here — say so
-    # plainly instead of dumping the raw JSON.
+            "Gemini refused this key on every model Mariposa can use, for "
+            "quota. If you've just run a few builds, wait a minute — the free "
+            "tier allows only a handful of requests per minute. If it fails on "
+            "the very first build of the day, this key has no free quota for "
+            "these models: add billing to the Google project, or set "
+            "GEMINI_MODEL in tools/captions-de/.env to a model it can use.",
+            429)
+    # A retired model. The chain should absorb this, so reaching the user means
+    # every model in it was refused — or GEMINI_MODEL pins a dead one.
     if e.code == 404 and ("no longer available" in detail or "not found" in detail):
         return GeminiError(
-            "Gemini rejected the model this app asked for (it's been retired). "
-            "Update Mariposa Studio to the latest version — if it still fails, "
-            "make sure GEMINI_MODEL isn't pinned to an old model in your .env.")
-    return GeminiError(f"HTTP {e.code}: {detail[:300]}")
+            "Gemini has retired every model this app knows how to ask for. "
+            "Update Mariposa Studio — if it still fails, make sure GEMINI_MODEL "
+            "isn't pinned to an old model in tools/captions-de/.env.", 404)
+    where = f" from {model}" if model else ""
+    return GeminiError(f"HTTP {e.code}{where}: {detail[:300]}", e.code)
 
 
 def _answer_text(payload: dict) -> tuple[str, str]:

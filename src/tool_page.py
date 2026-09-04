@@ -82,28 +82,6 @@ def _kill_tree(proc: QProcess) -> None:
     proc.kill()
 
 
-def _notify(title: str, body: str) -> None:
-    """A system notification, on whichever platform we are on.
-
-    QSystemTrayIcon is the cross-platform route and it is already in
-    QtWidgets, so this costs no new dependency. It is best-effort by design:
-    a machine with notifications switched off should finish the job quietly,
-    not raise an error about it."""
-    try:
-        from PySide6.QtWidgets import QApplication, QSystemTrayIcon
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            return
-        app = QApplication.instance()
-        tray = getattr(app, "_mariposa_tray", None)
-        if tray is None:
-            tray = QSystemTrayIcon(app.windowIcon(), app)
-            tray.show()
-            app._mariposa_tray = tray          # type: ignore[attr-defined]
-        tray.showMessage(title, body, QSystemTrayIcon.Information, 5000)
-    except Exception:
-        pass
-
-
 class ToolPage(QWidget):
     title: str = "Tool"
     subtitle: str = ""
@@ -248,7 +226,14 @@ class ToolPage(QWidget):
     def build_command(self) -> Optional[tuple[str, list[str], Optional[Path]]]:
         raise NotImplementedError
 
-    def validate(self) -> Optional[str]:
+    def validate(self):
+        """Why this run can't start yet, or None when it can.
+
+        Either a sentence, or a `(headline, hint)` pair when there is something
+        worth adding under it — the headline is what the user reads, the hint is
+        the small line below. Keep the headline to a phrase: it is shown on a
+        card AND in the log.
+        """
         return None
 
     def after_finished(self, code: int):
@@ -341,9 +326,15 @@ class ToolPage(QWidget):
     def _on_run(self):
         err = self.validate()
         if err:
-            self._log(f"✗ {err}", color=STOP)
+            # `validate()` may answer with a sentence, or with a (headline,
+            # one quiet line under it) pair. The headline alone goes to the log:
+            # printing the advice twice, once in the card and once in the log,
+            # is how a small "not ready yet" turned into a wall of red text.
+            title, body = err if isinstance(err, tuple) else (err, "")
+            self._log(f"✗ {title}", color=STOP)
             self._set_status("error")
-            self.show_failure(failures.Failure(key="invalid", title=err, body=""))
+            self.show_failure(failures.Failure(key="invalid", title=title,
+                                               body=body))
             return
         cmd = self.build_command()
         if not cmd:
@@ -535,10 +526,10 @@ class ToolPage(QWidget):
         may have to reach someone who has walked away — and may be the reason
         the app is still open at all."""
         import settings_page as prefs
-        if prefs.pref(prefs.KEY_NOTIFY, True):
-            _notify(f"{self.title} — {'done' if ok else 'stopped'}",
-                    (self.log or self.strip).title.text()
-                    if (self.log or self.strip) else "")
+        prefs.notify_if_enabled(
+            f"{self.title} — {'done' if ok else 'stopped'}",
+            (self.log or self.strip).title.text()
+            if (self.log or self.strip) else "")
         if prefs.pref(prefs.KEY_AUTOQUIT, False) and not self._other_jobs_running():
             # A moment's grace so the done state is actually seen.
             from PySide6.QtCore import QTimer as _QTimer

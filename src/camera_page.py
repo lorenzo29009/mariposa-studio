@@ -23,7 +23,7 @@ from design import (
 
 import session
 from core import (
-    CAMERA_PROMPT_DIR, read_env_value,
+    CAMERA_PROMPT_DIR, gemini_model_override, read_env_value,
 )
 from widgets import (
     AppBar,
@@ -70,8 +70,7 @@ class GeminiWorker(QObject):
     done = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, api_key: str, prompt: str,
-                 model: str = gemini.DEFAULT_MODEL):
+    def __init__(self, api_key: str, prompt: str, model: str = ""):
         super().__init__()
         self.api_key = api_key
         self.prompt = prompt
@@ -80,8 +79,9 @@ class GeminiWorker(QObject):
     @Slot()
     def run(self):
         try:
-            self.done.emit(gemini.generate_text(self.api_key, self.prompt,
-                                                model=self.model))
+            self.done.emit(gemini.generate_text(
+                self.api_key, self.prompt,
+                model=self.model or gemini.DEFAULT_MODEL))
         except Exception as e:
             self.failed.emit(str(e))
 
@@ -618,7 +618,7 @@ class CameraPromptsPage(QWidget):
         self.gen_btn.setText("Generating…")
 
         thread = QThread(self)
-        worker = GeminiWorker(key, user_prompt)
+        worker = GeminiWorker(key, user_prompt, model=gemini_model_override())
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.done.connect(self._on_gemini_done)
@@ -640,6 +640,8 @@ class CameraPromptsPage(QWidget):
     @Slot(str)
     def _on_gemini_done(self, text: str):
         session.note_gemini(self.title)
+        import settings_page as prefs
+        prefs.notify_if_enabled("Camera Prompts", "your prompt is ready")
         compact = " ".join(text.split())  # collapse internal newlines
         self._open_sheet()
         self.result.setPlainText(compact)

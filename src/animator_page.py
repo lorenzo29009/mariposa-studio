@@ -37,7 +37,8 @@ from design import (
     ACCENT, DONE, FILL, SHADOW_REST, TEXT_DIM, WINE, WINE_SOFT, apply_shadow,
     svg_icon,
 )
-from core import chevron_icon, read_env_value
+import session
+from core import chevron_icon, gemini_model_override, read_env_value
 from widgets import AppBar, Select
 from script_packer import (
     build_markdown, build_prompt, ends_mid_sentence,
@@ -767,6 +768,7 @@ class AnimatorPage(ScenesStage, QWidget):
 
         thread = QThread(self)
         worker = ScenePipelineWorker(key, blocks, self.language_name(),
+                                     model=gemini_model_override(),
                                      pronunciation=parse_pronunciation(
                                          self.pronunciation()))
         worker.moveToThread(thread)
@@ -852,10 +854,22 @@ class AnimatorPage(ScenesStage, QWidget):
         if self._panel is not None:
             self._panel.update_scenes(self.scenes, self.tail())
         self._show_stage(self.STAGE_SCENES)
+        # Two things Settings could not previously know about a build. The key
+        # dot stayed grey ("nothing has used it yet") after ten good builds,
+        # because only Camera Prompts ever said it had used the key; and the
+        # notification switch never fired for the longest wait in the app.
+        session.note_gemini(self.title)
+        self._announce(f"{len(self.scenes)} clips cut" if self.scenes else "")
 
     @Slot(str)
     def _on_failed(self, err: str):
         self._set_status(f"Gemini failed — {err[:160]}", err=True)
+        self._announce("the build stopped")
+
+    def _announce(self, body: str):
+        """Honour the Settings notification switch, as every other tool does."""
+        import settings_page as prefs
+        prefs.notify_if_enabled("Script Animator", body)
 
     def _attach_notes(self, notes: list[str], scenes: list[dict]) -> dict:
         """Hang each build note on the thing it is about.

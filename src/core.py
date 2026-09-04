@@ -104,7 +104,8 @@ __all__ = [
     "FLOW_CROPPER_DIR", "CAPTIONS_DIR", "EXTRACT_DIR", "CAMERA_PROMPT_DIR",
     "WHISPERX_PY", "ENV_PATH",
     "studio_python", "make_qprocess_env", "chevron_icon", "arrow_icon",
-    "reveal_in_finder", "open_folder", "read_env_value", "write_env_value",
+    "reveal_in_finder", "open_folder", "notify", "read_env_value", "write_env_value",
+    "gemini_model_override",
     "ensure_windows_shortcut", "make_nonactivating_panel",
 ]
 
@@ -160,6 +161,34 @@ def reveal_in_finder(p: Path):
         else:  # Linux/other: no portable "reveal + select" — open the parent.
             target = p if p.is_dir() else p.parent
             subprocess.run(["xdg-open", str(target)], check=False)
+    except Exception:
+        pass
+
+
+def notify(title: str, body: str = "") -> None:
+    """A system notification, on whichever platform we are on.
+
+    QSystemTrayIcon is the cross-platform route and it is already in QtWidgets,
+    so this costs no new dependency. Best-effort by design: a machine with
+    notifications switched off should finish the job quietly, not raise about it.
+
+    Lives here, beside the other platform helpers, because it is not one tool's
+    business — it used to be private to `tool_page`, which is why the Settings
+    switch that turns it on did nothing for the Script Animator.
+    """
+    try:
+        from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        app = QApplication.instance()
+        if app is None:
+            return
+        tray = getattr(app, "_mariposa_tray", None)
+        if tray is None:
+            tray = QSystemTrayIcon(app.windowIcon(), app)
+            tray.show()
+            app._mariposa_tray = tray          # type: ignore[attr-defined]
+        tray.showMessage(title, body, QSystemTrayIcon.Information, 5000)
     except Exception:
         pass
 
@@ -315,6 +344,17 @@ def read_env_value(key: str) -> str:
         if line.startswith(f"{key}="):
             return line.split("=", 1)[1].strip().strip('"').strip("'")
     return ""
+
+
+def gemini_model_override() -> str:
+    """A GEMINI_MODEL pin from the .env, or "" when there is none.
+
+    The escape hatch for a key that Google won't serve the models in
+    `gemini.MODEL_CHAIN` — someone stuck can be unblocked by one line in a text
+    file instead of by a release. Read here rather than in `gemini`, which owns
+    no paths and must not learn about the .env.
+    """
+    return read_env_value("GEMINI_MODEL").strip()
 
 
 def write_env_value(key: str, value: str):

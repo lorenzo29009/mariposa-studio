@@ -71,6 +71,27 @@ def _portable():
         return None
 
 
+#: What to say when a preflight row comes back not-ok, keyed by its name.
+#: A headline the user reads, and one quiet line underneath. The pipeline
+#: reports FACTS (`portable.preflight`); the sentences are ours.
+_FIX_HINTS = {
+    "ffmpeg": ("ffmpeg isn't installed",
+               "Run the Mariposa installer again — it fetches ffmpeg."),
+    "ffprobe": ("ffmpeg isn't installed",
+                "Run the Mariposa installer again — it fetches ffmpeg."),
+    "the captioner": ("The captions tool is missing",
+                      "Reinstall Mariposa Studio."),
+    "WhisperX": ("WhisperX isn't installed",
+                 "Open Captions and run its installer once."),
+    "CapCut": ("CapCut wasn't found",
+               "Open CapCut once so it creates its projects folder."),
+    "a CapCut project to take the style from": (
+        "No CapCut project to copy the style from",
+        "Clip Cutter matches an existing project's look. Make one in CapCut "
+        "with a clip and a caption, then try again."),
+}
+
+
 def _preflight():
     """[(name, ok, detail)] from the pipeline's own resolver, or [] if absent.
 
@@ -859,11 +880,13 @@ class ClipCutterPage(ToolPage):
                     "Mariposa Studio." % PIPELINE_DIR)
         # Everything the run needs, asked before the run rather than discovered
         # twenty minutes into it. The first unmet item is the one to fix, so that
-        # is the one named — with the fix, not just the fact.
-        for name, ok, detail in _preflight():
+        # is the one named — as a short headline, with the advice on the quiet
+        # line underneath rather than shouted in the middle of the screen.
+        for name, ok, _detail in _preflight():
             if ok:
                 continue
-            return "%s: %s" % (name[0].upper() + name[1:], detail)
+            return _FIX_HINTS.get(name, ("%s is missing." % name.capitalize(),
+                                         "Reinstall Mariposa Studio."))
         if not self._hook_rows or not any(r.names() for r in self._hook_rows):
             return "Give at least one hook a clip."
         if not self.body.names():

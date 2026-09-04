@@ -382,7 +382,7 @@ class ScenePipelineWorker(QObject):
     failed = Signal(str)
 
     def __init__(self, api_key: str, blocks: list[dict], language: str,
-                 model: str = gemini.DEFAULT_MODEL,
+                 model: str = "",
                  pronunciation: "list[tuple[str, str]] | None" = None):
         super().__init__()
         self.api_key = api_key
@@ -395,7 +395,7 @@ class ScenePipelineWorker(QObject):
     def _call(self, prompt: str, schema: dict) -> dict:
         """One schema-constrained Gemini call. Transport lives in `gemini`."""
         return gemini.generate_json(self.api_key, prompt, schema,
-                                    model=self.model)
+                                    model=self.model or gemini.DEFAULT_MODEL)
 
 
     # -- the build ----------------------------------------------------------

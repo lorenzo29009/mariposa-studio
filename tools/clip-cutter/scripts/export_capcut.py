@@ -9,7 +9,9 @@ one trim or retyping one word meant coming back to the pipeline. This writes the
 SOURCE clips onto a timeline with the trims and dead-air cuts already applied, plus
 the captions as editable text — so the manual revision is actually manual.
 
-HOW IT WORKS, AND WHY THIS WAY: CapCut's draft_info.json is plain JSON but entirely
+HOW IT WORKS, AND WHY THIS WAY: CapCut's draft document — draft_info.json on
+macOS, draft_content.json on Windows, which is why every reader here goes
+through portable.draft_file() — is plain JSON but entirely
 undocumented and version-tagged (this machine: version 360000 / 169.0.0). A video
 segment carries ~45 keys and a video material ~66, and each segment references six
 "extra materials" (speed, canvas, sound-channel-mapping, ...) by GUID. Authoring all
@@ -68,8 +70,8 @@ def newest_template(root):
     cands, rejected = [], []
     for n in sorted(os.listdir(root)):
         d = os.path.join(root, n)
-        f = os.path.join(d, "draft_info.json")
-        if not (os.path.isdir(d) and os.path.exists(f)):
+        f = portable.draft_file(d) if os.path.isdir(d) else ""
+        if not f:
             continue
         if os.path.exists(os.path.join(d, MARKER)):
             continue                              # our own output
@@ -276,7 +278,9 @@ def template_token(tpl, projects_dir=None):
     if m:
         return m.group(1)
     for n in sorted(os.listdir(projects_dir or "")):
-        f = os.path.join(projects_dir, n, "draft_info.json")
+        f = portable.draft_file(os.path.join(projects_dir, n))
+        if not f:
+            continue          # a cache or recycle-bin folder, not a project
         try:
             with open(f, encoding="utf-8") as fh:
                 m = TOKEN_RE.search(fh.read())
@@ -657,7 +661,7 @@ def collect_media(d):
 
 def write_project(out_dir, tpl_dir, d, m, plan, name, a, now_us, media_paths=None,
                   cover=(None, 0.0)):
-    """Write draft_info.json + draft_meta_info.json (+ inherited side files)."""
+    """Write the draft document + draft_meta_info.json (+ inherited side files)."""
     with open(os.path.join(tpl_dir, "draft_meta_info.json"), encoding="utf-8") as fh:
         meta = json.load(fh)
     draft_id = gid()
@@ -685,7 +689,8 @@ def write_project(out_dir, tpl_dir, d, m, plan, name, a, now_us, media_paths=Non
         [{"type": t, "value": []} for t in (1, 2, 3, 6, 7, 8)]
 
     os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, "draft_info.json"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(out_dir, portable.draft_file_name()), "w",
+              encoding="utf-8") as fh:
         json.dump(d, fh, ensure_ascii=False)
     with open(os.path.join(out_dir, "draft_meta_info.json"), "w", encoding="utf-8") as fh:
         json.dump(meta, fh, ensure_ascii=False)
@@ -708,14 +713,14 @@ def write_project(out_dir, tpl_dir, d, m, plan, name, a, now_us, media_paths=Non
     return draft_id
 
 
-# What CapCut derives from draft_info.json and re-derives on open. On a re-export
+# What CapCut derives from the draft document and re-derives on open. On a re-export
 # these describe the PREVIOUS content, so they are cleared rather than left to
 # disagree with the project they sit next to.
 def meta_path(p):
     """The path form CapCut writes into `draft_meta_info.json`: `./media/<file>`
     for media inside the project, the absolute path for anything outside it.
 
-    The two files disagree on purpose. `draft_info.json` is the portable document
+    The two files disagree on purpose. The draft document is the portable one
     and uses the `##_draftpath_placeholder_..._##` token; this one is the local
     media index and uses a plain relative path. Both survive a rename; an absolute
     path into the project folder does not.
@@ -725,8 +730,9 @@ def meta_path(p):
     return p
 
 
-DERIVED = ("subdraft", "Timelines", "draft_info.json.bak", "template-2.tmp",
-           ".locked", "timeline_layout.json", "draft_virtual_store.json")
+DERIVED = ("subdraft", "Timelines", "template-2.tmp", ".locked",
+           "timeline_layout.json", "draft_virtual_store.json") + tuple(
+    name + ".bak" for name in portable.DRAFT_FILE_NAMES)
 
 
 def reclaim(out_dir):
@@ -794,7 +800,7 @@ def register(a, out_dir, name, d, draft_id, now_us):
     entry.update({
         "draft_id": draft_id, "draft_name": name,
         "draft_fold_path": out_dir, "draft_root_path": a.projects_dir,
-        "draft_json_file": os.path.join(out_dir, "draft_info.json"),
+        "draft_json_file": os.path.join(out_dir, portable.draft_file_name()),
         "draft_cover": os.path.join(out_dir, "draft_cover.jpg"),
         "tm_draft_create": now_us, "tm_draft_modified": now_us,
         "tm_draft_removed": 0, "tm_duration": d["duration"],
@@ -878,7 +884,11 @@ def main():
             raise SystemExit("unknown segment %r" % s)
 
     tpl_dir = a.template or newest_template(a.projects_dir)
-    with open(os.path.join(tpl_dir, "draft_info.json"), encoding="utf-8") as fh:
+    tpl_json = portable.draft_file(tpl_dir)
+    if not tpl_json:
+        raise SystemExit("%s holds no CapCut timeline document (looked for %s)"
+                         % (tpl_dir, " / ".join(portable.DRAFT_FILE_NAMES)))
+    with open(tpl_json, encoding="utf-8") as fh:
         tpl = json.load(fh)
     tpl_m = tpl["materials"]
     if not tpl_m.get("videos"):
@@ -926,7 +936,7 @@ def main():
     # ---- media location -----------------------------------------------------
     # macOS TCC protects ~/Downloads, ~/Desktop and ~/Documents. CapCut can only
     # open files there if the user granted access through its own import dialog;
-    # a path written straight into draft_info.json gets no grant, so the project
+    # a path written straight into the draft document gets no grant, so the project
     # opens with "File not accessible" on every clip. ~/Movies is not protected,
     # so hardlinking the clips into the project folder sidesteps it entirely --
     # and a hardlink costs no disk space (same volume).
@@ -1071,6 +1081,9 @@ def main():
         for sid, content, cfg, cov_src in subdrafts:
             sd = os.path.join(out_dir, "subdraft", sid)
             os.makedirs(sd, exist_ok=True)
+            # NOT portable.draft_file_name(). A subdraft's nested timeline is
+            # called draft_content.json on BOTH platforms — it is the outer
+            # document whose name changes. Leave this literal.
             with open(os.path.join(sd, "draft_content.json"), "w", encoding="utf-8") as fh:
                 json.dump(content, fh, ensure_ascii=False)
             with open(os.path.join(sd, "sub_draft_config.json"), "w", encoding="utf-8") as fh:
@@ -1261,7 +1274,8 @@ def main():
     if a.media == "link":
         print(describe_media(*place_media(sorted(vid_by_src), plan["folder"],
                                           media_dir), media_dir))
-    with open(os.path.join(out_dir, "draft_info.json"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(out_dir, portable.draft_file_name()), "w",
+              encoding="utf-8") as fh:
         json.dump(d, fh, ensure_ascii=False)
     with open(os.path.join(out_dir, "draft_meta_info.json"), "w", encoding="utf-8") as fh:
         json.dump(meta, fh, ensure_ascii=False)
@@ -1296,7 +1310,7 @@ def main():
         tpl_entry.update({
             "draft_id": draft_id, "draft_name": name,
             "draft_fold_path": out_dir, "draft_root_path": a.projects_dir,
-            "draft_json_file": os.path.join(out_dir, "draft_info.json"),
+            "draft_json_file": os.path.join(out_dir, portable.draft_file_name()),
             "draft_cover": os.path.join(out_dir, "draft_cover.jpg"),
             "tm_draft_create": now_us, "tm_draft_modified": now_us,
             "tm_draft_removed": 0, "tm_duration": d["duration"],

@@ -83,15 +83,29 @@ def probe(home, body, env=None, platform=None):
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
-def draft(dirpath, font_path=None):
-    """A minimal CapCut draft. `font_path` goes in exactly as CapCut writes it."""
+def draft(dirpath, font_path=None, doc="draft_info.json"):
+    """A minimal CapCut draft. `font_path` goes in exactly as CapCut writes it.
+
+    `doc` is the name of the timeline document, and it MATTERS: CapCut calls it
+    draft_info.json on macOS and draft_content.json on Windows. This helper used
+    to write the macOS name unconditionally, including inside the [windows]
+    scenarios — so the Windows paths were tested against Mac-shaped drafts, the
+    suite passed, and every real Windows user was told they had no CapCut
+    projects at all. A fixture that is wrong in the same way as the code proves
+    nothing. Windows scenarios below use `wdraft`.
+    """
     os.makedirs(dirpath, exist_ok=True)
     info = {"materials": {"texts": [], "videos": []}, "tracks": []}
     if font_path:
         info["materials"]["texts"] = [
             {"type": "text", "font_path": font_path, "font_title": "Proxima Nova"}]
-    with open(os.path.join(dirpath, "draft_info.json"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(dirpath, doc), "w", encoding="utf-8") as fh:
         json.dump(info, fh)
+
+
+def wdraft(dirpath, font_path=None):
+    """A draft as CapCut for WINDOWS writes it."""
+    return draft(dirpath, font_path, doc="draft_content.json")
 
 
 tmp = Path(tempfile.mkdtemp(prefix="mariposa-portable-"))
@@ -216,7 +230,7 @@ try:
     local = home / "AppData" / "Local"
     base = local / "CapCut" / "User Data" / "Projects" / "com.lveditor.draft"
     for name in ("C1", "C2"):
-        draft(base / name)
+        wdraft(base / name)
     r = probe(home, """
         out["projects"] = portable.capcut_projects()
         out["templates"] = portable.capcut_template_count()
@@ -232,7 +246,7 @@ try:
     local = home / "AppData" / "Local"
     local.mkdir(parents=True)
     base = home / "Documents" / "CapCut" / "User Data" / "Projects" / "com.lveditor.draft"
-    draft(base / "C9")
+    wdraft(base / "C9")
     r = probe(home, 'out["projects"] = portable.capcut_projects()',
               env={"LOCALAPPDATA": str(local)}, platform="win32")
     check("[windows] a draft folder outside %LOCALAPPDATA% is still discovered",
@@ -246,7 +260,7 @@ try:
     fdir = local / "CapCut" / "Apps" / "6.4.0" / "Resources" / "Font"
     fdir.mkdir(parents=True)
     (fdir / "Proxima Nova Semibold.ttf").write_bytes(b"\x00\x01\x00\x00")
-    draft(base / "C10", font_path=str(fdir / "Proxima Nova Semibold.ttf"))
+    wdraft(base / "C10", font_path=str(fdir / "Proxima Nova Semibold.ttf"))
     r = probe(home, """
         out["font"] = portable.capcut_font()[0]
         out["title"] = portable.capcut_font()[1]
@@ -260,7 +274,7 @@ try:
     home = tmp / "win-nofont"
     local = home / "AppData" / "Local"
     base = local / "CapCut" / "User Data" / "Projects" / "com.lveditor.draft"
-    draft(base / "C11")
+    wdraft(base / "C11")
     r = probe(home, """
         out["font"], out["title"] = portable.capcut_font()
         out["missing"] = portable.missing()
@@ -270,6 +284,59 @@ try:
     check("[windows] ...and that is not reported as a missing dependency",
           not any("caption face" in m for m in r["missing"]),
           "missing: " + (", ".join(r["missing"]) or "nothing"))
+
+    # The bug this section exists for, stated outright: on Windows CapCut names
+    # the timeline document draft_content.json, and this pipeline was written on
+    # a Mac where it is draft_info.json. Nine hard-coded copies of the Mac name
+    # meant a Windows editor with a full draft folder was told to "make one
+    # project in CapCut, then come back".
+    home = tmp / "win-draftname"
+    local = home / "AppData" / "Local"
+    base = local / "CapCut" / "User Data" / "Projects" / "com.lveditor.draft"
+    for name in ("C20", "C21", "C22"):
+        wdraft(base / name)
+    r = probe(home, """
+        out["templates"] = portable.capcut_template_count()
+        out["missing"] = portable.missing()
+        out["names"] = list(portable.DRAFT_FILE_NAMES)
+    """, env={"LOCALAPPDATA": str(local)}, platform="win32")
+    check("[windows] drafts named draft_content.json are counted as projects",
+          r["templates"] == 3, "counted %s" % r["templates"])
+    check("[windows] ...so the style-template preflight row passes",
+          not any("style" in m for m in r["missing"]),
+          "missing: " + (", ".join(r["missing"]) or "nothing"))
+    check("[windows] ...and the platform's own name leads",
+          r["names"][0] == "draft_content.json", str(r["names"]))
+
+    # A project carried over from a Mac — a synced folder, a copied draft. The
+    # name is discovered per draft, so it still reads.
+    home = tmp / "win-mixed"
+    local = home / "AppData" / "Local"
+    base = local / "CapCut" / "User Data" / "Projects" / "com.lveditor.draft"
+    wdraft(base / "C30")
+    draft(base / "C31")                       # written by CapCut on a Mac
+    r = probe(home, 'out["templates"] = portable.capcut_template_count()',
+              env={"LOCALAPPDATA": str(local)}, platform="win32")
+    check("[windows] a Mac-written draft in a Windows folder still counts",
+          r["templates"] == 2, "counted %s" % r["templates"])
+
+    # The other half of the same complaint: the documented folder exists but is
+    # empty, while the real projects sit under another vendor folder. The
+    # documented path used to win on sight and the search never ran.
+    home = tmp / "win-empty-known"
+    local = home / "AppData" / "Local"
+    (local / "CapCut" / "User Data" / "Projects" / "com.lveditor.draft").mkdir(parents=True)
+    real = local / "CapCut Pro" / "User Data" / "Projects" / "com.lveditor.draft"
+    for name in ("C40", "C41"):
+        wdraft(real / name)
+    r = probe(home, """
+        out["projects"] = portable.capcut_projects()
+        out["templates"] = portable.capcut_template_count()
+    """, env={"LOCALAPPDATA": str(local)}, platform="win32")
+    check("[windows] an empty documented folder does not win over a real one",
+          Path(r["projects"]) == real, r["projects"].replace(str(home), "~"))
+    check("[windows] ...and the real projects are the ones counted",
+          r["templates"] == 2, "counted %s" % r["templates"])
 
     # ---------------------------------------------------------------- 9
     # The preflight contract the app's Clip Cutter page depends on.
@@ -282,14 +349,19 @@ try:
                            and isinstance(x[0], str) and isinstance(x[1], bool)
                            and isinstance(x[2], str) for x in rows)
         out["names"] = [x[0] for x in rows]
-        out["mentions_override"] = any("CAPCUT_PROJECTS_DIR" in x[2] for x in rows)
+        out["details"] = [x[2] for x in rows if not x[1]]
     """)
     check("preflight() returns (name, ok, detail) triples", r["shape"],
           "%d rows" % r["n"])
     check("...covering every dependency the run needs", r["n"] >= 6,
           ", ".join(r["names"]))
-    check("...and naming the override when CapCut cannot be found",
-          r["mentions_override"])
+    # A detail is a fact, not a paragraph of advice. It goes on screen, and the
+    # long instructional sentences that used to live here read like a stack
+    # trace to someone who just pressed Run — the app writes the sentence now
+    # (_FIX_HINTS in src/clip_cutter_page.py), this reports the state.
+    check("...with short, factual details, not instructions",
+          all(len(d) <= 40 for d in r["details"]),
+          "longest: %r" % max(r["details"], key=len, default=""))
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 

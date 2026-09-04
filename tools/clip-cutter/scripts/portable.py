@@ -191,6 +191,46 @@ def concat_line(path):
 # rest. Nothing here needs a maintainer to know where a given CapCut put itself.
 _DRAFT_LEAF = "com.lveditor.draft"
 
+# CapCut's timeline document has TWO names, and which one a draft carries is
+# decided by the PLATFORM, not by the version:
+#
+#     macOS    ~/Movies/CapCut/.../<project>/draft_info.json
+#     Windows  %LOCALAPPDATA%/CapCut/.../<project>/draft_content.json
+#
+# Same schema, same job, different file name. This pipeline grew up on one Mac
+# and hard-coded the macOS name in nine places, so on Windows every draft looked
+# like "not a project": Clip Cutter told a user with a folder full of CapCut
+# projects to "make one project in CapCut, then come back", and the font
+# discovery that reads the user's own drafts quietly found nothing.
+#
+# So the name is DISCOVERED per draft, not declared — a draft written by the
+# other platform (a synced folder, a project copied between machines) still
+# reads. The platform's own name leads, and is the one used when WRITING.
+DRAFT_FILE_NAMES = (("draft_content.json", "draft_info.json") if IS_WINDOWS
+                    else ("draft_info.json", "draft_content.json"))
+
+
+def draft_file(draft_dir):
+    """The timeline document inside `draft_dir`, or "" if it holds none.
+
+    "" is the honest answer for "this folder is not a CapCut project" — every
+    caller here already has to handle a folder that isn't one.
+    """
+    for name in DRAFT_FILE_NAMES:
+        f = os.path.join(draft_dir, name)
+        if os.path.exists(f):
+            return f
+    return ""
+
+
+def draft_file_name():
+    """What to CALL the timeline document in a draft this tool writes.
+
+    Always this platform's own name: the draft is being written for the CapCut
+    installed on THIS machine, and that is the only one that has to open it.
+    """
+    return DRAFT_FILE_NAMES[0]
+
 
 def _draft_dir_globs():
     """Glob patterns that would match a CapCut draft folder on this platform.
@@ -245,7 +285,12 @@ def capcut_projects():
     else:
         known = os.path.expanduser(
             "~/Movies/CapCut/User Data/Projects/" + _DRAFT_LEAF)
-    if os.path.isdir(known):
+    # The documented path wins ONLY if it actually holds projects. An empty one
+    # is common and misleading: a reinstall, a second CapCut build, a machine
+    # where the drafts live under a vendor folder with another name. Returning
+    # it unseen is how a user with a full draft folder somewhere else was told
+    # they had no projects at all — the glob below was never reached.
+    if _draft_count(known) > 0:
         return known
 
     found = []
@@ -255,14 +300,38 @@ def capcut_projects():
                 found.append(hit)
     if found:
         # Most drafts wins, then most recently touched: an install someone
-        # actually edits in beats a leftover from an uninstalled build.
-        def rank(d):
-            try:
-                return (len(os.listdir(d)), os.path.getmtime(d))
-            except OSError:
-                return (0, 0)
-        return max(found, key=rank)
-    return known
+        # actually edits in beats a leftover from an uninstalled build. Drafts
+        # are COUNTED, not guessed from `len(os.listdir)` — CapCut leaves cache
+        # and recycle-bin folders in there that are not projects.
+        best = max(found, key=lambda d: (_draft_count(d), _mtime(d)))
+        if _draft_count(best) > 0:
+            return best
+
+    # Nothing anywhere holds a project. Prefer a real directory to a theoretical
+    # one, so the "no projects yet" message names a folder the user can open.
+    return known if os.path.isdir(known) else (found[0] if found else known)
+
+
+def _mtime(d):
+    try:
+        return os.path.getmtime(d)
+    except OSError:
+        return 0
+
+
+def _draft_count(root):
+    """How many immediate subfolders of `root` are CapCut projects."""
+    if not os.path.isdir(root):
+        return 0
+    n = 0
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return 0
+    for name in names:
+        if draft_file(os.path.join(root, name)):
+            n += 1
+    return n
 
 
 # The house caption + headline face, by file and by the name CapCut lists it
@@ -312,7 +381,7 @@ def _font_dirs_from_drafts(limit=14):
     fonts" is already sitting in the user's own projects — read it instead of
     guessing.
 
-    The drafts are scanned as text, not parsed as JSON: a draft_info.json runs
+    The drafts are scanned as text, not parsed as JSON: a draft document runs
     to ~800 KB and only the newest handful are worth looking at.
     """
     root = capcut_projects()
@@ -327,8 +396,8 @@ def _font_dirs_from_drafts(limit=14):
         return []
     dirs, seen = [], set()
     for proj in names[:limit]:
-        f = os.path.join(proj, "draft_info.json")
-        if not os.path.exists(f):
+        f = draft_file(proj)
+        if not f:
             continue
         try:
             with open(f, encoding="utf-8", errors="replace") as fh:
@@ -417,14 +486,7 @@ def capcut_template_count():
     A cheap structural count, not `newest_template()`'s full validation: it is
     here so the app can say "make one project in CapCut first" before a job
     starts, instead of letting the exporter exit on the last step."""
-    root = capcut_projects()
-    if not os.path.isdir(root):
-        return 0
-    n = 0
-    for name in os.listdir(root):
-        if os.path.exists(os.path.join(root, name, "draft_info.json")):
-            n += 1
-    return n
+    return _draft_count(capcut_projects())
 
 
 # --- What the app asks before it starts a job -----------------------------
@@ -433,36 +495,34 @@ def preflight():
 
     Ordered by when a run would trip over it, so the first `not ok` is also the
     first thing to fix.
+
+    A `detail` is a FACT, kept short — a path when the thing is here, two or
+    three words when it is not. It ends up on screen, and a paragraph of advice
+    reads like a stack trace to the person who just wanted to press Run. What to
+    do about it is the app's line to write, not this module's: see
+    `_FIX_HINTS` in src/clip_cutter_page.py.
     """
     out = []
 
     ff = ffmpeg()
-    out.append(("ffmpeg", bool(ff),
-                ff or "not on the PATH — run the installer"))
+    out.append(("ffmpeg", bool(ff), ff or "not installed"))
 
     fp = ffprobe()
-    out.append(("ffprobe", bool(fp),
-                fp or "not on the PATH — it ships beside ffmpeg in most builds"))
+    out.append(("ffprobe", bool(fp), fp or "not installed"))
 
     cap = caption_tool()
     out.append(("the captioner", os.path.exists(cap), cap))
 
     wx = whisperx_python()
-    out.append(("WhisperX", bool(wx),
-                wx or "not installed — Captions' own installer builds it"))
+    out.append(("WhisperX", bool(wx), wx or "not installed"))
 
     root = capcut_projects()
     out.append(("CapCut", os.path.isdir(root),
-                root if os.path.isdir(root) else
-                "no draft folder found (looked in %s and the usual install "
-                "locations) — open CapCut once, or set CAPCUT_PROJECTS_DIR to "
-                "point at it" % root))
+                root if os.path.isdir(root) else "not found"))
 
     n = capcut_template_count()
     out.append(("a CapCut project to take the style from", n > 0,
-                "%d project(s) in the draft folder" % n if n else
-                "none — make one project in CapCut with a clip and a caption, "
-                "then come back"))
+                "%d project(s) in the draft folder" % n if n else "none found"))
 
     font, title = capcut_font()
     out.append(("the %s caption face" % title, True,

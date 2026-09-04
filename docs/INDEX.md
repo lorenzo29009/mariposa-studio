@@ -15,10 +15,10 @@ Script Animator — the constants and the one Qt helper its modules share.
 
 `fit_scroll_content`:53
 
-### `src/animator_page.py` — 988 lines
+### `src/animator_page.py` — 1002 lines
 Script Animator page: a structured ad script (hook variations, body, CTA variants) -> duration-slotted scene prompts.
 
-`AnimatorPage`:116 · `AnimatorPage.language_name`:521 · `AnimatorPage.tail`:524 · `AnimatorPage.pronunciation`:527
+`AnimatorPage`:117 · `AnimatorPage.language_name`:522 · `AnimatorPage.tail`:525 · `AnimatorPage.pronunciation`:528
 
 ### `src/animator_panel.py` — 450 lines
 Script Animator - the always-visible floating step-through panel.
@@ -40,10 +40,10 @@ Script Animator - the row and card widgets of the two stages.
 
 `BlockRow`:28 · `BlockRow.value`:99 · `BlockRow.set_value`:102 · `BlockRow.set_tag`:105 · `BlockRow.tag`:108 · `BlockRow.set_timing`:111 · `BlockRow.set_removable`:130 · `BlockRow.set_last`:133 · `FillMeter`:188 · `SceneCard`:236 · `SceneCard.set_generated`:382 · `SceneCard.offer_split`:386 · `SceneCard.refresh_prompt`:457 · `SceneCard.set_expanded`:461 · `SceneCard.set_selected`:465
 
-### `src/camera_page.py` — 729 lines
+### `src/camera_page.py` — 731 lines
 Camera Prompts page: a searchable gallery of shot/angle references that composes a Gemini prompt.
 
-`GeminiWorker`:69 · `GeminiWorker.run`:81 · `CameraPromptsPage`:151
+`GeminiWorker`:69 · `GeminiWorker.run`:80 · `CameraPromptsPage`:151
 
 ### `src/camera_widgets.py` — 314 lines
 Camera Prompts - the gallery widgets.
@@ -60,20 +60,20 @@ Captions DE: WhisperX + Gemini -> .srt, run in the separate WhisperX venv.
 
 `whisperx_arch_ok`:37 · `CaptionsPage`:83 · `CaptionsPage.build_form`:122 · `CaptionsPage.validate`:305 · `CaptionsPage.build_command`:323 · `CaptionsPage.advance_batch`:346 · `CaptionsPage.env_lines`:355 · `CaptionsPage.can_fix`:372 · `CaptionsPage.apply_fix`:375 · `CaptionsPage.after_finished`:393 · `CaptionsPage.progress_from_line`:445
 
-### `src/clip_cutter_page.py` — 951 lines
+### `src/clip_cutter_page.py` — 974 lines
 Clip Cutter: assemble a UGC creative from a clip folder and hand it to CapCut.
 
-`ClipCutterPage`:173 · `ClipCutterPage.build_form`:262 · `ClipCutterPage.validate`:854 · `ClipCutterPage.build_command`:877 · `ClipCutterPage.after_finished`:920 · `ClipCutterPage.can_fix`:937 · `ClipCutterPage.apply_fix`:945
+`ClipCutterPage`:194 · `ClipCutterPage.build_form`:283 · `ClipCutterPage.validate`:875 · `ClipCutterPage.build_command`:900 · `ClipCutterPage.after_finished`:943 · `ClipCutterPage.can_fix`:960 · `ClipCutterPage.apply_fix`:968
 
 ### `src/clip_cutter_widgets.py` — 528 lines
 Clip Cutter's drag-and-drop assembly widgets.
 
 `video_urls`:38 · `register_thumb`:63 · `ClipChip`:101 · `PoolCard`:154 · `DropArea`:172 · `DropArea.names`:215 · `DropArea.set_names`:218 · `DropArea.add_name`:222 · `DropArea.remove_name`:228 · `BodyStrip`:368 · `SlotRow`:397 · `SlotRow.set_code`:458 · `SlotRow.names`:462 · `SlotRow.headline_text`:465 · `DropCue`:469 · `DashedButton`:522
 
-### `src/core.py` — 333 lines
+### `src/core.py` — 373 lines
 Shared foundation for Mariposa Studio: paths, the .env helpers, and the small platform/icon helpers used across every page module.
 
-`studio_python`:113 · `make_qprocess_env`:119 · `chevron_icon`:137 · `arrow_icon`:144 · `reveal_in_finder`:149 · `open_folder`:167 · `make_nonactivating_panel`:184 · `ensure_windows_shortcut`:266 · `read_env_value`:310 · `write_env_value`:320
+`studio_python`:114 · `make_qprocess_env`:120 · `chevron_icon`:138 · `arrow_icon`:145 · `reveal_in_finder`:150 · `notify`:168 · `open_folder`:196 · `make_nonactivating_panel`:213 · `ensure_windows_shortcut`:295 · `read_env_value`:339 · `gemini_model_override`:349 · `write_env_value`:360
 
 ### `src/design.py` — 342 lines
 Mariposa Studio — Design System (single source of truth).
@@ -100,10 +100,10 @@ Flow Cropper: batch 9:16 -> 4:5 crops via ffmpeg, named from the briefing.
 
 `FlowCropperPage`:153 · `FlowCropperPage.build_form`:164 · `FlowCropperPage.extra_action_buttons`:307 · `FlowCropperPage.ad_format_value`:363 · `FlowCropperPage.validate`:390 · `FlowCropperPage.on_output_line`:414 · `FlowCropperPage.build_command`:421 · `FlowCropperPage.after_finished`:443 · `FlowCropperPage.can_fix`:484 · `FlowCropperPage.apply_fix`:487
 
-### `src/gemini.py` — 218 lines
+### `src/gemini.py` — 311 lines
 Gemini over plain HTTPS — the one transport the app uses.
 
-`ssl_context`:50 · `GeminiError`:107 · `generate_text`:170 · `generate_json`:189
+`ssl_context`:67 · `GeminiError`:124 · `models_to_try`:143 · `generate_text`:263 · `generate_json`:282
 
 ### `src/launcher.py` — 514 lines
 The shell: the home grid of tools and the ⌘K overlay.
@@ -130,10 +130,10 @@ What this launch has made — held in memory, and only in memory.
 
 `Artefact`:29 · `Artefact.is_dir`:37 · `record`:49 · `items`:59 · `clear`:67 · `note_gemini`:74 · `gemini_note`:79 · `ago`:87
 
-### `src/settings_page.py` — 418 lines
+### `src/settings_page.py` — 460 lines
 Settings — still one field, because there is still only one thing to set.
 
-`pref`:48 · `set_pref`:55 · `folder_size`:59 · `human_size`:80 · `stale_entries`:87 · `SettingsPage`:105
+`pref`:48 · `set_pref`:55 · `notify_if_enabled`:59 · `folder_size`:72 · `human_size`:93 · `stale_entries`:100 · `SettingsPage`:118
 
 ### `src/speech_clock.py` — 455 lines
 How long a line takes to say — **measured**, not estimated.
@@ -150,10 +150,10 @@ The app-wide QSS, built from the tokens in `design`.
 
 `build_stylesheet`:34 · `font_pairs`:1015 · `font_health`:1038 · `font_problems`:1072
 
-### `src/tool_page.py` — 573 lines
+### `src/tool_page.py` — 564 lines
 `ToolPage` — the base every subprocess-backed tool page is built on.
 
-`ToolPage`:107 · `ToolPage.build_side`:230 · `ToolPage.env_lines`:234 · `ToolPage.set_env_lines`:240 · `ToolPage.build_form`:245 · `ToolPage.build_command`:248 · `ToolPage.validate`:251 · `ToolPage.after_finished`:254 · `ToolPage.extra_action_buttons`:257 · `ToolPage.add_row`:262 · `ToolPage.add_widget`:268 · `ToolPage.settings_card`:272 · `ToolPage.group_label`:282 · `ToolPage.section_heading`:288 · `ToolPage.grid_2col`:294 · `ToolPage.divider`:314 · `ToolPage.progress_from_line`:381 · `ToolPage.on_output_line`:411 · `ToolPage.log_text`:437 · `ToolPage.advance_batch`:441 · `ToolPage.clear_cards`:500 · `ToolPage.show_result`:505 · `ToolPage.record_artefact`:512 · `ToolPage.show_failure`:515 · `ToolPage.can_fix`:557 · `ToolPage.apply_fix`:562
+`ToolPage`:85 · `ToolPage.build_side`:208 · `ToolPage.env_lines`:212 · `ToolPage.set_env_lines`:218 · `ToolPage.build_form`:223 · `ToolPage.build_command`:226 · `ToolPage.validate`:229 · `ToolPage.after_finished`:239 · `ToolPage.extra_action_buttons`:242 · `ToolPage.add_row`:247 · `ToolPage.add_widget`:253 · `ToolPage.settings_card`:257 · `ToolPage.group_label`:267 · `ToolPage.section_heading`:273 · `ToolPage.grid_2col`:279 · `ToolPage.divider`:299 · `ToolPage.progress_from_line`:372 · `ToolPage.on_output_line`:402 · `ToolPage.log_text`:428 · `ToolPage.advance_batch`:432 · `ToolPage.clear_cards`:491 · `ToolPage.show_result`:496 · `ToolPage.record_artefact`:503 · `ToolPage.show_failure`:506 · `ToolPage.can_fix`:548 · `ToolPage.apply_fix`:553
 
 ### `src/updater.py` — 315 lines
 In-app auto-update for Mariposa Studio (Strategy A: source overlay).
@@ -212,20 +212,30 @@ Assert the stylesheet gets the type it asks for, on THIS machine.
 
 `check`:45
 
+### `scripts/test_gemini.py` — 204 lines
+Offline checks for `src/gemini.py`'s model chain and its error sentences.
+
+`check`:36 · `http_error`:44 · `FakeTransport`:63 · `FakeTransport.urlopen`:72 · `FakeTransport.sleep`:81 · `run`:99 · `main`:118
+
 ### `scripts/test_packer.py` — 751 lines
 Offline checks for script_packer — no Qt, no network, no API key.
 
 `check`:50 · `sent`:58
 
-### `scripts/test_portable.py` — 299 lines
+### `scripts/test_portable.py` — 371 lines
 Prove Clip Cutter finds its dependencies on a machine it has never seen.
 
-`check`:37 · `probe`:43 · `draft`:86
+`check`:37 · `probe`:43 · `draft`:86 · `wdraft`:106
 
 ### `scripts/test_release.py` — 242 lines
 Prove the release zip is the app — before it is a release.
 
 `check`:47 · `section`:54 · `build_archive`:58 · `reachable_modules`:83 · `icon_names`:111 · `wanted_font_files`:128 · `main`:141
+
+### `scripts/test_settings.py` — 109 lines
+Does the Settings screen actually reach the app?
+
+`check`:44 · `source`:49
 
 ### `scripts/test_windows.py` — 305 lines
 Prove the Windows-only code paths, from a machine that is not Windows.
@@ -309,10 +319,10 @@ edits.json — the human+auto edit overlay that survives re-planning.
 
 `path_for`:27 · `load_edits`:31 · `save_edits`:42 · `next_cut_id`:46 · `append_cut`:57 · `project`:85 · `bake_src_cuts`:148 · `apply_removals_to_clips`:180 · `effective_plan`:210
 
-### `tools/clip-cutter/scripts/export_capcut.py` — 1321 lines
+### `tools/clip-cutter/scripts/export_capcut.py` — 1335 lines
 Export a caption-ugc edit as a CapCut project, for manual revision by an editor.
 
-`gid`:47 · `us`:51 · `newest_template`:58 · `place_media`:110 · `describe_media`:139 · `make_cover`:150 · `cover_source`:175 · `audible`:191 · `pick_video_template`:207 · `pick_text_template`:234 · `template_token`:264 · `clone_extras`:293 · `build_text_content`:312 · `make_caption`:330 · `house_layout`:367 · `check_caption_widths`:392 · `make_headline`:429 · `wrap_headline`:455 · `build_timeline`:472 · `make_compound`:581 · `collect_media`:638 · `write_project`:658 · `meta_path`:714 · `reclaim`:732 · `register`:760 · `main`:814
+`gid`:49 · `us`:53 · `newest_template`:60 · `place_media`:112 · `describe_media`:141 · `make_cover`:152 · `cover_source`:177 · `audible`:193 · `pick_video_template`:209 · `pick_text_template`:236 · `template_token`:266 · `clone_extras`:297 · `build_text_content`:316 · `make_caption`:334 · `house_layout`:371 · `check_caption_widths`:396 · `make_headline`:433 · `wrap_headline`:459 · `build_timeline`:476 · `make_compound`:585 · `collect_media`:642 · `write_project`:662 · `meta_path`:719 · `reclaim`:738 · `register`:766 · `main`:820
 
 ### `tools/clip-cutter/scripts/fix.py` — 312 lines
 fix.py — the fast correction loop. One short command per fix, then `build.py`.
@@ -349,10 +359,10 @@ The plan.json contract — one owner for the schema and the segments.ts emitter.
 
 `seg_recipe`:21 · `segment_spans`:34 · `total_frames`:44 · `write_segments_ts`:48 · `write_plan`:57 · `load_plan`:61 · `validate_plan`:66
 
-### `tools/clip-cutter/scripts/portable.py` — 508 lines
+### `tools/clip-cutter/scripts/portable.py` — 568 lines
 Where everything is, on whatever machine this is running on.
 
-`ffmpeg`:111 · `ffprobe`:122 · `caption_tool`:131 · `cropper`:136 · `whisperx_python`:142 · `no_window_kwargs`:162 · `concat_line`:167 · `capcut_projects`:226 · `capcut_font`:348 · `capcut_installed`:392 · `reset_cache`:398 · `capcut_template_count`:414 · `preflight`:431 · `missing`:474 · `require`:479
+`ffmpeg`:111 · `ffprobe`:122 · `caption_tool`:131 · `cropper`:136 · `whisperx_python`:142 · `no_window_kwargs`:162 · `concat_line`:167 · `draft_file`:213 · `draft_file_name`:226 · `capcut_projects`:266 · `capcut_font`:417 · `capcut_installed`:461 · `reset_cache`:467 · `capcut_template_count`:483 · `preflight`:493 · `missing`:534 · `require`:539
 
 ### `tools/clip-cutter/scripts/report.py` — 293 lines
 Build manifest.json + review.tsv + a short review.md.
