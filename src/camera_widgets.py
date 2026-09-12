@@ -147,9 +147,9 @@ class PromptCard(QFrame):
     def set_selected(self, on: bool, order: int = 0):
         """`order` is the position in the gathering bar, 1-based.
 
-        The badge carries the number rather than a tick, because a fused prompt
-        reads differently when movement comes before angle — so the card has to
-        say *where* in the stack it is, not merely that it is in one."""
+        The badge carries the number rather than a tick, because the merged
+        prompt is read in that order — so the card says *where* in the block it
+        sits, not merely that it is in one."""
         self._selected = on
         self.setProperty("selected", on)
         self.style().unpolish(self)
@@ -158,15 +158,17 @@ class PromptCard(QFrame):
         self.badge.setVisible(on)
 
     def mouseReleaseEvent(self, e):
-        """Clicking copies; ⌘-clicking (Ctrl on Windows) gathers.
+        """Clicking picks this shot for its category; ⌘-click (Ctrl on Windows)
+        copies just this one description instead.
 
-        The modifier travels with the click so the page does not have to guess
-        at handler time — and there is no mode to enter and then remember to
-        leave, which was a tax on the fast case."""
+        Picking is the plain click because picking is what the tool is for: one
+        shot per category, then one button that merges them. The modifier
+        travels with the click so the page does not have to guess at handler
+        time — and there is still no mode to enter and then remember to leave."""
         mods = e.modifiers()
-        gather = bool(mods & (Qt.ControlModifier | Qt.MetaModifier))
+        copy_only = bool(mods & (Qt.ControlModifier | Qt.MetaModifier))
         self.clicked.emit({"tag": self.tag, "description": self.description,
-                           "category": self.category, "gather": gather})
+                           "category": self.category, "copy_only": copy_only})
         super().mouseReleaseEvent(e)
 
 

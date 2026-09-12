@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (
 )
 
 from design import (
-    BORDER, DANGER, DONE, TEXT_DIM, TEXT_FAINT, WARNING, svg_icon,
+    BORDER, DANGER, DONE, FILL, TEXT_DIM, TEXT_FAINT, WARNING, WINE_LINE,
+    svg_icon,
 )
 from script_packer import MAX_SLOT, SLOTS, ceiling
 
@@ -151,11 +152,32 @@ class BlockRow(QFrame):
 
     def _set_flag(self, name: str, value: bool) -> None:
         """Set a QSS property and re-polish — the only way a property change
-        reaches the stylesheet."""
+        reaches the stylesheet — plus a repaint, because the writing line
+        under an empty block is painted from these same two flags."""
         if self.property(name) != value:
             self.setProperty(name, value)
             self.style().unpolish(self)
             self.style().polish(self)
+            self.update()          # the writing line is painted, not styled
+
+    def paintEvent(self, e):
+        """An empty block gets a writing line; a written one gets nothing.
+
+        A page of a screenplay has no boxes on it, so the cue that a row takes
+        typing cannot be a box — three inset fields stacked in a card that is
+        already a card read as a form from another app. What paper does instead
+        is rule a line where the writing goes: one hairline under the FIRST line
+        of the block (not under the whole editor, or the four-line Body would
+        rule its own floor), wine while the caret is in it, and gone the moment
+        there is copy."""
+        super().paintEvent(e)
+        if self.property("filled"):
+            return
+        p = QPainter(self)
+        y = self.edit.y() + self.edit.fontMetrics().lineSpacing() + 2
+        p.setPen(QColor(WINE_LINE if self.property("active") else FILL))
+        p.drawLine(self.edit.x(), y, self.edit.x() + self.edit.width() - 1, y)
+        p.end()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)

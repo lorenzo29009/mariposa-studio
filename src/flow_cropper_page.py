@@ -150,6 +150,29 @@ CUSTOM_KUERZEL = "__custom__"
 MISSING = "…"
 
 
+def _reframed(target: Path):
+    """(folder to open, the 4x5 clips the run produced, how to name that place)
+    for a campaign folder, whatever layout it turned out to have."""
+    def is_four5(d: Path) -> bool:
+        return re.sub(r"[\s_\-:.]+", "", d.name).lower() in ("4x5", "45")
+
+    dirs = [d for d in sorted(target.glob("*")) if d.is_dir() and is_four5(d)]
+    nested = not dirs
+    if nested:
+        dirs = [d for u in sorted(target.glob("*")) if u.is_dir()
+                for d in sorted(u.glob("*")) if d.is_dir() and is_four5(d)]
+    made = sorted((f for d in dirs for f in d.glob("*.mp4")
+                   if not f.name.startswith(".")), key=lambda f: f.name)
+    if len(dirs) == 1:
+        d = dirs[0]
+        where = (f"{target.name}/{d.parent.name}/{d.name}/" if nested
+                 else f"{target.name}/{d.name}/")
+        return d, made, where
+    if dirs:
+        return target, made, f"{target.name}/*/{dirs[0].name}/"
+    return target, made, f"{target.name}/"
+
+
 class FlowCropperPage(ToolPage):
     title = "Flow Cropper"
     # No blurb band: the drop target and the naming preview say what this does,
@@ -458,8 +481,12 @@ class FlowCropperPage(ToolPage):
             )
             return
 
-        out = target / "4x5"
-        made = sorted(out.glob("*.mp4")) if out.is_dir() else []
+        # The 4x5 files land next to each unit the run found — beside the clips
+        # for a plain folder, inside every CTA folder for a matrix — and the
+        # folder may already have been spelled "4X5" before we got there. Looking
+        # only in `target/4x5` reported "nothing" after a CTA run that had just
+        # made ten files.
+        out, made, where = _reframed(target)
         for f in made:
             self.record_artefact(f.name, f)
         n = len(made)
@@ -473,7 +500,7 @@ class FlowCropperPage(ToolPage):
         self._sentence(f"Done — {n} clip{'' if n == 1 else 's'}")
         self.show_result(
             head,
-            path=f"{target.name}/4x5/",
+            path=where,
             note=note,
             actions=[
                 ("Show me", lambda: open_folder(out if out.is_dir() else target), True),

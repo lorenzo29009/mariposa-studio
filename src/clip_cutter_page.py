@@ -12,6 +12,7 @@ that drives them.
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 import re
@@ -969,17 +970,87 @@ class ClipCutterPage(ToolPage):
             return "These slots are still empty: %s" % ", ".join(empty)
         return None
 
+    # --------------------------------------------------------- what it got
+    def job_facts(self):
+        """The board, in the words the error report needs.
+
+        Clip Cutter is handed a folder and an arrangement, and every stage
+        after that addresses clips BY NAME. So the names and the containers are
+        the inputs — a mixed-extension folder, a clip whose stem is not what
+        the slot thinks, a folder that quietly holds nothing are all invisible
+        in the command line and obvious here.
+        """
+        facts = []
+        folder = self._folder
+        facts.append(("clips", str(folder) if folder else "none chosen"))
+        if folder and folder.is_dir():
+            counts: dict[str, int] = {}
+            for f in folder.iterdir():
+                if f.suffix.lower() in VIDEO_EXTS and not f.name.startswith("."):
+                    counts[f.suffix] = counts.get(f.suffix, 0) + 1
+            facts.append(("contents", ", ".join(
+                "%s x%d" % (e, n) for e, n in sorted(counts.items()))
+                or "no video files"))
+        for row in self._hook_rows:
+            facts.append((row.code, ", ".join(row.names()) or "empty"))
+        facts.append(("body", ", ".join(self.body.names()) or "empty"))
+        for row in self._cta_rows:
+            facts.append((row.code, ", ".join(row.names()) or "empty"))
+        heads = [r.code for r in self._hook_rows if r.headline_text()]
+        facts.append(("headlines", ", ".join(heads) or "none"))
+        facts.append(("options", "%s, silence %s"
+                      % (self.language.currentText(), self.silence.currentText())))
+        return facts
+
+    def repro_files(self):
+        """The three text files that let this run be repeated somewhere else.
+
+        config.json is the whole input to the planner, plan.json is what it
+        made of it, and the listing is the folder as the planner saw it —
+        names, sizes, extensions. Together they replay every failure the
+        planning and export stages can have WITHOUT a byte of footage, which
+        is the only way the media-shaped half of this tool can be debugged off
+        the machine that hit the bug.
+        """
+        proj = getattr(self, "_last_proj", None)
+        out = []
+        if proj:
+            for name in ("config.json", "plan.json"):
+                p = Path(proj) / name
+                if p.is_file():
+                    out.append(p)
+            folder = self._folder
+            if folder and folder.is_dir():
+                try:
+                    rows = ["%-48s %12d  %s" % (f.name, f.stat().st_size,
+                                                _dt.datetime.fromtimestamp(
+                                                    f.stat().st_mtime).isoformat(" ", "seconds"))
+                            for f in sorted(folder.iterdir()) if f.is_file()]
+                    listing = Path(proj) / "clips-listing.txt"
+                    listing.write_text("%s\n%s\n" % (folder, "\n".join(rows)),
+                                       encoding="utf-8")
+                    out.append(listing)
+                except OSError:
+                    pass
+        return out
+
     # ------------------------------------------------------------ command
     def build_command(self):
         folder = self._folder
         proj = EXPORTS_DIR / "clip-cutter" / folder.name / "_edit"
         proj.mkdir(parents=True, exist_ok=True)
 
-        ext = ".mov"
+        # The extension the folder is mostly made of, not whichever file came
+        # back first: a folder that mixes containers is ordinary (an iPhone
+        # writes .mov, a re-export or a stock CTA arrives as .mp4) and the
+        # board lists them together. This is a hint — plan_creative resolves
+        # each clip to the file it actually is — so the majority is the useful
+        # answer rather than a coin toss.
+        counts: dict[str, int] = {}
         for f in folder.iterdir():
-            if f.suffix.lower() in VIDEO_EXTS:
-                ext = f.suffix
-                break
+            if f.suffix.lower() in VIDEO_EXTS and not f.name.startswith("."):
+                counts[f.suffix] = counts.get(f.suffix, 0) + 1
+        ext = max(counts, key=lambda e: (counts[e], e)) if counts else ".mov"
 
         cfg = {
             "folder": str(folder),

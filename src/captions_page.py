@@ -22,9 +22,9 @@ from PySide6.QtWidgets import (
 from design import TXT_HI, TXT_META, svg_icon
 from core import (
     IS_MAC, IS_WINDOWS, CAPTIONS_DIR, WHISPERX_PY, studio_python,
-    reveal_in_finder, open_folder,
+    reveal_in_finder,
 )
-from widgets import DropZone, Segmented, SettingRow, Switch, _panel
+from widgets import DropZone, Segmented, SettingRow, Switch
 from caption_compare import ComparePanel  # EXPERIMENTAL: hidden "Compare .srt" QA overlay
 from tool_page import ToolPage
 
@@ -54,30 +54,12 @@ def whisperx_arch_ok() -> Optional[str]:
     return None
 
 
-def _count_cues(srt: Path) -> int:
-    """How many cues a .srt holds — the number an editor actually cares about.
-
-    Counts the blank-line-separated blocks, which is what the format is; a
-    malformed file counts 0 rather than raising, because a bad count must never
-    be the reason a finished job looks failed."""
-    try:
-        text = srt.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return 0
-    return sum(1 for block in re.split(r"\n\s*\n", text.strip()) if block.strip())
-
-
 def _short_path(p: Path) -> str:
     """The path as the operator thinks of it: relative to home where possible."""
     try:
         return "~/" + str(p.relative_to(Path.home()))
     except ValueError:
         return str(p)
-
-
-def _copy(text: str):
-    from PySide6.QtGui import QGuiApplication
-    QGuiApplication.clipboard().setText(text)
 
 
 class CaptionsPage(ToolPage):
@@ -91,7 +73,10 @@ class CaptionsPage(ToolPage):
     # the widest log column and it is never hidden.
     SIDE = "log"
     SIDE_WIDTH = 460
-    LOG_NOTE = "You can close this window — it keeps going."
+    #: No footer note. The base class offers to reassure you that the job
+    #: survives closing the window; nobody asked, and the log column's own
+    #: state already says whether anything is running.
+    LOG_NOTE = ""
 
     #: The phases caption.py walks through, per clip, in order. Recognising
     #: them turns "something is happening" into "step 3 of 6" without the
@@ -116,14 +101,15 @@ class CaptionsPage(ToolPage):
     # the choice: WhisperX transcription, the Gemini prompts, casing rules,
     # the line-break/binder safety nets, and the per-market product name
     # (CAPTION_BRAND_<LANG> in tools/captions-de/.env).
-    LANG_LABELS = ["German", "Polish", "French", "Italian"]
-    LANG_CODES = ["de", "pl", "fr", "it"]
+    LANG_LABELS = ["German", "English", "Polish", "French", "Italian"]
+    LANG_CODES = ["de", "en", "pl", "fr", "it"]
 
     def build_form(self):
         self._queue: list[Path] = []
         self._batch_at = 0
         self._written: list[Path] = []
         self._phase = 0
+        self._silent: list[float] = []
 
         # The drop target keeps its footprint and loses its swagger: one glyph,
         # one sentence, one fallback button. No video thumbnail is promised —
@@ -135,7 +121,6 @@ class CaptionsPage(ToolPage):
             glyph="file-video", action_label="Choose a file…",
             file_filter="Media (*.mp4 *.mov *.m4v *.mkv *.avi *.webm *.mp3 *.wav *.m4a)",
         )
-        self.video.changed.connect(self._on_input_changed)
         self.add_widget(self.video)
 
         lay = self.settings_card()
@@ -154,24 +139,6 @@ class CaptionsPage(ToolPage):
         self.use_ai = Switch(checked=True)
         lay.addWidget(SettingRow("Refine with Gemini", "punctuation and line breaks",
                                  self.use_ai))
-        lay.addWidget(self.divider())
-
-        # Where it lands. The path is shown rather than made configurable: an
-        # .srt beside its video is what every editor downstream expects, and
-        # quietly moving it would break habits the design never asked to change.
-        self.saves_to = QLabel(self._destination_text())
-        self.saves_to.setObjectName("MonoPath")
-        self.saves_to.setWordWrap(True)
-        self.reveal_btn = QPushButton("Open folder")
-        self.reveal_btn.setObjectName("OnCardBtn")
-        self.reveal_btn.setCursor(Qt.PointingHandCursor)
-        self.reveal_btn.setEnabled(False)
-        self.reveal_btn.clicked.connect(self._reveal_destination)
-        dest = QHBoxLayout(); dest.setContentsMargins(0, 0, 0, 0); dest.setSpacing(10)
-        dest.addWidget(self.saves_to, 1)
-        dest.addWidget(self.reveal_btn)
-        lay.addWidget(SettingRow("Saves to", "", _panel(dest),
-                                 stretch_control=True))
 
         # Repair notice (only if needed)
         problem = whisperx_arch_ok()
@@ -193,27 +160,6 @@ class CaptionsPage(ToolPage):
             self.add_widget(notice)
 
         self._setup_compare()
-
-    # ---- where the .srt goes -------------------------------------------------
-    def _destination_text(self) -> str:
-        v = self.video.value() if hasattr(self, "video") else ""
-        if not v:
-            return "beside the video, as <name>.srt"
-        p = Path(v)
-        if p.is_dir():
-            return f"{p.name}/<clip>.srt"
-        return f"{p.parent.name}/{p.stem}.srt"
-
-    def _reveal_destination(self):
-        v = self.video.value()
-        if not v:
-            return
-        p = Path(v)
-        open_folder(p if p.is_dir() else p.parent)
-
-    def _on_input_changed(self, _value: str):
-        self.saves_to.setText(self._destination_text())
-        self.reveal_btn.setEnabled(bool(self.video.value()))
 
     # ---- the batch -----------------------------------------------------------
     MEDIA_EXTS = (".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm",
@@ -326,6 +272,7 @@ class CaptionsPage(ToolPage):
             self._queue = self._collect()
             self._batch_at = 0
             self._written = []
+            self._silent = []
         clip = self._queue[self._batch_at]
         self._phase = 0
         if len(self._queue) > 1:
@@ -342,6 +289,20 @@ class CaptionsPage(ToolPage):
         if not self.use_ai.isChecked():   # toggle off → heuristic only
             args.append("--no-ai")
         return str(WHISPERX_PY), args, CAPTIONS_DIR
+
+    #: caption.py's last word on lost audio: a window it could not fill even
+    #: after asking the transcriber again. It is the one thing about a finished
+    #: .srt that cannot be seen from the file — so it reaches the done card.
+    _SILENT_RE = re.compile(r"^⚠\s*([\d.]+)\s*s with no captions")
+    _REASK_RE = re.compile(r"([\d.]+)s of audio produced nothing")
+
+    def on_output_line(self, line: str):
+        m = self._SILENT_RE.match(line.strip())
+        if m:
+            try:
+                self._silent.append(float(m.group(1)))
+            except ValueError:
+                pass
 
     def advance_batch(self) -> bool:
         """Move to the next clip, remembering the .srt this one produced."""
@@ -405,27 +366,45 @@ class CaptionsPage(ToolPage):
             return
 
         self._last_srt = made[-1]     # remembered for the "Compare .srt" panel
-        cues = sum(_count_cues(p) for p in made)
         n = len(made)
-        head = (f"{n} .srt file{'' if n == 1 else 's'}"
-                + (f", {cues} cues" if cues else ""))
         where = made[0].parent
         for p in made:
             self.record_artefact(p.name, p)
         self._sentence(f"Done — {n} file{'' if n == 1 else 's'}")
+        # The path, and ONE verb. A count, a cue tally and three buttons that
+        # all landed in the same folder were four ways of saying what the path
+        # already says — and the only thing wanted here is to get to the file.
         self.show_result(
-            head,
-            path=_short_path(where),
-            actions=[
-                ("Show me", lambda: reveal_in_finder(made[0]), True),
-                ("Copy path", lambda: _copy(str(where)), False),
-            ],
-            note=("Also listed under “From this session” in ⌘K."
-                  if n else ""),
+            path=_short_path(made[0] if n == 1 else where),
+            actions=[("Open folder",
+                      lambda: reveal_in_finder(made[0]), True)],
+            note=self._done_note(),
         )
 
+    def _done_note(self) -> str:
+        """What the card says under the verb — lost audio, and nothing else.
+
+        A caption file that is short because the transcriber went deaf for half
+        a minute looks exactly like a correct one until it is in the timeline,
+        so that one fact earns a line. Everything else the card used to say is
+        gone: the path is on the card and the button opens it."""
+        if self._silent:
+            total = sum(self._silent)
+            n = len(self._silent)
+            where = ("of this clip has" if n == 1
+                     else f"in {n} windows have")
+            return (f"{total:.0f} s {where} no captions — the transcriber "
+                    f"heard nothing there.")
+        return ""
+
     def _phase_of(self, line: str) -> Optional[int]:
-        """Which of PHASES this output line announces, if any."""
+        """Which of PHASES this output line announces, if any.
+
+        A warning is never a phase: "the transcriber heard nothing there"
+        contains "transcrib", and read as a phase it reported the job as
+        *Transcribing* at the very moment it was admitting to a hole."""
+        if line.lstrip().startswith(("⚠", "✗")):
+            return None
         ll = line.lower()
         if "extracting audio" in ll or "ffmpeg" in ll and "->" in ll:
             return 0
@@ -476,4 +455,9 @@ class CaptionsPage(ToolPage):
             return "Refining with Gemini…"
         if ls.startswith("✗"):
             return ls
+        m = self._REASK_RE.search(ls)
+        if m:
+            return f"Asking again about {m.group(1)}s the transcriber missed…"
+        if ls.startswith("⚠"):
+            return ls[1:].strip()
         return None

@@ -104,7 +104,8 @@ __all__ = [
     "FLOW_CROPPER_DIR", "CAPTIONS_DIR", "EXTRACT_DIR", "CAMERA_PROMPT_DIR",
     "WHISPERX_PY", "ENV_PATH",
     "studio_python", "make_qprocess_env", "chevron_icon", "arrow_icon",
-    "reveal_in_finder", "open_folder", "notify", "read_env_value", "write_env_value",
+    "reveal_in_finder", "open_folder", "notify",
+    "read_env_value", "write_env_value",
     "gemini_model_override",
     "ensure_windows_shortcut", "make_nonactivating_panel",
 ]

@@ -38,6 +38,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import traceback
 from collections import deque
 from pathlib import Path
@@ -62,6 +63,7 @@ KEEP_LOGS = 10
 _log: deque[str] = deque(maxlen=LOG_LINES)
 _errors: deque[dict] = deque(maxlen=ERRORS_KEPT)
 _log_path: "Path | None" = None
+_job: dict = {}
 
 
 # --- redaction -------------------------------------------------------------
@@ -121,6 +123,41 @@ def last_error() -> "dict | None":
     return _errors[-1] if _errors else None
 
 
+def note_job(tool: str, command: str = "", cwd: str = "", facts=None,
+             files=None) -> None:
+    """What this run was HANDED — the half of a bug the output never shows.
+
+    A report carrying only the command line and the output says what the app
+    did, never what it was given, so every guess about the cause starts by
+    asking the user what was on screen. The one failure this exists for cost
+    exactly that: a stage stopped on a clip it could not find, and nothing in
+    the report said which clips the folder held or what they were called.
+
+    `facts` is whatever the page knows about its own inputs, as (name, value)
+    pairs. `files` are the small text inputs the run was driven by — the ones
+    that let the same failure be REPLAYED somewhere else, which is the
+    difference between a maintainer reasoning about a bug and running it. Media
+    never belongs here; a listing of it does.
+
+    Overwritten per run: the report is about the run that just failed.
+    """
+    _job.clear()
+    _job.update({
+        "tool": tool, "command": command, "cwd": cwd,
+        "facts": [(str(k), str(v)) for k, v in (facts or [])],
+        "files": [Path(f) for f in (files or [])],
+        "at": _dt.datetime.now().strftime("%H:%M:%S"),
+        "started": time.monotonic(),
+    })
+
+
+def note_job_finished(code: int) -> None:
+    """How the run ended. Elapsed time separates "could not find it" from "hung"."""
+    if _job:
+        _job["code"] = code
+        _job["elapsed"] = time.monotonic() - _job.get("started", time.monotonic())
+
+
 # --- the machine -----------------------------------------------------------
 
 def _run(cmd: list[str]) -> str:
@@ -178,6 +215,121 @@ def _tool_facts() -> list[tuple[str, str]]:
     return facts
 
 
+def _encoding_line() -> str:
+    """How this machine turns bytes into text, in one line.
+
+    The single most productive bug class in this app is an encoding one: on
+    Windows the default for open() is the ANSI code page, which turns a folder
+    called "Jörg" into "JÃ¶rg" and makes ffmpeg report a file that does not
+    exist. Whether that is what happened is answerable here, and unguessable
+    from a Mac.
+    """
+    import locale
+    parts = ["%s filesystem" % sys.getfilesystemencoding(),
+             "%s text" % locale.getpreferredencoding(False),
+             "UTF-8 mode %s" % ("on" if sys.flags.utf8_mode else "off")]
+    if IS_WINDOWS:
+        # The console code page decides what a spawned tool's output decodes
+        # as, independently of Python's own defaults.
+        cp = _run(["cmd", "/c", "chcp"])
+        if cp:
+            parts.append("code page %s" % cp.split(":")[-1].strip())
+    return ", ".join(parts)
+
+
+def _package_line() -> str:
+    """Every pinned dependency that is missing or the wrong version.
+
+    The updater only reinstalls when requirements.txt changed, so a venv built
+    by an older installer can be missing one entirely — and a missing package
+    surfaces as a stage that dies on an import, four processes from the button
+    that was pressed. Quiet when there is nothing to say.
+    """
+    try:
+        from importlib import metadata
+    except Exception as e:                                  # pragma: no cover
+        return "could not be read: %s" % e
+    wrong, total = [], 0
+    try:
+        text = (APP_DIR / "requirements.txt").read_text(encoding="utf-8")
+    except OSError as e:
+        return "no requirements.txt: %s" % e
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        m = re.match(r"^([A-Za-z0-9_.\-]+)\s*([=><!~]=|[><])\s*(\S+)", line)
+        if not m:
+            continue
+        name, spec = m.group(1), m.group(2) + m.group(3)
+        total += 1
+        try:
+            have = metadata.version(name)
+        except Exception:
+            wrong.append("%s NOT INSTALLED (wants %s)" % (name, spec))
+            continue
+        if spec.startswith("==") and have != spec[2:]:
+            wrong.append("%s is %s (wants %s)" % (name, have, spec))
+    if wrong:
+        return "; ".join(wrong)
+    return "%d pinned, all present" % total
+
+
+def _pipeline_line() -> str:
+    """Whether every Clip Cutter stage shipped — the failure the repo can't see.
+
+    A file that exists on the dev machine and was never tracked by git is
+    absent from the zip, and the app then dies on an import at the moment it
+    is needed. The stage list is read out of run_clip_cutter.py's own source,
+    so this cannot drift away from the pipeline it describes.
+    """
+    scripts = TOOLS_DIR / "clip-cutter" / "scripts"
+    try:
+        runner = (scripts / "run_clip_cutter.py").read_text(encoding="utf-8")
+    except OSError as e:
+        return "run_clip_cutter.py could not be read: %s" % e
+    stages = sorted(set(re.findall(r'"([a-z_]+\.py)"', runner)))
+    missing = [n for n in stages if not (scripts / n).exists()]
+    if missing:
+        return "MISSING: " + ", ".join(missing)
+    return "all %d stages present" % len(stages)
+
+
+#: A single input file worth carrying. Generous for a plan.json, far too small
+#: for anything that is really media.
+MAX_INPUT_BYTES = 256 * 1024
+
+
+def _history_line(tool: str) -> str:
+    """How often this has happened before, read off the launch logs.
+
+    One report is a sample of one, and "it has never worked" and "it worked
+    yesterday and broke after the update" are different bugs with different
+    first suspects. Ten launches are already kept on disk; nothing read them.
+    """
+    try:
+        logs = sorted(DIAG_DIR.glob("launch-*.log"))
+    except OSError:
+        return ""
+    if not logs:
+        return ""
+    marker = "[%s]" % tool
+    hits = []
+    for log in logs:
+        try:
+            if marker in log.read_text(encoding="utf-8", errors="replace"):
+                hits.append(log.stem.replace("launch-", ""))
+        except OSError:
+            pass
+    if not hits:
+        return "%d launch(es) on record, none of them failed here before" % len(logs)
+    def pretty(stamp):
+        return "%s-%s-%s %s:%s" % (stamp[:4], stamp[4:6], stamp[6:8],
+                                   stamp[9:11], stamp[11:13])
+    if len(hits) == 1:
+        return "first failure here, across %d launch(es) on record" % len(logs)
+    return ("failed here in %d of %d launch(es) on record, first %s"
+            % (len(hits), len(logs), pretty(hits[0])))
+
+
 def _env_keys() -> str:
     """Which settings are present in the .env. NAMES ONLY — never the values."""
     try:
@@ -214,11 +366,38 @@ def report(context: str = "") -> str:
         add(f"  PySide6    {_qtver}")
     except Exception:
         pass
+    add(f"  encoding   {_encoding_line()}")
+    add(f"  packages   {_package_line()}")
+    add(f"  pipeline   {_pipeline_line()}")
     add("")
 
     if context:
         add("WHAT I WAS DOING")
         add("  " + context.strip())
+        add("")
+
+    if _job:
+        add("THE JOB")
+        add(f"  {'tool':<12} {_job.get('tool', '')}")
+        ran = "started %s" % _job.get("at", "")
+        if "elapsed" in _job:
+            ran += ", ran %.1fs, exited %s" % (_job["elapsed"], _job.get("code"))
+        else:
+            ran += ", still running"
+        add(f"  {'run':<12} {ran}")
+        if _job.get("cwd"):
+            add(f"  {'cwd':<12} {_job['cwd']}")
+        if _job.get("command"):
+            add(f"  {'command':<12} {_job['command']}")
+        for name, value in _job.get("facts", []):
+            add(f"  {name:<12} {value}")
+        hist = _history_line(_job.get("tool", ""))
+        if hist:
+            add(f"  {'history':<12} {hist}")
+        kept = [f for f in _job.get("files", []) if Path(f).exists()]
+        if kept:
+            add(f"  {'replay':<12} {', '.join(Path(f).name for f in kept)}"
+                " (in the .zip beside this)")
         add("")
 
     if _errors:
@@ -273,6 +452,93 @@ def save_report(context: str = "") -> "Path | None":
         return p
     except OSError:
         return None
+
+
+def save_bundle(context: str = "") -> "Path | None":
+    """The whole picture as ONE file to drag into a message.
+
+    The report alone says what happened; the inputs beside it let the same
+    failure be run again somewhere else. Both in one archive because a bug gets
+    reported by whoever hit it, in the thirty seconds they are willing to spend
+    on it — three files to find in a hidden folder is three files that never
+    arrive.
+
+    It lands in the exports folder rather than in `.diagnostics/`: a dot-folder
+    is invisible in Finder and in Explorer, so a report saved there could be
+    named to the user and still not be findable. Sixty days later Settings'
+    own cleanup sweeps it, which is the right lifetime for a diagnostic.
+    """
+    import zipfile
+    text = report(context)
+    try:
+        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M")
+        out = EXPORTS_DIR / f"Mariposa-error-{APP_VERSION}-{stamp}.zip"
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("report.txt", text)
+            if _log_path and Path(_log_path).exists():
+                # Already redacted on the way to disk by the tee.
+                z.write(_log_path, "launch.log")
+            for src in _job.get("files", []):
+                src = Path(src)
+                try:
+                    if not src.is_file() or src.stat().st_size > MAX_INPUT_BYTES:
+                        continue
+                    # Text only, and redacted like everything else. A file that
+                    # does not decode is media or a binary: its NAME is a fact,
+                    # its bytes are not something to put in a shared archive.
+                    z.writestr("inputs/" + src.name,
+                               redact(src.read_text(encoding="utf-8")))
+                except (OSError, UnicodeDecodeError):
+                    continue
+        return out
+    except (OSError, ImportError):
+        return None
+
+
+def share_report(context: str = "") -> "Path | None":
+    """Hand the report over: the TEXT on the clipboard, which is the whole
+    thing for almost every failure.
+
+    An archive is written too, and deliberately does not announce itself
+    unless it is carrying something the clipboard cannot. Pasting is what
+    people actually do — it needs no folder, no attachment and no second
+    window — so the file is the fallback for the one case text cannot serve:
+    the inputs that let a failure be run again elsewhere. Nothing is revealed
+    in a file manager. A window opening over the app at the moment something
+    broke is an interruption, not a help; the sentence names the file, and
+    exports/ is a folder the user already opens.
+
+    Three surfaces offer this button and they used to each do their own
+    slightly different thing. It lives here so "send me the error report"
+    means the same everywhere.
+    """
+    text = report(context)
+    try:
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            app.clipboard().setText(text)
+    except Exception:
+        pass
+    save_report(context)               # the plain .txt, beside the launch logs
+    return save_bundle(context)
+
+
+def shared_line(path: "Path | None") -> str:
+    """What to tell the user the press just did.
+
+    The file is mentioned ONLY when it holds the replay inputs — otherwise it
+    is a copy of what is already on the clipboard, and naming it is one more
+    thing to read and ignore.
+    """
+    said = "Error report copied to the clipboard"
+    if path is None:
+        return said
+    if not [f for f in _job.get("files", []) if Path(f).is_file()]:
+        return said
+    return ("%s. What it ran on is in %s, in your exports folder"
+            % (said, path.name))
 
 
 # --- the launch log --------------------------------------------------------

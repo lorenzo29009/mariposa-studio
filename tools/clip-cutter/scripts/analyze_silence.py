@@ -23,23 +23,41 @@ SR = 16000
 WIN = int(0.02 * SR)  # 20 ms
 
 
+class ProbeError(RuntimeError):
+    """ffprobe could not describe a clip — carries the reason, not a KeyError."""
+
+
 def probe(path):
+    err = [""]
+
     def q(*ent):
-        out = subprocess.run(
+        r = subprocess.run(
             [_FFPROBE, "-v", "error", "-select_streams", "v:0",
              "-show_entries", *ent, "-of", "json", path],
-            capture_output=True, text=True,
-            **portable.no_window_kwargs()).stdout
-        return json.loads(out or "{}")
-    s = q("stream=width,height,r_frame_rate,duration").get("streams", [{}])[0]
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            **portable.no_window_kwargs())
+        # ffprobe's own complaint is the useful half of a failed probe, so it is
+        # kept rather than dropped: without it an unreadable file reached the
+        # caller as KeyError('width') four frames deep.
+        if r.stderr and r.stderr.strip():
+            err[0] = r.stderr.strip().splitlines()[-1]
+        return json.loads(r.stdout or "{}")
+    streams = q("stream=width,height,r_frame_rate,duration").get("streams") or []
+    s = streams[0] if streams else {}
     fmt = q("format=duration").get("format", {})
     rot = 0
     sd = q("stream_side_data=rotation").get("streams", [{}])
     if sd and sd[0].get("side_data_list"):
         rot = int(sd[0]["side_data_list"][0].get("rotation", 0))
+    if "width" not in s or "height" not in s:
+        raise ProbeError("%s has no readable video track%s"
+                         % (os.path.basename(path),
+                            (" — " + err[0]) if err[0] else ""))
     dur = float(s.get("duration") or fmt.get("duration") or 0)
     num, den = (s.get("r_frame_rate", "30/1").split("/") + ["1"])[:2]
-    fps_raw = float(num) / float(den or 1)
+    # A stream with no declared rate reports 0/0. Dividing it crashed the plan;
+    # 30 is the rate every other default here assumes.
+    fps_raw = (float(num) / float(den)) if float(num) and float(den or 0) else 30.0
     return dict(w=int(s["width"]), h=int(s["height"]), rot=rot, dur=dur, fps_raw=fps_raw)
 
 

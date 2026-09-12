@@ -21,6 +21,23 @@ import portable                                              # noqa: E402
 FFMPEG = portable.ffmpeg() or "ffmpeg"
 
 
+def ffmpeg(args, doing):
+    """Run ffmpeg, and keep what it said if it fails.
+
+    stderr is CAPTURED rather than left to the parent's. Under pythonw.exe the
+    Studio's stages have no console, and CREATE_NO_WINDOW gives a child with
+    nothing redirected no std handles at all — so on Windows ffmpeg's one
+    explanatory line went nowhere and the stage stopped with a returncode and
+    no reason. `-v error` means this is quiet on the happy path.
+    """
+    r = subprocess.run([FFMPEG] + args, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace",
+                       **portable.no_window_kwargs())
+    if r.returncode != 0:
+        msg = (r.stderr or "").strip().splitlines()
+        raise SystemExit("%s failed%s" % (doing, (": " + msg[-1]) if msg else ""))
+
+
 def build_segment(plan, seg, outdir):
     """Rebuild one segment's WAV from its clips objects. Returns the wav path."""
     folder, fps = plan["folder"], plan["fps"]
@@ -42,11 +59,10 @@ def build_segment(plan, seg, outdir):
         # (aac, 5-channel apac spatial, h264, mebx) and the video is stream 2,
         # so this is also the contract that the captioned audio is the same
         # track the render uses — the proxy step maps 0:v:0 + 0:a:0 to match.
-        subprocess.run(
-            [FFMPEG, "-v", "error", "-y", "-i", os.path.join(folder, c["src"]),
-             "-ss", f"{start:.3f}", "-t", f"{dur:.3f}",
-             "-vn", "-ac", "1", "-ar", "16000", "-map", "0:a:0", tf],
-            check=True, **portable.no_window_kwargs())
+        ffmpeg(["-v", "error", "-y", "-i", os.path.join(folder, c["src"]),
+                "-ss", f"{start:.3f}", "-t", f"{dur:.3f}",
+                "-vn", "-ac", "1", "-ar", "16000", "-map", "0:a:0", tf],
+               "Extracting audio from %s" % c["src"])
         parts.append(tf)
       listf = os.path.join(scratch, "list.txt")
       with open(listf, "w", encoding="utf-8") as fh:
@@ -56,9 +72,9 @@ def build_segment(plan, seg, outdir):
       tmp_out = out + ".part"
       # -f wav is REQUIRED: the output is written to "<name>.wav.part" for atomic
       # replace, and ffmpeg cannot infer a muxer from the .part extension.
-      subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "concat", "-safe", "0",
-                      "-i", listf, "-c", "copy", "-f", "wav", tmp_out],
-                     check=True, **portable.no_window_kwargs())
+      ffmpeg(["-v", "error", "-y", "-f", "concat", "-safe", "0",
+              "-i", listf, "-c", "copy", "-f", "wav", tmp_out],
+             "Joining the audio for %s" % seg)
       os.replace(tmp_out, out)
       return out
     finally:

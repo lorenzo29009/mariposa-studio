@@ -455,6 +455,20 @@ class AnimatorPage(ScenesStage, QWidget):
         self.stack.setCurrentIndex(index)
         self._sync_scrolls()
 
+    def showEvent(self, e):
+        """Open with the caret already in H1 on an untouched script.
+
+        The other half of the empty-row well: a blinking caret in the first row
+        says "write here" without a word on screen. Only on a script that is
+        still empty — landing in a half-written one would scroll the page away
+        from wherever the writing actually stopped."""
+        super().showEvent(e)
+        if self.stack.currentIndex() != self.STAGE_SCRIPT or not self._hooks:
+            return
+        if any(ed.value() for ed in self._hooks + self._ctas) or self.body_editor.value():
+            return
+        self._hooks[0].edit.setFocus()
+
     # ── Block management ─────────────────────────────────────────────────────
 
     def _add_hook(self, text: str = "") -> None:
@@ -882,12 +896,8 @@ class AnimatorPage(ScenesStage, QWidget):
     def _copy_report(self):
         """Hand over everything about this failure, in one click."""
         import diagnostics
-        from PySide6.QtWidgets import QApplication
-        QApplication.clipboard().setText(
-            diagnostics.report(f"{self.title} — pressed Build scenes"))
-        path = diagnostics.save_report(f"{self.title} — pressed Build scenes")
-        self._set_status("Error report copied to the clipboard"
-                         + (f" · saved as {path.name}" if path else ""))
+        path = diagnostics.share_report(f"{self.title} — pressed Build scenes")
+        self._set_status(diagnostics.shared_line(path))
 
     def _announce(self, body: str):
         """Honour the Settings notification switch, as every other tool does."""

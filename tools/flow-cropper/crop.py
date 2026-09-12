@@ -19,6 +19,10 @@ The "Videoformat" segment (9x16 / 4x5) and the per-clip index ("-{i}", the
 "Hook") are filled in by the tool; in the generic briefing tag they appear as
 the literal placeholders "Videoformat" and "Hook".
 
+Clips are found wherever they are: a `9x16/` subfolder however it is spelled,
+or loose in the folder (filed into `9x16/` by the run). A CTA folder that holds
+nothing yet is skipped rather than ending the job — see the README.
+
 The creative id is auto-detected from the folder name:
     folder named "AI63"            → id AI63
     folder named "C807" / "C807-1" → id C807
@@ -345,15 +349,16 @@ def _build_index_pattern(name_for, cta: str) -> "re.Pattern[str]":
     return re.compile("^" + pat + "$")
 
 
-def process_folder(folder: Path, name_for, ffmpeg: str, cta: str = "",
-                   workers: int = 1, dry_run: bool = False,
+def process_folder(nine16: Path, four5: Path, name_for, ffmpeg: str,
+                   cta: str = "", workers: int = 1, dry_run: bool = False,
                    actions: list = None, on_action=None,
                    encoder: str = "libx264"):
-    nine16 = folder / "9x16"
-    four5 = folder / "4x5"
-    files = [f for f in nine16.iterdir() if f.suffix.lower() == ".mp4"]
+    """Rename + reframe one unit. `nine16` and `four5` come from `plan_units`,
+    already resolved — nothing here guesses a folder name or its spelling."""
+    files = _videos(nine16)
     if not files:
-        raise RuntimeError(f"No .mp4 files in {nine16}")
+        print(f"{cta + ': ' if cta else ''}No clips in {nine16.name}/ — skipping.")
+        return
     prefix = f"{cta}: " if cta else ""
     indent = "  " if cta else ""
     if not dry_run:
@@ -443,22 +448,168 @@ def process_folder(folder: Path, name_for, ffmpeg: str, cta: str = "",
                 pass
 
 
-def detect_structure(folder: Path) -> str:
-    subs = [d.name for d in folder.iterdir() if d.is_dir()]
-    if "9x16" in subs:
-        return "simple"
-    if any(s.upper().startswith("CTA") for s in subs):
-        return "cta"
-    for d in folder.iterdir():
-        if d.is_dir():
-            inner = [x.name for x in d.iterdir() if x.is_dir()]
-            if "9x16" in inner:
-                return "cta"
-    raise RuntimeError(
-        f"Unknown folder structure in '{folder.name}'.\n"
-        f"Expected a 9x16/ subfolder, or CTA*/9x16/ subfolders.\n"
-        f"Found: {', '.join(subs) or '(empty)'}"
-    )
+class NothingToDo(RuntimeError):
+    """The folder holds no clips this run can work on. Not a crash — the run
+    prints one sentence and stops, instead of a traceback."""
+
+
+# ── Discovery ─────────────────────────────────────────────────────────────────
+# The layout handed to a run is not guaranteed. A matrix builder may still be
+# writing its CTA folders; a folder may be spelled "9X16", "9_16" or "9:16"; the
+# clips may sit loose in the CTA folder with no 9x16/ around them at all. Each of
+# those used to end the job on a FileNotFoundError and leave someone to reshape
+# the folder by hand before pressing the button again. So the layout is read off
+# the disk rather than assumed, and a loose pile of clips is filed into the house
+# layout by the run itself.
+
+def _fold(name: str) -> str:
+    """Folder name → comparison key: case, spaces and separators dropped, so
+    "9X16", "9_16", "9 x 16" and "9:16" all answer to the same thing."""
+    return re.sub(r"[\s_\-:.]+", "", name).lower()
+
+
+NINE16_NAMES = {"9x16", "916"}
+FOUR5_NAMES = {"4x5", "45"}
+CANON_NINE16 = "9x16"
+CANON_FOUR5 = "4x5"
+
+
+def _videos(folder: Path) -> list:
+    """The .mp4 files directly in `folder`, newest layout or not. Dot-files are
+    skipped: on a non-APFS volume (an exFAT drive, a NAS) macOS leaves an
+    AppleDouble "._clip.mp4" stub beside every real clip, and those are not
+    videos."""
+    if not folder or not folder.is_dir():
+        return []
+    return [f for f in folder.iterdir()
+            if f.is_file() and f.suffix.lower() == ".mp4"
+            and not f.name.startswith(".")]
+
+
+def _subdirs(folder: Path) -> list:
+    return sorted((d for d in folder.iterdir()
+                   if d.is_dir() and not d.name.startswith(".")),
+                  key=_natural_key)
+
+
+def _named_dir(folder: Path, keys: set):
+    """The existing subfolder whose name folds to one of `keys`, or None — so an
+    existing "9X16" is used instead of a second, differently-cased one appearing
+    next to it (which on a case-insensitive volume is not even possible)."""
+    for d in _subdirs(folder):
+        if _fold(d.name) in keys:
+            return d
+    return None
+
+
+def _looks_like_cta(name: str) -> bool:
+    return _fold(name).startswith("cta")
+
+
+def _cta_label(name: str) -> str:
+    """The label that goes in the filename: "cta 1", "CTA-1", "Cta1" → "CTA1"."""
+    m = re.match(r"^cta[\s_\-]*(\d+)$", name.strip(), re.I)
+    return f"CTA{m.group(1)}" if m else name.strip().upper()
+
+
+def _clips_dir(folder: Path):
+    """Where this unit's 9x16 clips are — its 9x16/ subfolder however spelled, or
+    the folder itself when the clips sit loose in it. None when it holds none.
+    Pure: looks, never moves."""
+    nine = _named_dir(folder, NINE16_NAMES)
+    if nine is not None and _videos(nine):
+        return nine
+    if _videos(folder):
+        return folder
+    return None
+
+
+def _out_dir(folder: Path) -> Path:
+    """Where the 4x5 files go — the existing folder if there is one, whatever its
+    spelling, else the canonical name."""
+    return _named_dir(folder, FOUR5_NAMES) or (folder / CANON_FOUR5)
+
+
+def plan_units(folder: Path) -> list:
+    """[(unit folder, clips folder, CTA label)] — every unit this run processes.
+
+    One unit with an empty label is the simple structure; several labelled ones
+    are the CTA matrix. A CTA folder that holds nothing yet contributes no unit
+    instead of ending the run.
+    """
+    # A real 9x16/ at the top is the simple structure and settles it. Loose
+    # clips at the top do NOT: one stray file next to CTA1/ and CTA2/ would
+    # otherwise become the entire job and the matrix would go unprocessed, so
+    # the CTA folders are looked for first and the strays only win if there
+    # are none.
+    nine = _named_dir(folder, NINE16_NAMES)
+    if nine is not None and _videos(nine):
+        return [(folder, nine, "")]
+
+    found = []
+    for d in _subdirs(folder):
+        if _fold(d.name) in FOUR5_NAMES:      # our own output is never an input
+            continue
+        inner = _clips_dir(d)
+        if inner is not None:
+            found.append((d, inner))
+
+    ctas = [(d, s) for d, s in found if _looks_like_cta(d.name)]
+    if ctas:
+        return [(d, s, _cta_label(d.name)) for d, s in ctas]
+    # Exactly one nested folder holding clips is unambiguous — treat it as the
+    # simple structure one level down. Several unlabelled ones are not: each
+    # would be numbered from 1 and the same name would be written twice.
+    if _videos(folder):
+        return [(folder, folder, "")]
+    if len(found) == 1:
+        d, s = found[0]
+        return [(d, s, "")]
+    if len(found) > 1:
+        names = ", ".join(d.name for d, _ in found)
+        raise NothingToDo(
+            f"'{folder.name}' holds clips in {len(found)} folders ({names}) and "
+            f"none of them is a CTA folder, so there is no way to tell which "
+            f"index or CTA each clip belongs to. Point the tool at one of them, "
+            f"or name them CTA1, CTA2, …"
+        )
+    return []
+
+
+def nothing_found(folder: Path) -> str:
+    subs = [d.name for d in _subdirs(folder)]
+    where = f"Subfolders: {', '.join(subs)}" if subs else "The folder is empty."
+    return (f"No .mp4 clips in '{folder.name}' — not in the folder itself, not in "
+            f"a 9x16 subfolder, not in a CTA folder. {where}")
+
+
+def adopt_loose(unit: Path, src: Path, *, dry_run: bool = False,
+                actions: list = None, on_action=None) -> Path:
+    """File loose clips into the unit's 9x16/ and return the folder to work in.
+
+    A run that finds `CTA1/h1.mp4` instead of `CTA1/9x16/h1.mp4` puts them where
+    the naming convention says they live rather than stopping — the move is
+    logged, so undo puts them back."""
+    if src != unit:
+        return src
+    dest = _named_dir(unit, NINE16_NAMES) or (unit / CANON_NINE16)
+    loose = sorted(_videos(unit), key=_natural_key)
+    if dry_run:
+        print(f"  would file {len(loose)} loose clip(s) under {dest.name}/")
+        return unit
+    dest.mkdir(exist_ok=True)
+    for f in loose:
+        target = dest / f.name
+        if target.exists():
+            print(f"  {f.name} is already in {dest.name}/ — leaving the loose copy")
+            continue
+        print(f"  filing {f.name} under {dest.name}/")
+        rename_with_retry(f, target)
+        if actions is not None:
+            actions.append({"type": "move", "from": str(f), "to": str(target)})
+            if on_action:
+                on_action()
+    return dest
 
 
 LOG_FILENAME = ".flow-cropper-log.json"
@@ -501,7 +652,11 @@ def run(folder: Path, fields: dict, ffmpeg: str,
             awareness=fields["awareness"], product=fields["product"], cta=cta,
         )
 
-    structure = detect_structure(folder)
+    units = plan_units(folder)
+    if not units:
+        raise NothingToDo(nothing_found(folder))
+    labels = [c for _, _, c in units if c]
+    structure = f"cta ({', '.join(labels)})" if labels else "simple"
     # Pick the encoder once per run (the probe is cheap; doing it per clip isn't).
     # Skip the probe on a dry run — nothing gets encoded.
     encoder = "libx264" if dry_run else select_encoder(ffmpeg)
@@ -512,20 +667,12 @@ def run(folder: Path, fields: dict, ffmpeg: str,
     if dry_run:
         print("Mode     : DRY RUN (no files will be changed)")
     print()
-    if structure == "simple":
-        process_folder(folder, name_for, ffmpeg, workers=workers,
-                       dry_run=dry_run, actions=actions, on_action=on_action,
-                       encoder=encoder)
-    else:
-        cta_subs = sorted(
-            d for d in folder.iterdir()
-            if d.is_dir() and d.name.upper().startswith("CTA")
-        )
-        for cta_dir in cta_subs:
-            process_folder(cta_dir, name_for, ffmpeg,
-                           cta=cta_dir.name.upper(), workers=workers,
-                           dry_run=dry_run, actions=actions, on_action=on_action,
-                           encoder=encoder)
+    for unit, src, cta in units:
+        nine16 = adopt_loose(unit, src, dry_run=dry_run, actions=actions,
+                             on_action=on_action)
+        process_folder(nine16, _out_dir(unit), name_for, ffmpeg, cta=cta,
+                       workers=workers, dry_run=dry_run, actions=actions,
+                       on_action=on_action, encoder=encoder)
     return actions
 
 
@@ -555,6 +702,18 @@ def undo_last(folder: Path):
                     print(f"  - reverted {a['to']} → {a['from']}")
                 else:
                     print(f"  ! skipped rename (missing or conflict): {a['to']} → {a['from']}")
+            elif a["type"] == "move":
+                # A clip the run filed into 9x16/ goes back where it was, and the
+                # folder the run created goes with it if nothing else moved in.
+                src = Path(a["to"])
+                dst = Path(a["from"])
+                if src.exists() and not dst.exists():
+                    rename_with_retry(src, dst)
+                    print(f"  - moved {src.name} back to {dst.parent.name}/")
+                    if src.parent.is_dir() and not any(src.parent.iterdir()):
+                        src.parent.rmdir()
+                else:
+                    print(f"  ! skipped move (missing or conflict): {src.name}")
         except Exception as e:
             print(f"  ! error undoing {a}: {e}")
     _save_log(folder, log)
@@ -804,8 +963,14 @@ def run_with(folder: Path, fields: dict,
             _save_log(folder, log)
 
     try:
-        run(folder, fields, ffmpeg, workers=workers,
-            dry_run=dry_run, actions=actions, on_action=flush)
+        try:
+            run(folder, fields, ffmpeg, workers=workers,
+                dry_run=dry_run, actions=actions, on_action=flush)
+        except NothingToDo as e:
+            # Not a bug a maintainer can fix — a folder that isn't ready. One
+            # sentence, no traceback.
+            print(e)
+            sys.exit(1)
         print("\n✓ All done!" if not dry_run else "\n✓ Preview done — no files changed.")
     finally:
         flush()

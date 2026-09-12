@@ -519,6 +519,7 @@ QPlainTextEdit#BlockInput {{
     padding: 0; color: {TXT_STRONG}; font-size: {t['body']['size']}px;
     selection-background-color: {WINE}; selection-color: {WINE_FG};
 }}
+
 QPushButton#BlockRemove {{ background: transparent; border: none; border-radius: {R_SM}px; }}
 QPushButton#BlockRemove:hover {{ background: {STOP_FILL}; }}
 

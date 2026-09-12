@@ -8,9 +8,8 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import (
     Qt, Signal, QTimer, QPropertyAnimation, QEasingCurve, QPoint, QObject,
-    QMimeData, QThread, Slot,
+    QThread, Slot,
 )
-from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QLineEdit, QPlainTextEdit, QFrame, QSizePolicy, QScrollArea,
@@ -86,76 +85,16 @@ class GeminiWorker(QObject):
             self.failed.emit(str(e))
 
 
-class _OrderChip(QFrame):
-    """A gathered shot, carrying its position and able to change it.
-
-    Reordering is a drag rather than up/down buttons: the bar reads as a
-    sequence, and moving something in a sequence is a thing you do with your
-    hand. The chip never mutates the list itself — it calls back with
-    (from, to) so the page stays the single place order changes."""
-
-    MIME = "application/x-mariposa-pick"
-
-    def __init__(self, index: int, on_move):
-        super().__init__()
-        self.setObjectName("SelectionChip")
-        self.index = index
-        self._on_move = on_move
-        self._press: Optional[QPoint] = None
-        self.setAcceptDrops(True)
-        self.setCursor(Qt.OpenHandCursor)
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton:
-            self._press = e.position().toPoint()
-
-    def mouseMoveEvent(self, e):
-        if self._press is None:
-            return
-        if (e.position().toPoint() - self._press).manhattanLength() < 8:
-            return
-        drag = QDrag(self)
-        data = QMimeData()
-        data.setData(self.MIME, str(self.index).encode())
-        drag.setMimeData(data)
-        drag.setPixmap(self.grab())
-        drag.setHotSpot(self._press)
-        self._press = None
-        drag.exec(Qt.MoveAction)
-
-    def mouseReleaseEvent(self, e):
-        self._press = None
-
-    def dragEnterEvent(self, e):
-        if e.mimeData().hasFormat(self.MIME):
-            e.acceptProposedAction()
-
-    def dragMoveEvent(self, e):
-        if e.mimeData().hasFormat(self.MIME):
-            e.acceptProposedAction()
-
-    def dropEvent(self, e):
-        if not e.mimeData().hasFormat(self.MIME):
-            return
-        src = int(bytes(e.mimeData().data(self.MIME)).decode())
-        # Dropping on the right half of a chip means "after it".
-        dst = self.index + (1 if e.position().x() > self.width() / 2 else 0)
-        if src < dst:
-            dst -= 1
-        e.acceptProposedAction()
-        self._on_move(src, dst)
-
-
-# The page ------------------------------------------------------------------
-
 class CameraPromptsPage(QWidget):
     title = "Camera Prompts"
     tool_key = "camera"
 
     def __init__(self, on_back: Callable[[], None]):
         super().__init__()
-        # An ordered list, not one-per-category: order matters to a fused
-        # prompt, and nothing says a shot and an angle are mutually exclusive.
+        # One pick per category, kept in taxonomy order: the tool's model is
+        # six slots (angle, shot, composition, movement, lens, POV) that merge
+        # into the single camera block you paste at the end of your AI prompt.
+        # A list rather than a dict so the merged order is the rendered order.
         self.picks: list[dict] = []
         self._thread: Optional[QThread] = None
         self._worker: Optional[GeminiWorker] = None
@@ -166,8 +105,8 @@ class CameraPromptsPage(QWidget):
         outer.setSpacing(0)
 
         # ---- app bar. No Single | Combine toggle: a mode you have to enter
-        # and then remember to leave is a tax on the fast case, and the bar at
-        # the bottom already says unambiguously that you are gathering. ----
+        # and then remember to leave is a tax on the fast case, and the tray at
+        # the bottom already says unambiguously what is picked. ----
         self.app_bar = AppBar(self.title, self.tool_key, on_back)
         outer.addWidget(self.app_bar)
 
@@ -198,10 +137,6 @@ class CameraPromptsPage(QWidget):
         action_row.setContentsMargins(0, 0, 0, 0)
         action_row.setSpacing(8)
         action_row.addWidget(self.chips_host, 1, Qt.AlignVCenter)
-        self.order_hint = QLabel("order matters — drag to reorder")
-        self.order_hint.setObjectName("MetaFaint")
-        self.order_hint.setVisible(False)
-        action_row.addWidget(self.order_hint, 0, Qt.AlignVCenter)
         self.clear_btn = QPushButton("Clear")
         self.clear_btn.setObjectName("GhostBtn")
         self.clear_btn.setCursor(Qt.PointingHandCursor)
@@ -215,7 +150,7 @@ class CameraPromptsPage(QWidget):
         self.copy_all_btn.clicked.connect(self._copy_all)
         self.copy_all_btn.setVisible(False)
         action_row.addWidget(self.copy_all_btn, 0, Qt.AlignVCenter)
-        self.gen_btn = QPushButton("Fuse with Gemini")
+        self.gen_btn = QPushButton("Merge into one prompt")
         self.gen_btn.setObjectName("PrimaryBtn")
         self.gen_btn.setCursor(Qt.PointingHandCursor)
         self.gen_btn.setIcon(svg_icon("sparkles", WINE_FG, 15))
@@ -304,7 +239,7 @@ class CameraPromptsPage(QWidget):
         sv.setContentsMargins(24, 22, 24, 22)
         sv.setSpacing(14)
         sheet_head = QHBoxLayout(); sheet_head.setSpacing(10)
-        st = QLabel("One prompt, fused")
+        st = QLabel("One camera prompt")
         st.setObjectName("ResultHead")
         sheet_head.addWidget(st)
         sheet_head.addStretch(1)
@@ -319,7 +254,6 @@ class CameraPromptsPage(QWidget):
         self.result = QPlainTextEdit()
         self.result.setObjectName("ResultBox")
         self.result.setReadOnly(True)
-        self.result.setPlaceholderText("Your ready-to-paste prompt will appear here.")
         self.result.setMinimumHeight(190)
         sv.addWidget(self.result, 1)
         foot = QHBoxLayout(); foot.setSpacing(10)
@@ -438,21 +372,40 @@ class CameraPromptsPage(QWidget):
     # ---- Selection logic -------------------------------------------------
 
     def _on_card_clicked(self, entry: dict):
-        """A click copies. A ⌘-click gathers, or un-gathers."""
-        if not entry.get("gather"):
+        """A click picks this shot for its category; a ⌘-click copies just it.
+
+        ONE pick per category, and picking a second card in the same category
+        replaces the first — six slots (angle, shot, composition, movement,
+        lens, POV) that merge into the single block you paste at the end of the
+        prompt in your AI tool. Clicking the pick again gives the slot back."""
+        if entry.get("copy_only"):
             QApplication.clipboard().setText(_clean_description(entry["description"]))
             self._show_toast(f"Copied · {entry['tag']}")
             return
-        at = self._index_of(entry["tag"])
-        if at is not None:
-            self.picks.pop(at)
+        cat = entry["category"]
+        held = self._pick_in(cat)
+        if held is not None and held["tag"] == entry["tag"]:
+            self.picks.remove(held)
             self._show_toast(f"Removed · {entry['tag']}")
         else:
+            if held is not None:
+                self.picks.remove(held)
             self.picks.append({"tag": entry["tag"],
                                "description": entry["description"],
-                               "category": entry["category"]})
-            self._show_toast(f"Gathered · {entry['tag']}  ({len(self.picks)})")
+                               "category": cat})
+            # Taxonomy order, always: the merged prompt reads angle → shot →
+            # composition → movement → lens → POV, and with one pick per
+            # category there is nothing left for a hand-made order to decide.
+            self.picks.sort(key=lambda p: CATEGORY_ORDER.index(p["category"]))
+            self._show_toast(f"{CATEGORY_LABELS.get(cat, cat)} · {entry['tag']}")
         self._sync_selection()
+
+    def _pick_in(self, category: str) -> Optional[dict]:
+        """The one pick this category holds, if it holds one."""
+        for p in self.picks:
+            if p["category"] == category:
+                return p
+        return None
 
     def _index_of(self, tag: str) -> Optional[int]:
         for i, p in enumerate(self.picks):
@@ -485,17 +438,15 @@ class CameraPromptsPage(QWidget):
         if n == 0:
             self.chips_host.setVisible(False)
             self.clear_btn.setVisible(False)
-            self.order_hint.setVisible(False)
             return
         self.chips_host.setVisible(True)
         self.clear_btn.setVisible(True)
-        self.order_hint.setVisible(n > 1)
 
         for i, e in enumerate(self.picks):
             cat = e["category"]
-            chip = _OrderChip(i, self._reorder)
-            chip.setToolTip(f"{CATEGORY_LABELS.get(cat, cat)}: {e['tag']} — "
-                            "drag to reorder")
+            chip = QFrame()
+            chip.setObjectName("SelectionChip")
+            chip.setToolTip(f"{CATEGORY_LABELS.get(cat, cat)}: {e['tag']}")
             hl = QHBoxLayout(chip)
             hl.setContentsMargins(12, 5, 6, 5)
             hl.setSpacing(8)
@@ -529,19 +480,6 @@ class CameraPromptsPage(QWidget):
         if not self.picks:
             self._close_sheet()
 
-    def _reorder(self, src: int, dst: int):
-        """Move the chip at `src` to `dst`.
-
-        Order changes the fused prompt, so this is a real edit rather than
-        cosmetics: a fused prompt reads differently when movement comes before
-        angle."""
-        if src == dst or not (0 <= src < len(self.picks)):
-            return
-        item = self.picks.pop(src)
-        dst = max(0, min(dst, len(self.picks)))
-        self.picks.insert(dst, item)
-        self._sync_selection()
-
     def _clear_selections(self):
         had_any = bool(self.picks) or self.sheet.isVisible()
         self.picks.clear()
@@ -554,7 +492,7 @@ class CameraPromptsPage(QWidget):
 
     def _copy_all(self):
         """Every gathered description, in order, one per line — the honest
-        no-network version of Fuse."""
+        no-network version of the merge."""
         if not self.picks:
             return
         text = "\n".join(_clean_description(p["description"]) for p in self.picks)
@@ -564,10 +502,47 @@ class CameraPromptsPage(QWidget):
     def _update_generate_btn(self):
         n = len(self.picks)
         self.gen_btn.setEnabled(n > 0 and self._thread is None)
-        self.gen_btn.setText("Fuse with Gemini" if n == 0
-                             else f"Fuse {n} with Gemini")
+        self.gen_btn.setText("Merge into one prompt" if n == 0
+                             else f"Merge {n} into one prompt")
         self.copy_all_btn.setVisible(n > 0)
         self.copy_all_btn.setText("Copy all" if n < 2 else f"Copy all {n}")
+
+    def _merge_prompt(self) -> str:
+        """What gets sent: the picks, and the instruction to merge them into the
+        CAMERA half of a prompt.
+
+        The block is pasted at the END of a prompt that already describes the
+        subject and the scene, so the model is told not to invent — or restate —
+        either. It is the same promise the source data makes: every description
+        in prompts.json is written as a "[SUBJECT](…)" fragment, never a scene."""
+        bullets = []
+        for e in self.picks:
+            cat = e["category"]
+            clean = _clean_description(e["description"])
+            bullets.append(f"- {CATEGORY_LABELS.get(cat, cat)} → {e['tag']}: {clean}")
+        bullets_text = "\n".join(bullets)
+        return (
+            "You are a senior cinematographer writing the CAMERA half of a prompt "
+            "for an AI image / video generator. What you write is pasted at the END "
+            "of a prompt that already describes the subject, the location and the "
+            "action, so it must describe only how the shot is filmed.\n\n"
+            "You receive up to one camera element per category, each with a tag and "
+            "a technical description. Merge them into ONE coherent, vivid, "
+            "EXHAUSTIVE camera description that preserves EVERY technical cue:\n"
+            "• Keep every camera position, height, angle, distance to subject, lens "
+            "behaviour, motion, perspective effect and composition rule that is "
+            "mentioned. Do not drop any of them.\n"
+            "• Read them as one shot a real cinematographer pre-visualised, not as "
+            "a list of settings.\n"
+            "• Do NOT invent, and do NOT restate, subject matter, location, "
+            "lighting, colour grade, mood, props or wardrobe. Write \"the subject\" "
+            "where a subject has to be named.\n"
+            "• Output a single flowing paragraph, 2 to 5 sentences, ~70–180 words. "
+            "No bullets, no headings, no preamble, no quotes, no labels like "
+            "\"Final prompt:\". Output ONLY the camera description itself.\n\n"
+            f"Camera elements:\n{bullets_text}\n\n"
+            "Now write it:"
+        )
 
     def _on_generate(self):
         if not self.picks or self._thread is not None:
@@ -581,35 +556,7 @@ class CameraPromptsPage(QWidget):
             self.copy_btn.setEnabled(False)
             return
 
-        # In the operator's order, not the taxonomy's: that is the whole point
-        # of the numbered, draggable chips.
-        bullets = []
-        for e in self.picks:
-            cat = e["category"]
-            clean = _clean_description(e["description"])
-            bullets.append(f"- {CATEGORY_LABELS.get(cat, cat)} → {e['tag']}: {clean}")
-        bullets_text = "\n".join(bullets)
-
-        user_prompt = (
-            "You are a senior cinematographer writing a single, ready-to-paste prompt "
-            "for an AI image / video generator. You will receive a set of camera "
-            "elements, each with a tag and a technical description.\n\n"
-            "Your job is to fuse them into ONE coherent, vivid, EXHAUSTIVE prompt that "
-            "preserves EVERY technical cue from the inputs. Specifically:\n"
-            "• Keep every camera position, height, angle, distance to subject, lens "
-            "behaviour, motion, perspective effect, and composition rule that is "
-            "mentioned in the inputs. Do not drop any of them.\n"
-            "• Smoothly integrate the elements as if a real cinematographer "
-            "pre-visualised one shot.\n"
-            "• Do NOT invent new subject matter, location, lighting, colour grade, "
-            "mood, props, or wardrobe that is not implied by the inputs. Use "
-            "\"the subject\" if no subject is given.\n"
-            "• Output a single flowing paragraph, 2 to 5 sentences, ~70–180 words. "
-            "No bullets, no headings, no preamble, no quotes, no labels like "
-            "\"Final prompt:\". Output ONLY the prompt itself.\n\n"
-            f"Camera elements:\n{bullets_text}\n\n"
-            "Now write the final prompt:"
-        )
+        user_prompt = self._merge_prompt()
 
         self._open_sheet()
         self.result.setPlainText("Generating…")

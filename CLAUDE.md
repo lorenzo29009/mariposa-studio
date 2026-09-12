@@ -26,6 +26,28 @@ goal, e.g. `Fixed a bug in the installer.`, `Performance improvements.`,
 including the GitHub Release body attached to a tag. Do not add changelogs,
 bullet lists of changes, or technical explanations to release notes.
 
+## No instruction text in the UI (MANDATORY)
+
+The interface teaches by **affordance**, never by a paragraph. Never add
+explanatory copy to a screen: no "how this works" blocks, no "Output will appear
+here" strips, no tips, banners, callouts, arrows, numbered steps, exclamation
+marks or emoji — not even "just to make it clearer".
+
+What is allowed instead, and nothing else:
+
+- a **placeholder** naming the content that belongs in a field (sentence case,
+  the content itself — "The line they hear first" — never how to use the tool),
+  which disappears on the first keystroke;
+- the ONE quiet second line a `SettingRow` already has ("Caption length — how
+  the lines are broken");
+- a **button label that says what it will do** ("Fuse 3 into your scene");
+- the caret already sitting in the field where the writing starts;
+- a finished job saying what it made and where.
+
+If a screen only makes sense with a paragraph on it, the screen is wrong — fix
+the screen, don't caption it. Depth goes in `docs/`, never on the canvas. Voice
+rules live in `docs/BRAND.md` §5; the affordance vocabulary in `docs/DESIGN.md`.
+
 ## Where things live
 
 ```
@@ -100,6 +122,9 @@ QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/smoketest.py   # must print 
 ./venv/bin/python scripts/test_packer.py    # after script_packer/script_text
 ./venv/bin/python scripts/test_clock.py     # after speech_clock
 ./venv/bin/python scripts/test_failures.py  # after failures.py
+./venv/bin/python scripts/test_captions.py  # after tools/captions-de/caption.py — the language layer
+./venv/bin/python scripts/test_flow_cropper.py  # after tools/flow-cropper/crop.py — the folder layouts
+QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_toolpage.py  # after tool_page/ResultCard — the job runner's end states
 ./venv/bin/python scripts/test_gemini.py    # after gemini.py — model chain, 429/404 text
 QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_settings.py   # after settings_page/prefs
 QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_diagnostics.py  # after diagnostics.py — REDACTION

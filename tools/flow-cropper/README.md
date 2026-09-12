@@ -24,6 +24,20 @@ CTA:
   <campaign>/CTA2/9x16/*.mp4   →  <campaign>/CTA2/4x5/*.mp4
 ```
 
+The layout is read off the disk, not assumed, so a folder that is only nearly
+that shape still runs:
+
+- the ratio folder may be spelled `9X16`, `9_16`, `9-16` or `9:16`, and the CTA
+  folder `cta 1` or `CTA-1` (it is still labelled `CTA1` in the filename);
+- clips sitting loose in the campaign or CTA folder are filed into `9x16/`
+  by the run itself, and the move is logged, so undo puts them back;
+- a CTA folder the matrix builder has created but not filled yet is skipped —
+  it used to end the whole job on a `FileNotFoundError`;
+- a folder with no clips anywhere stops with one sentence saying where it
+  looked, not a traceback.
+
+`scripts/test_flow_cropper.py` covers each of these on real temp folders.
+
 AI and UGC creatives share **one** naming convention:
 
 ```

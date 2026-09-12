@@ -35,6 +35,7 @@ import shlex
 from pathlib import Path
 from typing import Callable, Optional
 
+import shiboken6
 from PySide6.QtCore import Qt, QProcess
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame,
@@ -240,6 +241,27 @@ class ToolPage(QWidget):
         """
         return None
 
+    def job_facts(self) -> list[tuple[str, str]]:
+        """What this run was HANDED, for the error report — (name, value) pairs.
+
+        The command line says what the app did; this says what it was given,
+        which is the half a maintainer otherwise has to ask for. Describe the
+        INPUTS — the folder and what is in it, the slots that were filled, the
+        options chosen — never the output. Never a secret: this is pasted into
+        a chat.
+        """
+        return []
+
+    def repro_files(self) -> list[Path]:
+        """Small TEXT inputs that would let this run be repeated elsewhere.
+
+        The config the run was driven by, the plan it produced — the things
+        that turn "I believe this is the cause" into "I ran it and watched it
+        fail". Never media, and never anything large: they are carried in an
+        archive someone pastes into a chat.
+        """
+        return []
+
     def after_finished(self, code: int):
         """Hook so subclasses can react when a run finishes."""
 
@@ -363,6 +385,21 @@ class ToolPage(QWidget):
         self.set_env_lines(self.env_lines())
         self._start(program, args, cwd)
 
+    def _alive(self) -> bool:
+        """True while this page still exists on the C++ side.
+
+        A running job outlives its window. The log column says so in as many
+        words, and on quit Qt tears the widget tree down while Python still
+        holds every wrapper — so the next signal from the QProcess walked into
+        `dot.update()` on a dot that no longer existed:
+
+            RuntimeError: libshiboken: Internal C++ object (StateDot)
+            already deleted.
+
+        The job itself was fine; only the reporting was talking to a corpse.
+        Every slot Qt can call after that point asks this first."""
+        return shiboken6.isValid(self)
+
     def _start(self, program: str, args: list[str], cwd: Optional[Path]):
         self._log(f"$ {program} {' '.join(shlex.quote(a) for a in args)}",
                   color=TXT_DISABLED)
@@ -375,6 +412,21 @@ class ToolPage(QWidget):
         proc.finished.connect(lambda code, _s: self._on_finished(code))
         proc.errorOccurred.connect(self._on_proc_error)
         self.process = proc
+        # The report is built long after this, from whatever was remembered
+        # here. A page that cannot describe its inputs must not take the run
+        # down with it, so the hook is allowed to fail.
+        try:
+            facts = self.job_facts()
+        except Exception as e:
+            facts = [("job facts", "could not be read: %s" % e)]
+        try:
+            repro = self.repro_files()
+        except Exception:
+            repro = []
+        diagnostics.note_job(
+            self.title,
+            command=f"{program} {' '.join(shlex.quote(a) for a in args)}",
+            cwd=str(cwd) if cwd else "", facts=facts, files=repro)
         self._set_status("running")
         self.run_btn.setEnabled(False)
         proc.start(program, args)
@@ -416,6 +468,8 @@ class ToolPage(QWidget):
         reports as already-4x5 from lines it already prints."""
 
     def _on_output(self, proc: QProcess):
+        if not self._alive():
+            return
         data = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="replace")
         for line in data.splitlines():
             self._log(line)
@@ -451,6 +505,9 @@ class ToolPage(QWidget):
         return False
 
     def _on_finished(self, code: int):
+        if not self._alive():
+            return
+        diagnostics.note_job_finished(code)
         if code == 0 and self.advance_batch():
             cmd = self.build_command()
             if cmd:
@@ -478,6 +535,8 @@ class ToolPage(QWidget):
         self._announce(code == 0)
 
     def _on_proc_error(self, _err):
+        if not self._alive():
+            return
         if self.process:
             self._log(f"✗ {self.process.errorString()}", color=STOP)
         self._set_status("error")
@@ -508,7 +567,7 @@ class ToolPage(QWidget):
         if target:
             target.clear_card()
 
-    def show_result(self, head: str, *, path: str = "", note: str = "",
+    def show_result(self, head: str = "", *, path: str = "", note: str = "",
                     actions: list[tuple[str, Callable[[], None], bool]] | None = None):
         """The done state. Records the artefact so ⌘K can reach it."""
         target = self.log or self.strip
@@ -543,13 +602,10 @@ class ToolPage(QWidget):
             extra=extra))
 
     def _copy_report(self):
-        """The whole picture on the clipboard, and a copy saved to disk."""
-        from PySide6.QtWidgets import QApplication
-        text = diagnostics.report(f"{self.title} — pressed {self.action_label}")
-        QApplication.clipboard().setText(text)
-        path = diagnostics.save_report(f"{self.title} — pressed {self.action_label}")
-        self._log("✎ Error report copied to the clipboard"
-                  + (f" and saved to {path.name}" if path else ""))
+        """One file to send, revealed — and the text on the clipboard too."""
+        ctx = f"{self.title} — pressed {self.action_label}"
+        path = diagnostics.share_report(ctx)
+        self._log("✎ " + diagnostics.shared_line(path))
 
     # ---- leaving ------------------------------------------------------------
     def _announce(self, ok: bool):

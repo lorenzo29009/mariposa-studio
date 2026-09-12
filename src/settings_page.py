@@ -467,13 +467,9 @@ class SettingsPage(QWidget):
         return _panel(col)
 
     def _copy_report(self):
-        from PySide6.QtWidgets import QApplication
         import diagnostics
-        QApplication.clipboard().setText(diagnostics.report("opened from Settings"))
-        path = diagnostics.save_report("opened from Settings")
-        self.report_note.setText(
-            "Copied — paste it into the chat."
-            + (f" A copy is saved as {path.name}." if path else ""))
+        path = diagnostics.share_report("opened from Settings")
+        self.report_note.setText(diagnostics.shared_line(path) + ".")
         self.report_note.show()
         self.report_btn.setText("Copied")
         QTimer.singleShot(1600, lambda: self.report_btn.setText("Copy error report"))

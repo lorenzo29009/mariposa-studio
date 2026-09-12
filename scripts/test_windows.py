@@ -215,6 +215,42 @@ def test_no_console() -> None:
           "CREATE_NO_WINDOW" in core_src and '"-WindowStyle", "Hidden"' in core_src)
 
 
+# --- 4b. Every stage can still be heard -----------------------------------
+def test_stages_speak() -> None:
+    """CREATE_NO_WINDOW silences a child that redirects nothing.
+
+    The two go together and the second half is easy to forget. Under
+    pythonw.exe the Studio's runner has no console; subprocess only sets
+    STARTF_USESTDHANDLES when a channel is redirected, CreateProcess is called
+    with bInheritHandles false, and CREATE_NO_WINDOW leaves no console to fall
+    back to — so the stage's sys.stdout and sys.stderr are None, and print(),
+    tracebacks and sys.exit("...") messages are all discarded. On macOS the
+    same call inherits fds and prints everything, which is why this cost a
+    Windows user an error report whose only content was "exited with code 1".
+    """
+    section("4b. A guarded stage still has a voice")
+    runner = (PIPE / "run_clip_cutter.py").read_text(encoding="utf-8")
+    check("the runner pipes each stage's output rather than inheriting it",
+          "stdout=subprocess.PIPE" in runner
+          and "stderr=subprocess.STDOUT" in runner)
+    check("...decoded as UTF-8, not the ANSI code page",
+          'encoding="utf-8"' in runner)
+    check("...and a stopped stage's own last line reaches the failure",
+          'sys.exit("failed: %s%s"' in runner)
+    # Any spawn that suppresses the console must also take a channel, or its
+    # child is mute. `check=True` alone only carries a returncode.
+    for name in ("run_clip_cutter.py", "build_segment_audio.py",
+                 "analyze_silence.py"):
+        src = (PIPE / name).read_text(encoding="utf-8")
+        calls = re.findall(r"subprocess\.(?:run|Popen|check_output)\((?:[^()]|\([^()]*\))*\)",
+                           src, re.S)
+        guarded = [c for c in calls if "no_window_kwargs()" in c]
+        mute = [c for c in guarded
+                if not re.search(r"capture_output=True|stdout=|stderr=", c)]
+        check("%s: %d guarded spawn(s), none mute" % (name, len(guarded)),
+              not mute, "%d redirect nothing" % len(mute) if mute else "")
+
+
 # --- 5. Interpreter and identity ------------------------------------------
 def test_paths() -> None:
     section("5. Windows interpreter, icon and taskbar identity")
@@ -291,6 +327,7 @@ def main() -> None:
     test_argv()
     test_concat()
     test_no_console()
+    test_stages_speak()
     test_paths()
     test_installer()
     print("\n%d checks, %d failed" % (len(OK) + len(FAIL), len(FAIL)))

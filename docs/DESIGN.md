@@ -168,8 +168,10 @@ greeting, no clock, no dashboard, no ordering that implies a sequence.
   `ToolPage`: a form on the left, **the log in daylight on the right**.
   `SIDE = "log"` for a job you wait for; `SIDE = "none"` gives the compact
   `StatusStrip` to a job that takes a second.
-- **Browser** (Camera Prompts) — filters + search → a picture-led grid. Click
-  copies; **⌘-click gathers** into an ordered bar; Fuse returns one prompt.
+- **Browser** (Camera Prompts) — filters + search → a picture-led grid. A click
+  **picks one shot per category** (six slots, a second pick replaces the
+  category's first); ⌘-click copies a single description. **Merge** returns one
+  camera paragraph to paste at the end of the prompt in the AI tool.
 - **Transform** (Script Animator) — write the script with its spoken length
   beside it, build, then work through the clips on a block rail and in a
   floating panel.
@@ -198,7 +200,7 @@ everywhere a path is wanted.
 
 - App open/close: a ~230ms zoom + fade (`MainWindow._transition`), OutCubic.
 - Three shadows and only three: `SHADOW_REST` (a resting white card),
-  `SHADOW_SEL` (selected/gathered), `SHADOW_FLOAT` (the ⌘K panel, the fuse
+  `SHADOW_SEL` (a picked card), `SHADOW_FLOAT` (the ⌘K panel, the merge
   sheet, the float panel). Attach with `apply_shadow()`.
 - Motion is 220ms ease-out on geometry and opacity only.
 
@@ -210,6 +212,15 @@ everywhere a path is wanted.
 marks what's running, what's done, or what stopped.** If an element doesn't
 shorten the path to the artefact or tell the truth about a running job, it isn't
 on the screen. Identity comes from name and place, never from hue.
+
+### Never write instructions on the canvas
+
+A screen explains itself through affordances — a placeholder that names the
+content, a second line on a `SettingRow`, a button label that says what it will
+do, the caret already in the first field, an end-state card that says what was
+made and where. Explanatory blocks, "output will appear here" strips, tips,
+banners and callouts are not part of this design system. The rule, with the full
+list of what is allowed instead, is in `CLAUDE.md` — it is mandatory.
 
 ### Extending
 1. **New tool:** subclass `ToolPage` (job runner) or build a bespoke `QWidget`

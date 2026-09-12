@@ -215,15 +215,19 @@ class ResultCard(QFrame):
     path, and the verbs — because sage marks it, but the sentence does the
     work."""
 
-    def __init__(self, head: str, path: str = "", note: str = "",
+    def __init__(self, head: str = "", path: str = "", note: str = "",
                  actions: Optional[list[tuple[str, Callable[[], None], bool]]] = None):
         super().__init__()
         self.setObjectName("ResultCard")
         apply_shadow(self, SHADOW_REST)
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 15, 16, 15); v.setSpacing(4)
-        h = QLabel(head); h.setObjectName("ResultHead"); h.setWordWrap(True)
-        v.addWidget(h)
+        # A head is optional: a card whose path and single verb already say
+        # everything does not need a tally over them, and an empty QLabel would
+        # hold the space anyway.
+        if head:
+            h = QLabel(head); h.setObjectName("ResultHead"); h.setWordWrap(True)
+            v.addWidget(h)
         if path:
             p = QLabel(path); p.setObjectName("ResultPath"); p.setWordWrap(True)
             v.addWidget(p)

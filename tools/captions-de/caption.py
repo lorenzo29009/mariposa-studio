@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 Generate TikTok-style captions (SRT) from a video file.
-German is the default; Polish, French, Italian (plus English and Spanish)
+German is the default; English, Polish, French and Italian (plus Spanish)
 are selected with --language and adapt transcription, prompts, brand
 spelling and the formatting safety nets to that language.
 
 Usage:
     python caption.py video.mp4
     python caption.py video.mp4 --out custom_name.srt
-    python caption.py video.mp4 --language pl     # Polish (also: fr, it, en, es)
+    python caption.py video.mp4 --language en     # English (also: pl, fr, it, es)
     python caption.py video.mp4 --no-ai           # skip Gemini, use heuristic only
     python caption.py video.mp4 --model medium    # use smaller Whisper model
 """
@@ -293,16 +293,30 @@ def drop_midline_hyphens(text: str) -> str:
     return "\n".join(_MIDLINE_HYPHEN_RE.sub(r"\1", ln) for ln in text.split("\n"))
 
 
+# Apostrophe variants a transcriber or a model may emit — the typographic ’,
+# the modifier letter ʼ, and the accents people type instead. To a reader they
+# are all the same mark, but only the straight ' survives clean_for_output, so a
+# curly one used to DELETE itself: "don’t" came out "dont", "l’ho" came out
+# "lho". English lives on contractions (and French/Italian on elision), so they
+# are folded to the straight form before anything else looks at the word.
+_APOSTROPHE_RE = re.compile("[\u2019\u2018\u02bc\u02b9\u2032\u00b4\u0060]")
+
+
+def normalize_apostrophes(s: str) -> str:
+    return _APOSTROPHE_RE.sub("'", s)
+
+
 def strip_punct(w: str) -> str:
     # \w in UNICODE mode covers letters from all the languages we care about
     # (ä, é, ñ, à, ç, ü, ...).
-    return re.sub(r"[^\w'\-]", "", w, flags=re.UNICODE)
+    return re.sub(r"[^\w'\-]", "", normalize_apostrophes(w), flags=re.UNICODE)
 
 
 def clean_for_output(w: str) -> str:
     # Allow Unicode word characters + the punctuation we want to preserve.
     # ¿¡ kept for Spanish; everything else common across DE/EN/ES/FR/IT/PL.
-    return re.sub(r'[^\w\'\-?%/&"¿¡]', "", w, flags=re.UNICODE)
+    return re.sub(r'[^\w\'\-?%/&"¿¡]', "", normalize_apostrophes(w),
+                  flags=re.UNICODE)
 
 
 # Active language is set by main() at startup. Default is German so existing
@@ -485,6 +499,16 @@ def run_whisperx(video_path: Path, model: str, output_dir: Path,
         "--output_format", "json",
         "--output_dir", str(output_dir),
     ]
+    # NO --hotwords. Handing the canonical terms to the transcriber as hint
+    # phrases looks free and is not: measured on one window of a real clip,
+    # same audio and same settings, `--hotwords "miavola, L-Thyroxin"` cut the
+    # transcription from 98 words to 85 and ended it on an invented
+    # "L-Thyroxin" (score 0.12) where the audio says "Nährstoffe in zwei
+    # kleinen Kapseln am Tag". The bias makes the decoder spend the chunk on
+    # the hinted word and abandon the rest — and a 30-second chunk collapsed
+    # that way is 30 seconds of missing captions. Brand spelling is repaired
+    # AFTER the fact instead, by apply_canonical_terms(), which cannot lose a
+    # word because it only rewrites one that is already there.
     # The ~/whisperx interpreter is a *universal* binary, but torch is installed
     # arm64-only. If anything in our launch chain runs under Rosetta (a Terminal
     # opened with Rosetta, an x86_64 parent process, a stale "Open using Rosetta"
@@ -518,13 +542,163 @@ def run_whisperx(video_path: Path, model: str, output_dir: Path,
     return target
 
 
+#: A silence this long INSIDE a monologue is not a pause — it is audio the
+#: transcriber lost. Measured on a real 92 s clip: WhisperX decodes in ~30 s
+#: chunks, one chunk collapsed, and the file came back with a 30.4 s hole whose
+#: only residue was a 0.2 s hallucinated word (score 0.04) at its edge. The
+#: breathing pauses in the same clip were all under 0.5 s. Nothing in WhisperX
+#: retries a collapsed chunk, so the caption tool has to notice and ask again.
+GAP_SUSPECT = 5.0
+#: Context given to the re-ask on each side. Generous on purpose: a chunk
+#: collapses at the EDGE of what it was given, and with 1.0 s the collapse ate
+#: 1.4 s of real speech at the end of the recovered window. The padding is
+#: discarded anyway, so it is the cheapest place to spend the risk.
+GAP_PAD = 2.5
+#: A file gets at most this many re-asks, so a pathological clip cannot spawn a
+#: queue of transcriptions.
+GAP_REPAIRS_MAX = 3
+
+
+def find_gaps(words: list, threshold: float = GAP_SUSPECT) -> list:
+    """Windows BETWEEN two transcribed words that produced no words at all.
+
+    Only internal holes: the quiet before the first word and after the last one
+    is ordinary ad topping and tailing, not a lost chunk."""
+    gaps = []
+    prev = None
+    for w in words:
+        if prev is not None and w["start"] - prev > threshold:
+            gaps.append((prev, w["start"]))
+        prev = w["end"] if prev is None else max(prev, w["end"])
+    return gaps
+
+
+def _extract_window(video_path: Path, start: float, end: float, dest: Path) -> bool:
+    """16 kHz mono WAV of one window — what the transcriber wants anyway."""
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.3f}",
+             "-to", f"{end:.3f}", "-i", str(video_path),
+             "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(dest)],
+            check=True,
+        )
+        return dest.exists()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return False
+
+
+def repair_gaps(video_path: Path, words: list, model: str, output_dir: Path,
+                language: str, json_path: Path) -> list:
+    """Ask the transcriber again for every hole, and merge what comes back.
+
+    A hole is one collapsed decode chunk, and the same audio transcribes
+    perfectly when it is the only thing asked about — that is the whole repair:
+    cut the window out, transcribe it on its own, shift the timings back onto
+    the clip's timeline, and keep the words that fall inside the hole.
+
+    The merged result is written back into the cached transcription, because the
+    cache is what the next run reads: without that, a clip that lost 30 seconds
+    kept losing them on every re-run."""
+    gaps = find_gaps(words)
+    if not gaps:
+        return words
+    import tempfile
+    recovered: list = []
+    for i, (a, b) in enumerate(gaps):
+        if i >= GAP_REPAIRS_MAX:
+            print(f"⚠ {len(gaps) - i} more silent window(s) left as they are "
+                  f"({GAP_REPAIRS_MAX} re-asks is the cap)")
+            break
+        print(f"⚠ No words between {a:.1f}s and {b:.1f}s — {b - a:.1f}s of audio "
+              f"produced nothing. Asking again for that window...")
+        lo = max(0.0, a - GAP_PAD)
+        hi = b + GAP_PAD
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "window.wav"
+            if not _extract_window(video_path, lo, hi, wav):
+                print("  ...could not cut that window out; leaving it as it is")
+                continue
+            try:
+                win_json = run_whisperx(wav, model, Path(tmp), language=language)
+                win_words = load_words(win_json)
+            except (RuntimeError, SystemExit, OSError, ValueError) as e:
+                print(f"  ...the re-ask failed ({e}); leaving the window as it is")
+                continue
+        got = []
+        for w in win_words:
+            start = w["start"] + lo
+            end = w["end"] + lo
+            # Only what belongs to the hole: the padding exists to give the
+            # model context, not to re-transcribe the neighbours.
+            if start >= a - 0.05 and end <= b + 0.05:
+                got.append({**w, "start": round(start, 3), "end": round(end, 3)})
+        if not got:
+            print("  ...nothing was said in there after all")
+            continue
+        print(f"  ...recovered {len(got)} words")
+        recovered.extend(got)
+
+    if not recovered:
+        return words
+    merged = sorted(words + recovered, key=lambda w: w["start"])
+    _rewrite_cache(json_path, recovered)
+    print(f"Transcription repaired: {len(words)} words -> {len(merged)}")
+    return merged
+
+
+def _rewrite_cache(json_path: Path, recovered: list) -> None:
+    """Fold the recovered words into the cached transcription, as one segment
+    per repaired window, so a re-run starts from the repaired text."""
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        seg = {
+            "start": recovered[0]["start"],
+            "end": recovered[-1]["end"],
+            "text": " " + " ".join(w["word"] for w in recovered),
+            "words": recovered,
+        }
+        data["segments"] = sorted(list(data.get("segments", [])) + [seg],
+                                  key=lambda s: s.get("start", 0.0))
+        if "word_segments" in data:
+            data["word_segments"] = sorted(
+                list(data["word_segments"]) + recovered,
+                key=lambda w: w.get("start", 0.0))
+        json_path.write_text(json.dumps(data, ensure_ascii=False),
+                             encoding="utf-8")
+    except (OSError, ValueError, KeyError, IndexError) as e:
+        # The repair itself already worked; a cache we could not update only
+        # costs the next run another re-ask.
+        print(f"  (could not update the cached transcription: {e})")
+
+
+#: An alignment score this low is not a quiet word — it is a word the decoder
+#: invented. Measured on a clip that lost a chunk: its three junk words scored
+#: 0.024, 0.043 and 0.060 while the lowest REAL word in the same file scored
+#: 0.327, half the scale away. Whisper leaves this residue at the edge of a
+#: collapsed chunk, and one of them reached the .srt as a caption reading
+#: "in 2 L-Thyroxin" in the middle of a product pitch — the brand's own
+#: competitor, invented, on screen. Truncated is survivable; wrong is not.
+JUNK_SCORE = 0.15
+
+
 def load_words(json_path: Path):
     data = json.load(open(json_path, encoding="utf-8"))
     words = []
+    junk = []
     for seg in data["segments"]:
         for w in seg.get("words", []):
-            if "start" in w and "end" in w:
-                words.append(w)
+            if "start" not in w or "end" not in w:
+                continue
+            if w.get("score", 1.0) < JUNK_SCORE:
+                junk.append(w)
+                continue
+            words.append(w)
+    if junk:
+        # Never silently: a dropped word is a decision about the copy, and the
+        # operator is the one who knows whether that word was really said.
+        shown = ", ".join(f"{w['word'].strip()!r} at {w['start']:.1f}s "
+                          f"(score {w.get('score', 0):.2f})" for w in junk[:6])
+        print(f"Dropped {len(junk)} word(s) the decoder invented: {shown}")
     return words
 
 
@@ -538,7 +712,7 @@ LANGUAGE_META = {
         "neg_examples": '"never had", "didn\'t think", "no idea", "nothing left"',
         "prep_examples": '"with the doctor", "for people with", "in the city"',
         "art_examples": '"the problem", "a doctor", "this medicine", "my idea"',
-        "idiom_examples": '"Brain Fog", "L-Tyroxin", "Health Journey", "Funfact"',
+        "idiom_examples": '"Brain Fog", "Levothyroxine", "Health Journey", "fun fact"',
         "conjunctions": "and, but, or, so, because, when, if, while, although",
         "list_example": '"cold hands, brain fog, hair loss"',
         "capitalization": (
@@ -1016,6 +1190,27 @@ def compute_boundaries(segments: list, words: list, video_end: float):
     return boundaries
 
 
+#: Longest a caption may stay on screen after its own last word. Captions
+#: normally end where the next one starts, which is right while speech runs on
+#: and wrong across a hole: one clip whose transcription lost 30 seconds shipped
+#: a SINGLE caption that sat on screen for 31 s, because that is where the next
+#: word was. Past this the caption ends with its speech and the screen goes
+#: clean — an honest gap, not a frozen line.
+TAIL_MAX = 1.2
+
+
+def caption_spans(segments: list, words: list, boundaries: list) -> list:
+    """(start, end) per caption: the shared cut points, with an end pulled back
+    to its own speech wherever the next caption is far away."""
+    spans = []
+    for i, seg in enumerate(segments):
+        start = boundaries[i]
+        end = boundaries[i + 1]
+        spoken_end = words[seg["end"]]["end"]
+        spans.append((start, max(start + 0.2, min(end, spoken_end + TAIL_MAX))))
+    return spans
+
+
 LINE_BREAK_BAD_LAST = {
     "der", "die", "das", "den", "dem", "des",
     "ein", "eine", "einen", "einem", "eines", "einer",
@@ -1330,11 +1525,59 @@ NO_LINE_END = LINE_BREAK_BAD_LAST | MOVE_TRAILING | FORWARD_PREPS | FORWARD_INTE
 # The German sets above power the language-sensitive safety nets: fix_line_break
 # and _binds_forward (where a visible line must NOT end) and
 # move_trailing_binders (which trailing word is moved to the next caption).
-# French / Italian / Polish get their own closed-class sets so the same nets
-# apply that language's grammar. Like the German lists these are EVERGREEN:
-# only closed classes (determiners, prepositions, subordinators, intensifiers,
-# negation) — never video vocabulary. Languages without a set (en/es) fall back
-# to the German sets, preserving their long-standing behaviour.
+# English / French / Italian / Polish get their own closed-class sets so the
+# same nets apply that language's grammar. Like the German lists these are
+# EVERGREEN: only closed classes (determiners, prepositions, subordinators,
+# intensifiers, negation) — never video vocabulary. A language without a set
+# (es) falls back to the German sets, preserving its long-standing behaviour.
+
+# English — the set is deliberately SPLIT along the two things the nets do,
+# because English strands prepositions where German cannot ("what's it for",
+# "who are you with"). MOVING a word to the next caption is a real edit, so it
+# is limited to words that essentially never end an English clause; choosing
+# where a line WRAPS is free, so the strandable prepositions live in the
+# no-line-end set below, where a wrong guess costs nothing. Keeping a caption
+# off a stranded preposition is Gemini's job (prompt rule G), not this net's.
+# Also excluded from MOVE, as homographs: "that" (complementizer vs the pronoun
+# in "I didn't expect that"), "like" (preposition vs the verb "I like"), and
+# every phrasal-verb particle (up, out, off, on, in, over, down, through,
+# back, away) — moving those would break "figure it out" / "gave it up".
+MOVE_TRAILING_EN = {
+    # subordinators — they open a dependent clause, so the clause follows
+    "because", "if", "unless", "whether", "while", "whilst", "although",
+    "though", "when", "whenever", "until", "till", "since",
+    # prepositions that are (near-)never stranded at the end of a clause
+    "into", "onto", "within", "without", "upon", "despite", "during",
+    "among", "amongst", "between", "throughout", "besides", "toward",
+    "towards", "than",
+    # the intensifier / result connector, as in German
+    "so",
+}
+# Determiners, possessives, quantifiers, intensifiers, negation and the
+# strandable prepositions: a visible LINE must not end on any of these, but
+# none of them is ever moved between captions.
+_DET_INTENS_EN = {
+    # articles, demonstratives, possessives
+    "the", "a", "an", "this", "that", "these", "those",
+    "my", "your", "his", "her", "its", "our", "their",
+    # quantifiers / determiners
+    "no", "every", "each", "any", "some", "both", "either", "neither",
+    "another", "much", "many", "few", "several", "most", "all", "half",
+    "which", "whose", "what",
+    # intensifiers & degree adverbs (they bind to the adjective/adverb/noun)
+    "very", "really", "too", "quite", "pretty", "super", "totally",
+    "extremely", "fairly", "rather", "almost", "nearly", "hardly", "barely",
+    "just", "even", "more", "less", "least", "enough", "such", "way",
+    # negation (binds to what it negates)
+    "not", "never", "don't", "doesn't", "didn't", "can't", "won't", "isn't",
+    "aren't", "wasn't", "weren't", "couldn't", "shouldn't", "wouldn't",
+    "haven't", "hasn't", "hadn't", "ain't",
+    # prepositions & relativisers — safe here, unsafe to move
+    "of", "to", "at", "for", "with", "from", "on", "in", "by", "about",
+    "over", "under", "above", "below", "behind", "across", "around", "near",
+    "against", "through", "before", "after", "like", "as", "per", "via",
+    "who", "whom",
+}
 
 # French — subordinators + binding prepositions/partitives safe to MOVE to the
 # start of the next caption. The clitic pronoun "en"/"y" homographs are
@@ -1398,16 +1641,36 @@ _DET_INTENS_PL = {
 
 MOVE_TRAILING_BY_LANG = {
     "de": MOVE_TRAILING,
+    "en": MOVE_TRAILING_EN,
     "fr": MOVE_TRAILING_FR,
     "it": MOVE_TRAILING_IT,
     "pl": MOVE_TRAILING_PL,
 }
 NO_LINE_END_BY_LANG = {
     "de": NO_LINE_END,
+    "en": MOVE_TRAILING_EN | _DET_INTENS_EN,
     "fr": MOVE_TRAILING_FR | _DET_INTENS_FR,
     "it": MOVE_TRAILING_IT | _DET_INTENS_IT,
     "pl": MOVE_TRAILING_PL | _DET_INTENS_PL,
 }
+
+# Pronouns, auxiliaries, modals and coordinators. NOT part of the nets above —
+# a line may end on "I have" — but needed to tell a function word from a
+# content word (see _function_words / split_emphasis_repeats).
+_PRONOUNS_AUX_EN = {
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "us", "them",
+    "myself", "yourself", "himself", "herself", "itself", "ourselves",
+    "themselves", "mine", "yours", "hers", "ours", "theirs", "there", "here",
+    "am", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did",
+    "can", "could", "shall", "should", "will", "would", "may", "might",
+    "must", "gonna", "wanna", "gotta",
+    "and", "or", "but", "then", "also", "yes", "yeah", "okay", "ok",
+}
+#: Every English closed-class word we know — the counterpart of the German
+#: GERMAN_LOWERCASE list, used only where a function word must be told apart
+#: from a content word. Never used to choose a break or move a word.
+ENGLISH_FUNCTION = MOVE_TRAILING_EN | _DET_INTENS_EN | _PRONOUNS_AUX_EN
 
 
 def _move_trailing() -> set:
@@ -1416,6 +1679,18 @@ def _move_trailing() -> set:
 
 def _no_line_end() -> set:
     return NO_LINE_END_BY_LANG.get(ACTIVE_LANG, NO_LINE_END)
+
+
+def _function_words() -> set:
+    """The active language's closed-class vocabulary, where the list is complete
+    enough to separate function words from content words. German and English
+    have one; the others return an empty set, and callers then fall back to
+    their narrower, language-agnostic bracket."""
+    if ACTIVE_LANG == "de":
+        return GERMAN_LOWERCASE
+    if ACTIVE_LANG == "en":
+        return ENGLISH_FUNCTION
+    return set()
 
 
 def move_trailing_binders(segments: list) -> list:
@@ -1453,10 +1728,11 @@ def split_emphasis_repeats(segments: list) -> list:
     by merge_orphans (it sets "_keep").
 
     Guards against false positives: the word must be short (≤ORPHAN_W_MAX) and a
-    CONTENT word — function words (in GERMAN_LOWERCASE: und, die, nicht, mehr, …)
-    repeat constantly and are never peeled. For non-German we fall back to the
-    narrow "repeats the previous caption's first word" bracket, since the
-    German function-word list can't filter other languages safely."""
+    CONTENT word — function words (und, die, nicht, mehr, … / the, and, just, …)
+    repeat constantly and are never peeled. A language with no function-word
+    list of its own (fr/it/pl/es) falls back to the narrow "repeats the previous
+    caption's first word" bracket, since another language's list can't filter
+    it safely."""
     out: list = []
     for i, seg in enumerate(segments):
         toks = _seg_tokens(seg)
@@ -1466,7 +1742,8 @@ def split_emphasis_repeats(segments: list) -> list:
         is_repeat = False
         if (len(toks) >= 2 and prev_toks and last
                 and text_width(toks[-1]) <= ORPHAN_W_MAX):
-            if ACTIVE_LANG == "de" and last not in GERMAN_LOWERCASE:
+            func = _function_words()
+            if func and last not in func:
                 is_repeat = last in {_norm_word(t) for t in prev_toks}
             else:
                 is_repeat = last == _norm_word(prev_toks[0])
@@ -1572,6 +1849,11 @@ NUMBER_LABELS = {
 
 NUMBER_LABELS_BY_LANG = {
     "de": NUMBER_LABELS,
+    "en": {
+        "number", "no", "nr", "part", "point", "step", "chapter", "day",
+        "week", "episode", "phase", "level", "tip", "reason", "rule",
+        "place", "round", "lesson", "mistake", "myth", "sign",
+    },
     "fr": {
         "numéro", "no", "partie", "point", "étape", "chapitre", "jour",
         "semaine", "épisode", "phase", "niveau", "astuce", "raison", "règle",
@@ -1917,11 +2199,13 @@ def recase_with_ai(segments: list, language: str = "de") -> list:
     return out
 
 
-def write_srt(segments: list, boundaries: list, out_path: Path):
+def write_srt(segments: list, spans: list, out_path: Path):
+    """`spans` is one (start, end) per caption — see caption_spans()."""
     with open(out_path, "w", encoding="utf-8") as f:
         for i, seg in enumerate(segments):
             txt = finalize_caption(seg["text"])
-            f.write(f"{i+1}\n{fmt_time(boundaries[i])} --> {fmt_time(boundaries[i+1])}\n{txt}\n\n")
+            start, end = spans[i]
+            f.write(f"{i+1}\n{fmt_time(start)} --> {fmt_time(end)}\n{txt}\n\n")
 
 
 def main():
@@ -1938,7 +2222,9 @@ def main():
     parser.add_argument("--context", default="", help="Optional context hint for Gemini")
     parser.add_argument("--language", default="de",
                         choices=["de", "en", "es", "fr", "it", "pl"],
-                        help="Language: de (default), en, es, fr, it, pl")
+                        help="Language: de (default), en, pl, fr, it, es")
+    parser.add_argument("--no-repair", action="store_true",
+                        help="Don't re-ask the transcriber about silent windows")
     parser.add_argument("--lines", default="hybrid", choices=["hybrid", "1"],
                         help="Caption length: hybrid (default, natural 1-2 line "
                              "mix) or 1 (one line per caption)")
@@ -1968,6 +2254,11 @@ def main():
 
     words = load_words(json_path)
     print(f"Loaded {len(words)} words.")
+    # A hole in the transcription is a lost chunk, not a silent clip: ask again
+    # for that window before anything downstream reads the words.
+    if not args.no_repair:
+        words = repair_gaps(video_path, words, args.model, out_dir,
+                            args.language, json_path)
 
     segments = None
     used_ai = False
@@ -2016,8 +2307,15 @@ def main():
         print("Fixing German capitalization with Gemini...")
         segments = recase_with_ai(segments, language=args.language)
     boundaries = compute_boundaries(segments, words, duration)
-    write_srt(segments, boundaries, out_path)
+    spans = caption_spans(segments, words, boundaries)
+    write_srt(segments, spans, out_path)
     print(f"Wrote {len(segments)} captions to {out_path}")
+    # Say it once more at the end: a hole the re-ask could not fill is the one
+    # thing about a finished .srt that cannot be seen from the file's size.
+    left = find_gaps(words)
+    for a, b in left:
+        print(f"⚠ {b - a:.1f}s with no captions ({a:.1f}s–{b:.1f}s) — "
+              f"the transcriber heard nothing there")
 
 
 if __name__ == "__main__":

@@ -28,13 +28,39 @@ def step(msg):
 
 def run(args, label):
     step(label)
-    # no_window_kwargs: on Windows the Studio is hosted by pythonw.exe, which
-    # has no console, so each console-mode stage would otherwise pop a black
-    # window of its own — five per run.
-    p = subprocess.run([sys.executable, "-u"] + args, cwd=HERE,
-                       **portable.no_window_kwargs())
-    if p.returncode != 0:
-        sys.exit("failed: %s" % label)
+    # The stage's channels are PIPED and echoed rather than inherited, because
+    # on Windows inheriting them does not work and fails silently.
+    #
+    # The Studio is hosted by pythonw.exe, so this process has no console, and
+    # no_window_kwargs adds CREATE_NO_WINDOW so no stage pops a black window of
+    # its own — five per run. But a child with nothing redirected is given no
+    # std handles at all: subprocess only sets STARTF_USESTDHANDLES when at
+    # least one channel is redirected, CreateProcess is called with
+    # bInheritHandles false, and CREATE_NO_WINDOW means there is no console to
+    # fall back to. Python then sets the stage's sys.stdout and sys.stderr to
+    # None, and print(), every traceback and every sys.exit("...") message goes
+    # nowhere. On macOS the same call inherits this process's fds and prints
+    # fine — which is why a stage that stops with a clear sentence here arrived
+    # on Windows as nothing but "exited with code 1", in the error report too.
+    #
+    # Reading line by line keeps a long stage (captioning runs for minutes)
+    # visibly progressing, and UTF-8 is explicit because Windows would otherwise
+    # decode a clip named "Jörg" with the ANSI code page.
+    p = subprocess.Popen([sys.executable, "-u"] + args, cwd=HERE,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, encoding="utf-8", errors="replace",
+                         **portable.no_window_kwargs())
+    last = ""
+    for line in p.stdout:
+        line = line.rstrip()
+        print(line, flush=True)
+        if line.strip():
+            last = line.strip()
+    p.stdout.close()
+    if p.wait() != 0:
+        # The stage's own last word goes on the headline as well as in the log:
+        # it is the sentence that says what actually stopped.
+        sys.exit("failed: %s%s" % (label, (" — " + last) if last else ""))
 
 
 def main():

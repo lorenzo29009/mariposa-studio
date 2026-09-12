@@ -32,7 +32,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from analyze_silence import nearest_fps, probe, speech_bounds   # noqa: E402
+from analyze_silence import (ProbeError, nearest_fps, probe,     # noqa: E402
+                             speech_bounds)
 from hashing import atomic_write_json                            # noqa: E402
 from plan_io import (PLAN_SCHEMA, total_frames, write_plan,      # noqa: E402
                      write_segments_ts)
@@ -63,6 +64,58 @@ def probe_clip(path, cache):
     return val
 
 
+# Every container the Clip Cutter board accepts. `ext` in config.json names the
+# one the folder is mostly made of; it is a HINT, not the contract. A folder
+# that mixes them is ordinary — an iPhone writes .mov, a re-export or a
+# stock CTA arrives as .mp4 — and the board lists all of them side by side, so
+# a plan that addressed every clip as `stem + ext` stopped on the first clip
+# whose container was not the sampled one.
+VIDEO_EXTS = (".mov", ".mp4", ".m4v", ".mkv")
+
+
+def index_folder(folder):
+    """{lowercased stem: filename} for every video in `folder`.
+
+    Built once rather than probed per clip, and keyed case-insensitively so a
+    config.json written by hand still finds `C1H1.MOV`.
+    """
+    idx = {}
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return idx
+    for n in names:
+        if n.startswith("."):
+            continue
+        stem, ext = os.path.splitext(n)
+        if ext.lower() in VIDEO_EXTS:
+            idx.setdefault(stem.lower(), []).append(n)
+    return idx
+
+
+def clip_file(folder, name, ext, idx):
+    """The file clip `name` actually is on disk, or None.
+
+    Answered from the folder listing rather than from os.path.exists, so the
+    name that goes into the plan is the one the filesystem holds. `stem + ext`
+    "exists" on macOS and Windows for a file called C1H2.MOV, and writing the
+    asked-for spelling into plan.json is how a plan made here stopped opening
+    on a case-sensitive filesystem.
+
+    The configured extension wins where it exists, so a folder holding both
+    `C1H1.mov` and `C1H1.mp4` resolves the way the rest of the config reads.
+    """
+    hits = idx.get(name.lower(), [])
+    for n in hits:
+        if os.path.splitext(n)[1].lower() == ext.lower():
+            return n
+    if hits:
+        return hits[0]
+    # No listing to go on (an unreadable folder, a path only the OS can walk):
+    # fall back to the asked-for name if it is there.
+    return name + ext if os.path.exists(os.path.join(folder, name + ext)) else None
+
+
 def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__.strip().splitlines()[-1])
@@ -91,12 +144,19 @@ def main():
         sys.exit("CTA group name(s) collide with reserved segment keys: %s" % ", ".join(sorted(dupe)))
 
     cache = load_probe_cache(proj)
-    metas = {}
+    idx = index_folder(folder)
+    files, metas = {}, {}
     for c in uniq:
-        p = os.path.join(folder, c + ext)
-        if not os.path.exists(p):
-            sys.exit("Missing clip: %s" % p)
-        metas[c] = probe_clip(p, cache)
+        fn = clip_file(folder, c, ext, idx)
+        if fn is None:
+            sys.exit("Missing clip: no %s%s in %s (looked for %s)"
+                     % (c, ext, folder,
+                        ", ".join(c + e for e in VIDEO_EXTS)))
+        files[c] = fn
+        try:
+            metas[c] = probe_clip(os.path.join(folder, fn), cache)
+        except ProbeError as e:
+            sys.exit("%s" % e)
     atomic_write_json(os.path.join(proj, ".probes.json"), cache)
 
     fpss = sorted(set(nearest_fps(metas[c]["fps_raw"]) for c in uniq))
@@ -135,7 +195,10 @@ def main():
             ta = min(cf, int(round((e + trail) * fps)))
         if ta <= tb:
             ta = min(cf, tb + 1)
-        trims[c] = {"src": c + ext, "trimBefore": tb, "trimAfter": ta}
+        # The REAL filename, not `stem + ext`: every later stage opens this
+        # string directly (build_segment_audio, export_capcut), so a clip in
+        # another container has to carry its own name through the plan.
+        trims[c] = {"src": files[c], "trimBefore": tb, "trimAfter": ta}
 
     def clips_of(names):
         return [{"src": trims[n]["src"], "trimBefore": trims[n]["trimBefore"],

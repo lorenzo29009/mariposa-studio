@@ -71,6 +71,13 @@ print("\nand a key cannot reach the report through the log or an error")
 d.note_log(f"POST ...?key={KEY} -> 429")
 d.note_error("Script Animator", f"failed with key {KEY}",
              f'Traceback...\n  url = "?key={KEY}"')
+# A page describes its own inputs, so a page is one more route a key can take
+# into the report — a field the user pasted one into, echoed back as a fact.
+d.note_job("Script Animator", command=f"python run.py --key {KEY}",
+           cwd="/tmp/x", facts=[("clips", "/tmp/clips"),
+                                ("contents", ".mov x11, .mp4 x1"),
+                                ("pasted", f"GEMINI_API_KEY={KEY}")])
+d.note_job_finished(1)
 text = d.report("pressed Build scenes")
 check("not in the report", KEY not in text)
 check("not in a saved report", KEY not in (d.save_report("x").read_text(encoding="utf-8")))
@@ -89,11 +96,69 @@ WANTED = {
     "where CapCut's drafts are": "CapCut drafts",
     "which settings exist": "settings present",
     "the recent output": "RECENT OUTPUT",
+    # What the run was HANDED. Without it the only way to tell a missing file
+    # from a mixed-extension folder is to ask the user what was on screen.
+    "what the run was given": "THE JOB",
+    "which folder": "/tmp/clips",
+    "what was in it": ".mov x11, .mp4 x1",
+    "how long it ran and how it ended": "exited 1",
+    "whether the venv is complete": "packages",
+    "whether the pipeline shipped whole": "pipeline",
+    "how this machine decodes text": "encoding",
 }
 for label, needle in WANTED.items():
     check("report says " + label, needle in text, needle)
 check("the .env values are NOT in it, only the names",
       "miavola" not in text and "CAPTION_BRAND" in text)
+
+print("\nthe bundle is one file, and everything in it is redacted too")
+import zipfile  # noqa: E402
+d.EXPORTS_DIR = _TMP / "exports"
+_INPUTS = _TMP / "inputs"
+_INPUTS.mkdir(parents=True, exist_ok=True)
+(_INPUTS / "config.json").write_text('{"key": "%s", "folder": "/clips"}' % KEY,
+                                     encoding="utf-8")
+(_INPUTS / "clip.mov").write_bytes(b"\x00\x01\x02not text at all\xff\xfe")
+(_INPUTS / "huge.json").write_text("x" * (d.MAX_INPUT_BYTES + 1), encoding="utf-8")
+d.note_job("Clip Cutter", command="run.py", cwd="/x",
+           facts=[("clips", "/clips")],
+           files=[_INPUTS / "config.json", _INPUTS / "clip.mov",
+                  _INPUTS / "huge.json", _INPUTS / "gone.json"])
+d.note_job_finished(1)
+bundle = d.save_bundle("Clip Cutter — pressed Export")
+check("one file is produced", bundle is not None and bundle.exists(),
+      bundle.name if bundle else "none")
+check("it lands somewhere a file manager shows",
+      bundle is not None and not bundle.parent.name.startswith("."),
+      str(bundle.parent.name) if bundle else "")
+names = zipfile.ZipFile(bundle).namelist()
+check("it carries the report", "report.txt" in names, str(names))
+check("...and the replayable input", "inputs/config.json" in names)
+# The inputs are a NEW route a key can take out of the app — a config file with
+# one in it is the ordinary case, not the exotic one.
+blob = zipfile.ZipFile(bundle).read("inputs/config.json").decode("utf-8")
+check("a key inside an input file is redacted", KEY not in blob, blob[:60])
+check("no byte of media rides along", "inputs/clip.mov" not in names)
+check("an oversized input is left out", "inputs/huge.json" not in names)
+check("a vanished input is survivable", "inputs/gone.json" not in names)
+check("nothing in the archive carries the key",
+      all(KEY not in zipfile.ZipFile(bundle).read(n).decode("utf-8", "replace")
+          for n in names))
+
+print("\nthe report says whether this has happened before")
+# One report is a sample of one; the launch logs on disk are the rest of it.
+d.DIAG_DIR.mkdir(parents=True, exist_ok=True)
+for stamp, body in (("20260908-0901", "[Clip Cutter] The job stopped"),
+                    ("20260909-1130", "a launch where nothing broke"),
+                    ("20260910-1745", "[Clip Cutter] The job stopped")):
+    (d.DIAG_DIR / ("launch-%s.log" % stamp)).write_text(body, encoding="utf-8")
+hist = d.report("x")
+check("earlier failures of this tool are counted",
+      "failed here in 2 of 3" in hist,
+      next((l.strip() for l in hist.splitlines() if "history" in l), "no history line"))
+check("...and dated, so a regression can be placed", "2026-09-08" in hist)
+check("a tool that never failed before says so",
+      "none of them failed here before" in d._history_line("Flow Cropper"))
 
 print("\nnothing here may ever raise — it runs after something already broke")
 try:
