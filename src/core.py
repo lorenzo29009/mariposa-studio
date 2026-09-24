@@ -98,10 +98,9 @@ ENV_PATH = CAPTIONS_DIR / ".env"
 APP_USER_MODEL_ID = "Mariposa.Studio"
 
 #: The markets the captions tool is calibrated for, in display order — German
-#: first so it stays the default. ONE ordered list, because two places need it
-#: and they must not drift: the Captions page offers it per job, and Settings
-#: keys the per-market brand/terms off the same codes
-#: (CAPTION_BRAND_<LANG> / CAPTION_TERMS_<LANG> in ENV_PATH).
+#: first so it stays the default. The codes are the ones caption.py accepts and
+#: the ones the per-market brand/terms are keyed by
+#: (caption.py's HOUSE_BRAND / HOUSE_TERMS, overridable per key in ENV_PATH).
 CAPTION_MARKETS = [
     ("German", "de"),
     ("English", "en"),

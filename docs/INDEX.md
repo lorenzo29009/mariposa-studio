@@ -55,10 +55,10 @@ ComparePanel — checking finished captions against the script.
 
 `ComparePanel`:56 · `ComparePanel.set_srt`:184 · `ComparePanel.set_language`:193
 
-### `src/captions_page.py` — 462 lines
+### `src/captions_page.py` — 461 lines
 Captions DE: WhisperX + Gemini -> .srt, run in the separate WhisperX venv.
 
-`whisperx_arch_ok`:36 · `CaptionsPage`:64 · `CaptionsPage.build_form`:109 · `CaptionsPage.validate`:250 · `CaptionsPage.build_command`:268 · `CaptionsPage.on_output_line`:298 · `CaptionsPage.advance_batch`:306 · `CaptionsPage.env_lines`:315 · `CaptionsPage.can_fix`:331 · `CaptionsPage.apply_fix`:334 · `CaptionsPage.after_finished`:352 · `CaptionsPage.progress_from_line`:423
+`whisperx_arch_ok`:36 · `CaptionsPage`:64 · `CaptionsPage.build_form`:108 · `CaptionsPage.validate`:249 · `CaptionsPage.build_command`:267 · `CaptionsPage.on_output_line`:297 · `CaptionsPage.advance_batch`:305 · `CaptionsPage.env_lines`:314 · `CaptionsPage.can_fix`:330 · `CaptionsPage.apply_fix`:333 · `CaptionsPage.after_finished`:351 · `CaptionsPage.progress_from_line`:422
 
 ### `src/clip_cutter_page.py` — 1181 lines
 Clip Cutter: assemble a UGC creative from a clip folder and hand it to CapCut.
@@ -70,10 +70,10 @@ Clip Cutter's drag-and-drop assembly widgets.
 
 `video_urls`:39 · `register_thumb`:64 · `ClipChip`:102 · `PoolCard`:162 · `DropArea`:180 · `DropArea.names`:223 · `DropArea.set_names`:226 · `DropArea.add_name`:230 · `DropArea.remove_name`:236 · `BodyStrip`:376 · `SlotRow`:405 · `SlotRow.set_code`:466 · `SlotRow.names`:470 · `SlotRow.headline_text`:473 · `DropCue`:477 · `DashedButton`:530
 
-### `src/core.py` — 388 lines
+### `src/core.py` — 387 lines
 Shared foundation for Mariposa Studio: paths, the .env helpers, and the small platform/icon helpers used across every page module.
 
-`studio_python`:129 · `make_qprocess_env`:135 · `chevron_icon`:153 · `arrow_icon`:160 · `reveal_in_finder`:165 · `notify`:183 · `open_folder`:211 · `make_nonactivating_panel`:228 · `ensure_windows_shortcut`:310 · `read_env_value`:354 · `gemini_model_override`:364 · `write_env_value`:375
+`studio_python`:128 · `make_qprocess_env`:134 · `chevron_icon`:152 · `arrow_icon`:159 · `reveal_in_finder`:164 · `notify`:182 · `open_folder`:210 · `make_nonactivating_panel`:227 · `ensure_windows_shortcut`:309 · `read_env_value`:353 · `gemini_model_override`:363 · `write_env_value`:374
 
 ### `src/design.py` — 342 lines
 Mariposa Studio — Design System (single source of truth).
@@ -135,10 +135,10 @@ What this launch has made — held in memory, and only in memory.
 
 `Artefact`:29 · `Artefact.is_dir`:37 · `record`:49 · `items`:59 · `clear`:67 · `note_gemini`:74 · `gemini_note`:79 · `ago`:87
 
-### `src/settings_page.py` — 631 lines
+### `src/settings_page.py` — 530 lines
 Settings — the few things that are the user's to set, and nothing else.
 
-`pref`:52 · `set_pref`:59 · `notify_if_enabled`:63 · `folder_size`:76 · `human_size`:97 · `stale_entries`:104 · `SettingsPage`:122
+`pref`:50 · `set_pref`:57 · `notify_if_enabled`:61 · `folder_size`:74 · `human_size`:95 · `stale_entries`:102 · `SettingsPage`:120
 
 ### `src/speech_clock.py` — 455 lines
 How long a line takes to say — **measured**, not estimated.
@@ -202,10 +202,10 @@ Headless smoke test: construct and show MainWindow offscreen, then quit.
 
 _No public symbols._
 
-### `scripts/test_captions.py` — 416 lines
+### `scripts/test_captions.py` — 483 lines
 Offline checks for the captions tool's language layer (no Qt, no WhisperX).
 
-`check`:27 · `moved`:35 · `repaired`:357
+`check`:27 · `moved`:35 · `repaired_es`:324 · `repaired`:424
 
 ### `scripts/test_clipcutter_gate.py` — 190 lines
 The one thing Clip Cutter can still ask of a person, and how it asks.
@@ -262,7 +262,7 @@ Prove the release zip is the app — before it is a release.
 
 `check`:47 · `section`:54 · `build_archive`:58 · `reachable_modules`:83 · `icon_names`:111 · `wanted_font_files`:128 · `main`:141
 
-### `scripts/test_settings.py` — 155 lines
+### `scripts/test_settings.py` — 116 lines
 Does the Settings screen actually reach the app?
 
 `check`:44 · `source`:49
@@ -284,10 +284,10 @@ Upsert a KEY=VALUE into tools/captions-de/.env, preserving every other line.
 
 ## Bundled tool scripts (`tools/`) — separate processes, not imported
 
-### `tools/captions-de/caption.py` — 2765 lines
+### `tools/captions-de/caption.py` — 2804 lines
 Generate TikTok-style captions (SRT) from a video file. German is the default; English, Polish, French, Italian and Spanish (as spoken in Spain) are selected wi
 
-`text_width`:87 · `auto_hyphenate`:207 · `apply_auto_hyphenation`:227 · `join_soft_hyphens`:247 · `flatten_lines`:265 · `drop_midline_hyphens`:285 · `normalize_apostrophes`:305 · `strip_punct`:309 · `clean_for_output`:315 · `normalize_case`:350 · `insert_compound_hyphens`:364 · `tokenize_for_packing`:372 · `pack_lines`:388 · `format_caption`:439 · `fmt_time`:443 · `get_video_duration`:453 · `run_whisperx`:479 · `find_gaps`:564 · `repair_gaps`:592 · `load_words`:709 · `build_generic_prompt`:852 · `segment_with_ai`:962 · `review_grouping`:1034 · `segment_heuristic`:1224 · `compute_boundaries`:1255 · `caption_spans`:1277 · `fix_line_break`:1308 · `normalize_text_preserve_breaks`:1364 · `apply_canonical_terms`:1468 · `repair_terms_with_ai`:1599 · `project_terms_block`:1678 · `finalize_caption`:1692 · `move_trailing_binders`:2068 · `split_emphasis_repeats`:2104 · `merge_orphans`:2155 · `merge_split_numbers`:2274 · `merge_short_durations`:2301 · `enforce_single_line`:2503 · `enforce_two_lines`:2511 · `learn_and_relabel_case`:2521 · `recase_with_ai`:2599 · `write_srt`:2638 · `main`:2647
+`text_width`:87 · `auto_hyphenate`:207 · `apply_auto_hyphenation`:227 · `join_soft_hyphens`:247 · `flatten_lines`:265 · `drop_midline_hyphens`:285 · `normalize_apostrophes`:305 · `strip_punct`:309 · `clean_for_output`:315 · `normalize_case`:350 · `insert_compound_hyphens`:364 · `tokenize_for_packing`:372 · `pack_lines`:388 · `format_caption`:439 · `fmt_time`:443 · `get_video_duration`:453 · `run_whisperx`:479 · `find_gaps`:564 · `repair_gaps`:592 · `load_words`:709 · `build_generic_prompt`:852 · `segment_with_ai`:962 · `review_grouping`:1034 · `segment_heuristic`:1224 · `compute_boundaries`:1255 · `caption_spans`:1277 · `fix_line_break`:1308 · `normalize_text_preserve_breaks`:1364 · `apply_canonical_terms`:1505 · `repair_terms_with_ai`:1636 · `project_terms_block`:1717 · `finalize_caption`:1731 · `move_trailing_binders`:2107 · `split_emphasis_repeats`:2143 · `merge_orphans`:2194 · `merge_split_numbers`:2313 · `merge_short_durations`:2340 · `enforce_single_line`:2542 · `enforce_two_lines`:2550 · `learn_and_relabel_case`:2560 · `recase_with_ai`:2638 · `write_srt`:2677 · `main`:2686
 
 ### `tools/captions-de/caption_qa.py` — 380 lines
 Gemini-based caption QA pass — finished captions vs the briefing.

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Settings — the few things that are the user's to set, and nothing else.
 
-The key, the words the tools must never get wrong, where files land, and two
-switches about leaving.
+The key, where files land, and two switches about leaving.
 
 What it gains in the Atelier redesign is the two facts the old screen left out:
 
@@ -35,10 +34,9 @@ from PySide6.QtWidgets import (
 import session
 from design import DONE, STOP, TXT_META, WINE, svg_icon
 from core import (
-    APP_VERSION, CAPTION_MARKETS, EXPORTS_DIR, open_folder, read_env_value,
-    write_env_value,
+    APP_VERSION, EXPORTS_DIR, open_folder, read_env_value, write_env_value,
 )
-from widgets import AppBar, Field, Select, SettingRow, Switch, ask_confirm, _panel
+from widgets import AppBar, SettingRow, Switch, ask_confirm, _panel
 
 #: Preference keys, stored in the same .env everything else uses.
 KEY_NOTIFY = "MARIPOSA_NOTIFY_ON_FINISH"
@@ -151,7 +149,6 @@ class SettingsPage(QWidget):
         outer.addWidget(scroll, 1)
 
         v.addWidget(self._key_section())
-        v.addWidget(self._words_section())
         v.addWidget(self._exports_section())
         v.addWidget(self._while_running_section())
         v.addWidget(self._trouble_section())
@@ -249,105 +246,7 @@ class SettingsPage(QWidget):
         self.key_dot.setStyleSheet(f"background: {colour}; border-radius: 4px;")
         self.key_state.setText(text)
 
-    # ---- 2. the words the tools must never get wrong ------------------------
-    #
-    # These two keys already drove caption.py's `apply_canonical_terms()`; what
-    # was missing was any way for the person using the app to write them. They
-    # live in the same .env as everything else, which `updater.PRESERVE` keeps
-    # across an update — so a word typed here survives every release.
-    #
-    # Per market, because a German spelling forced onto an Italian video is a
-    # bug caption.py already carries the scar of: the suffixed key wins over the
-    # bare one, so "de" writes CAPTION_BRAND / CAPTION_TERMS and every other
-    # market writes its own pair.
-    def _words_section(self) -> QWidget:
-        col = QVBoxLayout()
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(13)
-        head = QLabel("Words")
-        head.setObjectName("SectionHeading")
-        col.addWidget(head)
-
-        card = QFrame()
-        card.setObjectName("Card")
-        cv = QVBoxLayout(card)
-        cv.setContentsMargins(22, 20, 22, 20)
-        cv.setSpacing(14)
-
-        self.market = Select()
-        for name, code in CAPTION_MARKETS:
-            self.market.addItem(name, code)
-        self.market.setCurrentIndex(0)
-        # Save the market being LEFT, not the one arriving — otherwise switching
-        # writes the text still sitting in the fields under the new market's key
-        # and quietly copies German terms onto Italian.
-        self._market_code = self.market.currentData()
-        self.market.currentIndexChanged.connect(self._switch_market)
-        cv.addWidget(Field("Market", self.market))
-
-        self.brand = QLineEdit()
-        self.brand.setPlaceholderText("miavola")
-        self.brand.editingFinished.connect(self._save_words)
-        cv.addWidget(Field("Brand name", self.brand))
-
-        self.terms = QLineEdit()
-        self.terms.setPlaceholderText("L-Thyroxin, Selen")
-        self.terms.editingFinished.connect(self._save_words)
-        cv.addWidget(Field("Other words", self.terms))
-
-        self.words_state = QLabel("")
-        self.words_state.setObjectName("Meta")
-        self.words_state.setWordWrap(True)
-        cv.addWidget(self.words_state)
-
-        col.addWidget(card)
-        self._load_words()
-        return _panel(col)
-
-    def _word_keys(self, code: str) -> tuple[str, str]:
-        """The env keys for one market. German is the bare pair, because that is
-        what an unconfigured install already falls back to."""
-        suffix = "" if code == CAPTION_MARKETS[0][1] else "_" + code.upper()
-        return "CAPTION_BRAND" + suffix, "CAPTION_TERMS" + suffix
-
-    def _load_words(self):
-        brand_key, terms_key = self._word_keys(self._market_code)
-        self.brand.setText(read_env_value(brand_key).strip())
-        self.terms.setText(read_env_value(terms_key).strip())
-        self._refresh_words_state()
-
-    def _save_words(self):
-        brand_key, terms_key = self._word_keys(self._market_code)
-        try:
-            write_env_value(brand_key, self.brand.text().strip())
-            write_env_value(terms_key, self.terms.text().strip())
-        except Exception:
-            self.words_state.setText("Couldn't save to the settings file.")
-            return
-        self._refresh_words_state()
-
-    def _switch_market(self, _index: int):
-        self._save_words()                       # still the OLD market's keys
-        self._market_code = self.market.currentData()
-        self._load_words()
-
-    def _refresh_words_state(self):
-        """Say what is in force for this market, and nothing else. Empty is a
-        legitimate state — the tools ship brand-agnostic."""
-        words = [w.strip() for w in self.terms.text().split(",") if w.strip()]
-        if self.brand.text().strip():
-            words.insert(0, self.brand.text().strip())
-        name = self.market.currentText()
-        if not words:
-            self.words_state.setText("Nothing set for %s." % name)
-        elif len(words) == 1:
-            self.words_state.setText("%s is spelled this way in %s."
-                                     % (words[0], name))
-        else:
-            self.words_state.setText("%d spellings held for %s: %s."
-                                     % (len(words), name, ", ".join(words)))
-
-    # ---- 3. where everything is saved --------------------------------------
+    # ---- 2. where everything is saved --------------------------------------
     def _exports_section(self) -> QWidget:
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
@@ -482,7 +381,7 @@ class SettingsPage(QWidget):
                 + f" {failed} could not be removed — something still has "
                   f"{'it' if failed == 1 else 'them'} open.")
 
-    # ---- 4. while a job runs ------------------------------------------------
+    # ---- 3. while a job runs ------------------------------------------------
     def _while_running_section(self) -> QWidget:
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
@@ -515,7 +414,7 @@ class SettingsPage(QWidget):
         col.addWidget(card)
         return _panel(col)
 
-    # ---- 5. when something goes wrong --------------------------------------
+    # ---- 4. when something goes wrong --------------------------------------
     def _trouble_section(self) -> QWidget:
         """One button that turns "it broke" into something fixable.
 

@@ -250,6 +250,32 @@ with _tempfile_mod.TemporaryDirectory() as _tmp:
 cap.LINE_MODE = "hybrid"
 
 # ─── company-specific words, in any market ──────────────────────────────────
+# A teammate's install has no brand in its .env at all — the installer seeds the
+# lines empty, and the loader skips empty values. The company's names ship with
+# the tool, so a fresh machine must caption every market exactly as this one.
+_saved = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("CAPTION_")}
+HOUSE = {
+    "de": ["miavola", "L-Thyroxin"],
+    "en": ["miavola", "Levothyroxine", "L-Thyroxine"],
+    "fr": ["Conversol", "L-Thyroxine"],
+    "it": ["Conversol", "L-Tiroxina"],
+    "es": ["El Conversol"],
+    "pl": ["Przetwornik", "L-tyroksyna"],
+}
+for lang, want in HOUSE.items():
+    cap.ACTIVE_LANG = lang
+    check(f"{lang}: a fresh install knows the company's names", cap._canonical_terms(), want)
+check("every market the app offers has its names", sorted(HOUSE), sorted(MARKETS))
+cap.ACTIVE_LANG = "it"
+os.environ["CAPTION_BRAND_IT"] = "Altro"
+check("it: a key in .env still overrides the house name",
+      cap._brand_config(), "Altro")
+os.environ["CAPTION_TERMS_IT"] = ""
+check("it: ...and a key set to nothing turns the list off", cap._terms_config(), [])
+for k in [k for k in os.environ if k.startswith("CAPTION_")]:
+    os.environ.pop(k)
+os.environ.update(_saved)
+
 os.environ["CAPTION_BRAND"] = "miavola"
 os.environ["CAPTION_TERMS"] = "L-Thyroxin"
 os.environ["CAPTION_TERMS_EN"] = "Levothyroxine, L-Thyroxine"
@@ -270,16 +296,57 @@ check("de: falls back to the global terms",
       cap._canonical_terms(), ["miavola", "L-Thyroxin"])
 # ...but no other market borrows German's SPELLINGS. A term is a spelling, and
 # the repair pass would "fix" a correct Spanish "L-Tiroxina" into "L-Thyroxin".
+# (The developer's real .env is loaded by caption.py at import, so every key a
+# check depends on is set or cleared here, never inherited from the machine.)
+_real_brand_es = os.environ.pop("CAPTION_BRAND_ES", None)
 os.environ.pop("CAPTION_TERMS_ES", None)
 cap.ACTIVE_LANG = "es"
 check("es: never inherits German's terms", cap._terms_config(), [])
-check("es: ...though the brand, one word everywhere, still falls back",
-      cap._brand_config(), "miavola")
+check("es: ...while its brand, unset here, is the house name for Spain",
+      cap._brand_config(), "El Conversol")
 os.environ["CAPTION_TERMS_ES"] = "L-Tiroxina, Selenio"
 check("es: its own terms are enforced",
       cap.apply_canonical_terms("tomo l-tiroxina y selenyo cada día"),
       "tomo L-Tiroxina y Selenio cada día")
 os.environ.pop("CAPTION_TERMS_ES", None)
+
+# Spain's product is "El Conversol" — the first brand of two words.
+os.environ["CAPTION_BRAND_ES"] = "El Conversol"
+check("es: the market's own brand wins", cap._brand_config(), "El Conversol")
+check("es: a re-cased two-word brand is restored",
+      cap.apply_canonical_terms("yo tomo el conversol cada mañana"),
+      "yo tomo El Conversol cada mañana")
+check("es: the contraction “del Conversol” is Spanish, and left alone",
+      cap.apply_canonical_terms("los resultados del Conversol"),
+      "los resultados del Conversol")
+
+
+def repaired_es(texts, reply):
+    real = cap._call_gemini
+    cap._call_gemini = lambda _p: reply
+    try:
+        segs = [{"start": i, "end": i, "text": t} for i, t in enumerate(texts)]
+        return [s["text"] for s in cap.repair_terms_with_ai(segs, language="es")]
+    finally:
+        cap._call_gemini = real
+
+
+check("es: the repair pass accepts a two-word brand for a two-word mishearing",
+      repaired_es(["yo tomo el converso cada día"],
+                  [{"i": 0, "was": "el converso", "now": "El Conversol"}]),
+      ["yo tomo El Conversol cada día"])
+check("es: ...and for a one-word one, where the brand gains its article",
+      repaired_es(["yo tomo elconverso cada día"],
+                  [{"i": 0, "was": "elconverso", "now": "El Conversol"}]),
+      ["yo tomo El Conversol cada día"])
+check("es: two words that are not the configured spelling are still refused",
+      repaired_es(["yo tomo el converso cada día"],
+                  [{"i": 0, "was": "el converso", "now": "El Converso"}]),
+      ["yo tomo el converso cada día"])
+if _real_brand_es is None:
+    os.environ.pop("CAPTION_BRAND_ES", None)
+else:
+    os.environ["CAPTION_BRAND_ES"] = _real_brand_es
 cap.ACTIVE_LANG = "de"
 
 # ...and they are NOT handed to the transcriber as hints: the bias cost 13

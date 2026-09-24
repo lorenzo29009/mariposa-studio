@@ -98,50 +98,11 @@ print("\nSettings asks in the app's own voice, not the platform's")
 check("no QMessageBox anywhere in Settings", "QMessageBox" not in settings_src)
 check("it uses the app's own modal instead", "ask_confirm" in settings_src)
 
-print("\nthe words the tools must never get wrong reach the captioner")
-core.ENV_PATH.unlink(missing_ok=True)
-page = prefs.SettingsPage(lambda: None)
-
-# German is the bare pair on purpose: an unconfigured install already falls
-# back to CAPTION_BRAND / CAPTION_TERMS, so the default market must write the
-# keys that fallback reads.
-check("the default market writes the keys caption.py falls back to",
-      page._word_keys("de") == ("CAPTION_BRAND", "CAPTION_TERMS"),
-      str(page._word_keys("de")))
-check("every other market writes its own suffixed pair",
-      page._word_keys("it") == ("CAPTION_BRAND_IT", "CAPTION_TERMS_IT"),
-      str(page._word_keys("it")))
-
-page.brand.setText("miavola")
-page.terms.setText("L-Thyroxin, Selen")
-page._save_words()
-check("a word typed in Settings lands in the .env caption.py reads",
-      core.read_env_value("CAPTION_TERMS") == "L-Thyroxin, Selen",
-      repr(core.read_env_value("CAPTION_TERMS")))
-
-# The trap: switching market must save the market being LEFT. Writing the
-# fields under the ARRIVING key would copy German spellings onto Italian --
-# the exact bug caption.py carries a scar of ("Selen" -> "Selehnio").
-italian = [c for _, c in core.CAPTION_MARKETS].index("it")
-page.market.setCurrentIndex(italian)
-check("switching market does not copy one market's words onto another",
-      core.read_env_value("CAPTION_TERMS_IT") == "",
-      repr(core.read_env_value("CAPTION_TERMS_IT")))
-check("...and the German words are still where they were",
-      core.read_env_value("CAPTION_TERMS") == "L-Thyroxin, Selen")
-check("...and the fields now show the market that was selected",
-      page.terms.text() == "" and page.brand.text() == "")
-
-page.terms.setText("Levotiroxina")
-page._save_words()
-check("the new market writes its own key",
-      core.read_env_value("CAPTION_TERMS_IT") == "Levotiroxina"
-      and core.read_env_value("CAPTION_TERMS") == "L-Thyroxin, Selen")
-
-check("the market list is one source of truth, not two",
-      "CAPTION_MARKETS" in source("captions_page.py")
-      and "CAPTION_MARKETS" in settings_src,
-      "a second hand-written list drifts out of step with the .env keys")
+print("\nthe brand and product words are not a Settings control")
+# They are a house setting per market, held in the .env (CAPTION_BRAND_<LANG>,
+# CAPTION_TERMS_<LANG>) — not a decision the person using the app has to make.
+check("no brand or terms field in Settings",
+      "CAPTION_BRAND" not in settings_src and "CAPTION_TERMS" not in settings_src)
 
 print("\nthe exports folder tells the truth about when it changes")
 check("a pending change is shown on the screen, not in a modal",

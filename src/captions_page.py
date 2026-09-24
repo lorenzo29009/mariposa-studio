@@ -98,11 +98,10 @@ class CaptionsPage(ToolPage):
     LINE_MODE = "1"
 
     # Language of the spoken video, both halves derived from ONE ordered list
-    # in core so they cannot drift apart or fall out of step with the market
-    # Settings writes the brand and terms for. caption.py adapts everything to
+    # in core so they cannot drift apart. caption.py adapts everything to
     # the choice: WhisperX transcription, the Gemini prompts, casing rules,
     # the line-break/binder safety nets, and the per-market product name
-    # (CAPTION_BRAND_<LANG> in tools/captions-de/.env).
+    # (caption.py's HOUSE_BRAND, overridable in tools/captions-de/.env).
     LANG_LABELS = [name for name, _ in CAPTION_MARKETS]
     LANG_CODES = [code for _, code in CAPTION_MARKETS]
 

@@ -1372,29 +1372,66 @@ def normalize_text_preserve_breaks(text: str) -> str:
     return "\n".join(l for l in out if l)
 
 
+# The company's own spellings, per market, shipped with the tool so every
+# install captions them right without anyone typing a thing. The product is sold
+# under a different name in each market, and the ingredient is spelled the way
+# that language spells it. A key in .env still wins over these —
+# CAPTION_BRAND_<LANG> / CAPTION_TERMS_<LANG>, and for German also the bare
+# CAPTION_BRAND / CAPTION_TERMS — and an environment variable set to "" turns a
+# market's list off.
+HOUSE_BRAND = {
+    "de": "miavola",
+    "fr": "Conversol",
+    "it": "Conversol",
+    "es": "El Conversol",
+    "pl": "Przetwornik",
+}
+HOUSE_TERMS = {
+    "de": "L-Thyroxin",
+    "en": "Levothyroxine, L-Thyroxine",
+    "fr": "L-Thyroxine",
+    "it": "L-Tiroxina",
+    "pl": "L-tyroksyna",
+}
+
+
+def _market_setting(kind: str, lang: str):
+    """The .env value for one market, or None when it isn't set at all. The
+    bare key is German's (the default market) and no one else's."""
+    keys = [f"CAPTION_{kind}_{lang.upper()}"] + ([f"CAPTION_{kind}"] if lang == "de" else [])
+    for key in keys:
+        value = os.environ.get(key)
+        if value is not None:
+            return value.strip()
+    return None
+
+
 def _brand_config():
-    """The canonical brand spelling, configured per project via .env. The
-    product name differs per market, so a per-language override wins:
-    CAPTION_BRAND_<LANG> (e.g. CAPTION_BRAND_PL=Przetwornik,
-    CAPTION_BRAND_IT=Conversol) falls back to the global CAPTION_BRAND.
-    Empty by default, so nothing is hard-coded into the tool."""
-    per_lang = os.environ.get(f"CAPTION_BRAND_{ACTIVE_LANG.upper()}", "").strip()
-    return per_lang or os.environ.get("CAPTION_BRAND", "").strip()
+    """The canonical brand spelling for the active market: its .env key, else
+    the house name for that market, else German's brand — a brand is usually one
+    word everywhere, so a market with no name of its own (English) shows
+    German's."""
+    for lang in (ACTIVE_LANG, "de"):
+        value = _market_setting("BRAND", lang)
+        if value is None:
+            value = HOUSE_BRAND.get(lang)
+        if value is not None:
+            return value
+    return ""
 
 
 def _terms_config() -> list:
-    """Extra canonical terms (comma-separated), per market: CAPTION_TERMS_<LANG>.
+    """Extra canonical terms (comma-separated) for the active market: its .env
+    key, else the house list for that market — and nothing else.
 
-    Unlike the brand, the bare CAPTION_TERMS is German's own list and is never
-    borrowed by another market. A term is a SPELLING, and a spelling belongs to
-    one language: falling back put German "L-Thyroxin" into the prompt and the
-    repair pass of any market that had no list yet, where the repair pass would
-    happily "fix" a correct Spanish "L-Tiroxina" into it. Settings writes the
-    bare pair for German and a suffixed pair for everything else, and shows an
-    empty list as "nothing set" — which is now exactly what the captioner does."""
-    raw = os.environ.get(f"CAPTION_TERMS_{ACTIVE_LANG.upper()}", "")
-    if not raw.strip() and ACTIVE_LANG == "de":
-        raw = os.environ.get("CAPTION_TERMS", "")
+    Unlike the brand, German's terms are never borrowed by another market. A
+    term is a SPELLING, and a spelling belongs to one language: falling back put
+    German "L-Thyroxin" into the prompt and the repair pass of any market that
+    had no list yet, where the repair pass would happily "fix" a correct Spanish
+    "L-Tiroxina" into it. A market with no list of its own simply has no terms."""
+    raw = _market_setting("TERMS", ACTIVE_LANG)
+    if raw is None:
+        raw = HOUSE_TERMS.get(ACTIVE_LANG, "")
     return [t.strip() for t in raw.split(",") if t.strip()]
 
 
@@ -1450,8 +1487,8 @@ def _fuzz_cap(n: int) -> int:
 
 def _canonical_terms() -> list:
     """Ordered, de-duplicated canonical spellings to ENFORCE in the output: the
-    brand (CAPTION_BRAND) first, then CAPTION_TERMS. Empty unless configured — the
-    tool ships brand-agnostic. Unlike per-video vocabulary, these are STABLE
+    brand first, then the terms — the house set per market, or what .env says
+    instead (see HOUSE_BRAND). Unlike per-video vocabulary, these are STABLE
     brand/domain words (the brand name, a recurring product/ingredient); enforcing
     their exact spelling deterministically is the one place overfitting is wanted."""
     brand = _brand_config()
@@ -1473,7 +1510,7 @@ def apply_canonical_terms(text: str) -> str:
       2. a bounded fuzzy pass for near-miss mishearings ("Miawola"→"miavola",
          "L-tyroxin"→"L-Thyroxin"), gated by a first-letter match, a 5-char floor
          and a length-scaled edit-distance cap so ordinary words stay untouched.
-    No-op unless CAPTION_BRAND / CAPTION_TERMS are set (ships brand-agnostic)."""
+    No-op for a market whose brand and terms are both empty."""
     terms = _canonical_terms()
     if not terms:
         return text
@@ -1600,8 +1637,8 @@ def repair_terms_with_ai(segments: list, language: str = "de") -> list:
     """Repair brand/product words the transcriber garbled beyond what the
     deterministic pass can reach.
 
-    A no-op unless CAPTION_BRAND / CAPTION_TERMS are configured, so the tool
-    still ships brand-agnostic. Gemini returns substitutions rather than text,
+    A no-op for a market with no brand and no terms. Gemini returns
+    substitutions rather than text,
     and every one is validated here before it is applied:
 
       * "now" must be a configured term, exactly as configured;
@@ -1659,8 +1696,10 @@ def repair_terms_with_ai(segments: list, language: str = "de") -> list:
             refused += 1          # the model quoted text that is not there
             continue
         # A substitution may merge words; it may never add or lose any others.
+        # Counted against the words of `now` too: a brand can be two words
+        # ("El Conversol"), and assuming one refused every repair to it.
         span = len([w for w in was.split() if w])
-        if len(after.split()) != len(before.split()) - (span - 1) * hits:
+        if len(after.split()) != len(before.split()) + (len(now.split()) - span) * hits:
             refused += 1
             continue
         texts[i] = after

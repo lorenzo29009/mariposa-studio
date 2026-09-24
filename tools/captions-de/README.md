@@ -5,8 +5,8 @@ German is the default; English, Polish, French, Italian and Spanish (as spoken
 in Spain) are supported too — in the Mariposa Studio app pick the language in the
 Captions tool, or on the command line pass `--language en|pl|fr|it|es` to
 `caption.py`. Each language gets its own transcription, caption rules and
-product spelling (Conversol for FR/IT, Przetwornik for PL, `CAPTION_TERMS_EN`
-for English — set per market in Settings → Words, which writes `.env`).
+product spelling (Conversol for FR/IT, El Conversol for ES, Przetwornik for PL,
+miavola for DE/EN — built in, and overridable per market in `.env`).
 
 Works on **macOS** and **Windows**. No coding required.
 
@@ -75,8 +75,8 @@ Reinstall Python from <https://python.org> and check **"Add Python to PATH"**.
 **Caption text is wrong or weird**
 - For one-off fixes: just edit the `.srt` in any text editor before importing.
 - For a word that keeps coming out wrong (a brand, a product, an ingredient):
-  add it in Mariposa Studio under **Settings → Words**, for the market you
-  caption in. From then on it is repaired automatically — both by an exact
+  add it to `.env` as `CAPTION_TERMS_<LANG>` for the market you caption in
+  (see `.env.example`). From then on it is repaired automatically — both by an exact
   rewrite and, when the transcriber garbled it beyond recognition, by a Gemini
   pass that only ever substitutes words from that list.
 - To check a finished file against the script you wrote, use **Check against
@@ -114,7 +114,7 @@ WhisperX  →  words + timings
    │       • never strand a single word; merge it into a neighbour
    │       • merge a caption shown for < 0.6 s into a neighbour
    │
-   ├─ 4) Brand-term repair — only when words are configured in Settings.
+   ├─ 4) Brand-term repair — for the market's company names (built in, or `.env`).
    │       Gemini is asked where the transcriber garbled one of THOSE words;
    │       it returns substitutions, never text, and each one is refused
    │       unless the replacement is a configured word and the text being
