@@ -258,8 +258,8 @@ HOUSE = {
     "de": ["miavola", "L-Thyroxin"],
     "en": ["miavola", "Levothyroxine", "L-Thyroxine"],
     "fr": ["Conversol", "L-Thyroxine"],
-    "it": ["Conversol", "L-Tiroxina"],
-    "es": ["El Conversol"],
+    "it": ["Conversol", "levotiroxina", "L-tiroxina"],
+    "es": ["El Conversol", "levotiroxina", "L-tiroxina"],
     "pl": ["Przetwornik", "L-tyroksyna"],
 }
 for lang, want in HOUSE.items():
@@ -270,6 +270,16 @@ cap.ACTIVE_LANG = "it"
 os.environ["CAPTION_BRAND_IT"] = "Altro"
 check("it: a key in .env still overrides the house name",
       cap._brand_config(), "Altro")
+check("it: the house spells the drug the Italian way",
+      cap.apply_canonical_terms("prendo la Levo Tiroxina e la l-tiroxina"),
+      "prendo la levotiroxina e la L-tiroxina")
+check("it: the repair pass never turns one listed word into the other",
+      (lambda real: (setattr(cap, "_call_gemini",
+                             lambda _p: [{"i": 0, "was": "L-tiroxina", "now": "levotiroxina"}]),
+                     [s["text"] for s in cap.repair_terms_with_ai(
+                         [{"start": 0, "end": 0, "text": "prendo la L-tiroxina"}], "it")],
+                     setattr(cap, "_call_gemini", real))[1])(cap._call_gemini),
+      ["prendo la L-tiroxina"])
 os.environ["CAPTION_TERMS_IT"] = ""
 check("it: ...and a key set to nothing turns the list off", cap._terms_config(), [])
 for k in [k for k in os.environ if k.startswith("CAPTION_")]:
@@ -301,7 +311,8 @@ check("de: falls back to the global terms",
 _real_brand_es = os.environ.pop("CAPTION_BRAND_ES", None)
 os.environ.pop("CAPTION_TERMS_ES", None)
 cap.ACTIVE_LANG = "es"
-check("es: never inherits German's terms", cap._terms_config(), [])
+check("es: its terms are its own, never German's",
+      cap._terms_config(), ["levotiroxina", "L-tiroxina"])
 check("es: ...while its brand, unset here, is the house name for Spain",
       cap._brand_config(), "El Conversol")
 os.environ["CAPTION_TERMS_ES"] = "L-Tiroxina, Selenio"

@@ -1386,11 +1386,17 @@ HOUSE_BRAND = {
     "es": "El Conversol",
     "pl": "Przetwornik",
 }
+#: Italian and Spanish say "levotiroxina", and write it the way both languages
+#: write a drug: lowercase, like any common noun. "L-tiroxina" stays listed
+#: beside it so that a creator who does say it is spelled right — and so the
+#: repair pass, which refuses to touch a configured spelling, cannot "correct"
+#: one real word into the other.
 HOUSE_TERMS = {
     "de": "L-Thyroxin",
     "en": "Levothyroxine, L-Thyroxine",
     "fr": "L-Thyroxine",
-    "it": "L-Tiroxina",
+    "it": "levotiroxina, L-tiroxina",
+    "es": "levotiroxina, L-tiroxina",
     "pl": "L-tyroksyna",
 }
 

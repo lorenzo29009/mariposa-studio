@@ -202,10 +202,10 @@ Headless smoke test: construct and show MainWindow offscreen, then quit.
 
 _No public symbols._
 
-### `scripts/test_captions.py` — 483 lines
+### `scripts/test_captions.py` — 494 lines
 Offline checks for the captions tool's language layer (no Qt, no WhisperX).
 
-`check`:27 · `moved`:35 · `repaired_es`:324 · `repaired`:424
+`check`:27 · `moved`:35 · `repaired_es`:335 · `repaired`:435
 
 ### `scripts/test_clipcutter_gate.py` — 190 lines
 The one thing Clip Cutter can still ask of a person, and how it asks.
@@ -284,10 +284,10 @@ Upsert a KEY=VALUE into tools/captions-de/.env, preserving every other line.
 
 ## Bundled tool scripts (`tools/`) — separate processes, not imported
 
-### `tools/captions-de/caption.py` — 2804 lines
+### `tools/captions-de/caption.py` — 2810 lines
 Generate TikTok-style captions (SRT) from a video file. German is the default; English, Polish, French, Italian and Spanish (as spoken in Spain) are selected wi
 
-`text_width`:87 · `auto_hyphenate`:207 · `apply_auto_hyphenation`:227 · `join_soft_hyphens`:247 · `flatten_lines`:265 · `drop_midline_hyphens`:285 · `normalize_apostrophes`:305 · `strip_punct`:309 · `clean_for_output`:315 · `normalize_case`:350 · `insert_compound_hyphens`:364 · `tokenize_for_packing`:372 · `pack_lines`:388 · `format_caption`:439 · `fmt_time`:443 · `get_video_duration`:453 · `run_whisperx`:479 · `find_gaps`:564 · `repair_gaps`:592 · `load_words`:709 · `build_generic_prompt`:852 · `segment_with_ai`:962 · `review_grouping`:1034 · `segment_heuristic`:1224 · `compute_boundaries`:1255 · `caption_spans`:1277 · `fix_line_break`:1308 · `normalize_text_preserve_breaks`:1364 · `apply_canonical_terms`:1505 · `repair_terms_with_ai`:1636 · `project_terms_block`:1717 · `finalize_caption`:1731 · `move_trailing_binders`:2107 · `split_emphasis_repeats`:2143 · `merge_orphans`:2194 · `merge_split_numbers`:2313 · `merge_short_durations`:2340 · `enforce_single_line`:2542 · `enforce_two_lines`:2550 · `learn_and_relabel_case`:2560 · `recase_with_ai`:2638 · `write_srt`:2677 · `main`:2686
+`text_width`:87 · `auto_hyphenate`:207 · `apply_auto_hyphenation`:227 · `join_soft_hyphens`:247 · `flatten_lines`:265 · `drop_midline_hyphens`:285 · `normalize_apostrophes`:305 · `strip_punct`:309 · `clean_for_output`:315 · `normalize_case`:350 · `insert_compound_hyphens`:364 · `tokenize_for_packing`:372 · `pack_lines`:388 · `format_caption`:439 · `fmt_time`:443 · `get_video_duration`:453 · `run_whisperx`:479 · `find_gaps`:564 · `repair_gaps`:592 · `load_words`:709 · `build_generic_prompt`:852 · `segment_with_ai`:962 · `review_grouping`:1034 · `segment_heuristic`:1224 · `compute_boundaries`:1255 · `caption_spans`:1277 · `fix_line_break`:1308 · `normalize_text_preserve_breaks`:1364 · `apply_canonical_terms`:1511 · `repair_terms_with_ai`:1642 · `project_terms_block`:1723 · `finalize_caption`:1737 · `move_trailing_binders`:2113 · `split_emphasis_repeats`:2149 · `merge_orphans`:2200 · `merge_split_numbers`:2319 · `merge_short_durations`:2346 · `enforce_single_line`:2548 · `enforce_two_lines`:2556 · `learn_and_relabel_case`:2566 · `recase_with_ai`:2644 · `write_srt`:2683 · `main`:2692
 
 ### `tools/captions-de/caption_qa.py` — 380 lines
 Gemini-based caption QA pass — finished captions vs the briefing.
