@@ -254,9 +254,19 @@ writing its arbitrary middle out moved a confirmed Italian 8s clip down to 6s wh
 scoring identically on the reference file. Ties go to the incumbent, so re-running
 the fitter is a no-op and a language's constant moves when its own clips say so.
 
-Polish is offered but has **no confirmed clip**, so it measures with eSpeak's
-Polish voice against the pooled constant, and `engine_note()` says so on the build
-button ("none of them Polish").
+Polish and Spanish are offered but have **no confirmed clip**, so they measure
+with eSpeak's own voice (Spanish: `es`, which is Spain's) against the pooled
+constant, and `engine_note()` says so on the build button ("none of them
+Spanish"). Add a row to `docs/clock_reference.csv` the day one is shot.
+
+**Spanish writes two marks German has no word for.** A question opens with `¿`
+and an exclamation with `¡`, so the comma→full-stop tidy cannot close a cut with
+a full stop when the sentence it cuts is a question: the first clip would carry
+an `¿` nothing closes and the second a `?` nothing opened. `_tidy_boundaries()`
+reads the WHOLE sentence the cut is inside (its `¿` sits in the first piece, not
+the last), closes the first half with the matching mark and opens the second with
+its own — "¿Te sientes cansada? ¿Y encima no duermes?" — and capitalises the
+first *letter*, past the mark. Punctuation and case still: `verbatim_gaps` passes.
 
 ## Pronunciation map
 

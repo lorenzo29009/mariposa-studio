@@ -711,6 +711,16 @@ def ends_mid_sentence(scene: dict) -> bool:
 
 
 _TIDY_TRAIL_RE = re.compile(r"[,;:–—]+\s*$")
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?…])\s+")
+
+
+def _capitalise_first_letter(text: str) -> str:
+    """Upper-case the first LETTER, reading past an opening mark — "¿y" must
+    become "¿Y", where upper-casing character 0 changed nothing at all."""
+    for k, ch in enumerate(text):
+        if ch.isalpha():
+            return text[:k] + ch.upper() + text[k + 1:]
+    return text
 
 
 def _tidy_boundaries(scenes: list[dict], language: str) -> None:
@@ -741,9 +751,26 @@ def _tidy_boundaries(scenes: list[dict], language: str) -> None:
         opener = cont["text"].split()[0] if cont["text"].split() else ""
         if not in_vocabulary(opener, openers):
             continue
-        head["text"] = _TIDY_TRAIL_RE.sub("", head["text"].rstrip()) + "."
+        # Spanish opens a question or an exclamation with its own mark, so a
+        # cut inside one leaves the first half with an ¿ nothing closes and the
+        # second with a ? nothing opened. The two halves become two questions
+        # ("¿Te sientes cansada? ¿Y encima no duermes?"): close the first with
+        # its own mark, open the second with the matching one. Punctuation
+        # still — not one word moves. No other language writes ¿ or ¡.
+        # The sentence the cut is inside can span several of the first clip's
+        # pieces, and its ¿ sits in the first of them — so read all of it.
+        inside = _SENTENCE_BREAK_RE.split(
+            " ".join(s["text"] for s in first["sentences"]))[-1]
+        stop = "."
+        for opener_mark, closer in (("¿", "?"), ("¡", "!")):
+            if inside.count(opener_mark) > inside.count(closer):
+                stop = closer
+                if not cont["text"].startswith(opener_mark):
+                    cont["text"] = opener_mark + cont["text"]
+                break
+        head["text"] = _TIDY_TRAIL_RE.sub("", head["text"].rstrip()) + stop
         head.pop("continues", None)           # it is a whole sentence now
-        cont["text"] = cont["text"][0].upper() + cont["text"][1:]
+        cont["text"] = _capitalise_first_letter(cont["text"])
         first["text"] = " ".join(s["text"] for s in first["sentences"]).strip()
         second["text"] = " ".join(s["text"] for s in second["sentences"]).strip()
 

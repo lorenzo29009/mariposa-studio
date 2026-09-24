@@ -255,6 +255,19 @@ def main():
           % (len(rows), len(allflags), len(diffs), len(inventory)))
 
 
+#: The last read-through, in the terms of the market the creative is captioned
+#: in. The German line names German casing, so it asked a Spanish editor to
+#: capitalise Spanish nouns — the one thing Spanish must NOT do.
+READ_THROUGH = {
+    "de": "Caption read-through: L-Thyroxin stays hyphenated, first word of each "
+          "hook capitalised, German nouns capitalised.",
+    "es": "Caption read-through: first word of each hook capitalised, common "
+          "nouns lowercase, every question opens with ¿.",
+    "other": "Caption read-through: first word of each hook capitalised, brand "
+             "and product names spelled as set for this market.",
+}
+
+
 def derive_manual(plan, edits, live, state, allflags, inventory):
     """Derived, not a static literal. The old version always claimed the same four
     things regardless of what had actually happened."""
@@ -280,8 +293,8 @@ def derive_manual(plan, edits, live, state, allflags, inventory):
                  % ", ".join(ctas))
     if allflags:
         m.append("%d caption flag(s) need a read-through." % len(allflags))
-    m.append("Caption read-through: L-Thyroxin stays hyphenated, first word of each "
-             "hook capitalised, German nouns capitalised.")
+    m.append(READ_THROUGH.get((plan.get("config") or {}).get("lang", "de"),
+                              READ_THROUGH["other"]))
     if plan["cropTo4x5"]:
         m.append("Final 4x5 safe-zone QA.")
     if not inventory:

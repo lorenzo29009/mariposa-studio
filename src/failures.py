@@ -97,7 +97,7 @@ _TABLE: list[tuple[re.Pattern[str], Failure]] = [
      Failure(
          key="no_whisperx",
          title="WhisperX isn't installed",
-         body="German captions are transcribed locally, and that is the part "
+         body="Captions are transcribed locally, and that is the part "
               "that does it. Its installer builds a separate environment — "
               "about 3 GB, and ten minutes.",
          fix="install_deps",

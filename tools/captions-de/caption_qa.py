@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PROTOTYPE — Approach B: Gemini-based caption QA pass.
+"""Gemini-based caption QA pass — finished captions vs the briefing.
 
 Compares FINISHED captions (an .srt) against the source BRIEFING (the Notion
 script) and flags likely WhisperX mistranscriptions: words faithfully transcribed
@@ -12,9 +12,9 @@ Unlike the old browser SRT-checker this does NOT do a literal token diff (which
 floods on stage directions and breaks on German umlauts). It asks Gemini, which
 understands what is spoken vs a production note and knows domain vocabulary.
 
-EXPERIMENTAL / DISCARDABLE: lives OUTSIDE the production pipeline (caption.py is
-untouched) on its own git branch. To revert: delete this file or drop the branch.
-Not wired into the app yet — run it standalone:
+caption.py is untouched by this: the QA pass reads a finished .srt and never
+takes part in producing one. The app drives it from the Captions tool's "Check
+against the script" button; it also runs standalone:
 
     ../../venv/bin/python caption_qa.py <captions.srt> <briefing.txt> [--language de]
 
@@ -77,10 +77,46 @@ def parse_srt(text: str) -> list:
 # --------------------------------------------------------------------------- #
 # The QA pass                                                                  #
 # --------------------------------------------------------------------------- #
+
+# What a capitalization error IS depends on the language. German capitalises
+# every noun; every other market capitalises proper names only. The German rule
+# was once the only rule, so an Italian or Spanish caption had every lowercase
+# common noun flagged as an error — correct text, reported as wrong.
+_CASING_DE = """- "capitalization" — a German capitalization error: a noun or proper name written
+                lowercase, or a word clearly wrongly capitalized. IMPORTANT house-style
+                caveat: these captions DELIBERATELY lowercase the FIRST word of a
+                fragment when it is a function word (article, pronoun, preposition,
+                conjunction, adverb, verb) — that is CORRECT, do NOT flag it. Only flag
+                genuinely wrong German casing (a common noun or proper name that should
+                be capital but isn't, anywhere in the caption). Only report it if your
+                corrected casing actually DIFFERS from what is already in the caption."""
+
+_CASING_OTHER = """- "capitalization" — a {name} capitalization error: a proper name (a person,
+                a brand, a place) written lowercase, or a word clearly wrongly
+                capitalized. Common nouns are lowercase in {name} — do NOT flag them.
+                IMPORTANT house-style caveat: these captions are fragments of running
+                sentences, so a caption that opens lowercase is CORRECT, do NOT flag it.
+                Only report it if your corrected casing actually DIFFERS from what is
+                already in the caption."""
+
+#: The words whose loss turns a caption into its opposite, in each market's own
+#: language — the example has to be one the model can find in the captions.
+_NEGATIONS = {
+    "de": '("nicht", "kein", "ohne")',
+    "en": '("not", "no", "without")',
+    "es": '("no", "nunca", "sin")',
+    "fr": '("ne … pas", "jamais", "sans")',
+    "it": '("non", "mai", "senza")',
+    "pl": '("nie", "nigdy", "bez")',
+}
+
+
 def _build_qa_prompt(captions: list, briefing: str, language: str) -> str:
     name = caption.LANGUAGE_META.get(language, {}).get("name", language)
     listing = "\n".join(f"[{i}] {c}" for i, c in enumerate(captions))
     last = len(captions) - 1
+    casing = _CASING_DE if language == "de" else _CASING_OTHER.format(name=name)
+    negations = _NEGATIONS.get(language, _NEGATIONS["de"])
 
     # Canonical brand/domain spellings, if configured — gives the model the
     # correct target for terms it might otherwise not know (miavola, L-Thyroxin).
@@ -113,18 +149,11 @@ Flag these kinds of issue (and ONLY these). Give each a "type":
                 or name (compare against the briefing's correct spelling).
 - "wrong-word"— a different word that sounds like the intended one (ASR soundalike),
                 e.g. "Lieber" for "Leber".
-- "capitalization" — a German capitalization error: a noun or proper name written
-                lowercase, or a word clearly wrongly capitalized. IMPORTANT house-style
-                caveat: these captions DELIBERATELY lowercase the FIRST word of a
-                fragment when it is a function word (article, pronoun, preposition,
-                conjunction, adverb, verb) — that is CORRECT, do NOT flag it. Only flag
-                genuinely wrong German casing (a common noun or proper name that should
-                be capital but isn't, anywhere in the caption). Only report it if your
-                corrected casing actually DIFFERS from what is already in the caption.
+{casing}
 - "missing"   — a word that was clearly SPOKEN (it appears in the spoken briefing text)
                 but is ABSENT from the captions, AND whose omission makes the caption
                 grammatically broken or changes the meaning — especially a NEGATION
-                ("nicht", "kein", "ohne") or a key noun/verb. Put the word to add in
+                {negations} or a key noun/verb. Put the word to add in
                 "suggestion" and a short slice of the caption where it belongs in "suspect".
                 STRICT: do NOT flag a word that only appears in a stage direction, a
                 dropped filler, or anything covered by normal paraphrasing — only a
@@ -276,13 +305,22 @@ _CONF_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 def main() -> None:
     import json as _json
-    ap = argparse.ArgumentParser(description="PROTOTYPE caption QA vs briefing (Gemini).")
+    ap = argparse.ArgumentParser(description="Caption QA vs briefing (Gemini).")
     ap.add_argument("srt", help="Path to the captions .srt")
     ap.add_argument("briefing", help="Path to the briefing/script text file")
-    ap.add_argument("--language", default="de", choices=["de", "en", "es", "fr", "it"])
+    # Must stay the same set caption.py accepts, or a market the app offers
+    # dies at argparse instead of being checked: "pl" was missing here while
+    # Polish was selectable in the Captions tool.
+    ap.add_argument("--language", default="de",
+                    choices=["de", "en", "es", "fr", "it", "pl"])
     ap.add_argument("--json", action="store_true",
                     help="Emit {cues, findings} as JSON on stdout (used by the app).")
     args = ap.parse_args()
+    # The brand and terms are per market, read through caption.py's ACTIVE_LANG.
+    # Left at its German default, the "known correct spellings" handed to the
+    # model for a Spanish clip were German's — and a correct Spanish spelling
+    # was then reported as a garbled German one.
+    caption.ACTIVE_LANG = args.language
 
     srt_path = Path(args.srt).expanduser()
     brief_path = Path(args.briefing).expanduser()

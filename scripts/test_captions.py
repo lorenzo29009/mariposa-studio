@@ -9,8 +9,10 @@ words may end a line, which word is handed to the next caption, and how a
 brand or a contraction is spelled — for every market the app offers.
 """
 import importlib.util
+import json as _json_mod
 import os
 import sys
+import tempfile as _tempfile_mod
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,10 +42,22 @@ def moved(a: str, b: str) -> list:
 
 
 # ─── every market the app offers has its own grammar ────────────────────────
-# The Captions page offers de/en/pl/fr/it; caption.py also accepts es. A market
-# with no closed-class set of its own falls back to German, which is only
-# acceptable where it was always so (es) — never for one the page offers.
-for lang in ("de", "en", "pl", "fr", "it"):
+# A market with no closed-class set of its own falls back to German, whose sets
+# contain no word of any other language — every safety net is then silently
+# off. Spanish lived like that until it became a market of its own.
+import re as _re
+_core_src = (ROOT / "src" / "core.py").read_text(encoding="utf-8")
+MARKETS = _re.findall(r'\(\s*"[A-Za-z]+",\s*"([a-z]{2})"\s*\)',
+                      _core_src.split("CAPTION_MARKETS = [", 1)[1].split("]", 1)[0])
+check("the app offers Spanish as a market", "es" in MARKETS, True)
+_qa_src = (ROOT / "tools" / "captions-de" / "caption_qa.py").read_text(encoding="utf-8")
+_cap_src = Path(cap.__file__).read_text(encoding="utf-8")
+for lang in MARKETS:
+    check(f"{lang}: caption.py accepts it", f'"{lang}"' in
+          _cap_src.split('parser.add_argument("--language"', 1)[1].split(")", 1)[0], True)
+    check(f"{lang}: the script check accepts it", f'"{lang}"' in
+          _qa_src.split('ap.add_argument("--language"', 1)[1].split(")", 1)[0], True)
+for lang in MARKETS:
     cap.ACTIVE_LANG = lang
     check(f"{lang}: has its own binder set",
           cap.MOVE_TRAILING_BY_LANG.get(lang) is not None, True)
@@ -102,6 +116,139 @@ check("en: no compound hyphenation",
 # A number used as a label is a finished unit ("step 1"), not a quantity.
 check("en: knows a label number", "step" in cap._number_labels(), True)
 
+# ─── Spanish, as spoken in Spain ────────────────────────────────────────────
+cap.ACTIVE_LANG = "es"
+cap.LINE_MODE = "1"
+
+# A subordinator or a preposition opens what follows, so it goes with it.
+check("es: hands a trailing subordinator forward",
+      moved("me dijo que", "no era nada"), ["me dijo", "que no era nada"])
+check("es: hands a trailing preposition forward",
+      moved("tomo dos cápsulas con", "el desayuno"),
+      ["tomo dos cápsulas", "con el desayuno"])
+# "lo que", "así que", "es que", "tengo que": the "que" never travels alone.
+check("es: “lo que” moves as one",
+      moved("ya sé lo que", "quieres decir"), ["ya sé", "lo que quieres decir"])
+check("es: “es que” moves as one",
+      moved("lo que nadie me explicó es que", "el problema no era"),
+      ["lo que nadie me explicó", "es que el problema no era"])
+check("es: “tengo que” moves as one",
+      moved("ahora tengo que", "tomarla cada día"),
+      ["ahora", "tengo que tomarla cada día"])
+check("es: a bare “así que” is left whole rather than torn in two",
+      moved("así que", "tómalo cada día"), ["así que", "tómalo cada día"])
+# The words that CAN end a Spanish clause carry an accent, or are homographs,
+# and stay where they are.
+check("es: a question that ends on “no” is left alone",
+      moved("¿verdad que no?", "pues mira"), ["¿verdad que no?", "pues mira"])
+check("es: “como” the verb is not moved (lo que como)",
+      moved("cambia mucho lo que como", "cada día"),
+      ["cambia mucho lo que como", "cada día"])
+check("es: “de vez en cuando” is not torn apart",
+      moved("me pasa de vez en cuando", "y luego se va"),
+      ["me pasa de vez en cuando", "y luego se va"])
+
+# Where a visible line may wrap.
+check("es: an unstressed pronoun stays with its verb",
+      cap.finalize_caption("y luego se me olvida todo"), "y luego\nse me olvida todo")
+check("es: an article stays with its noun",
+      cap.finalize_caption("tomo cada mañana la pastilla del tiroides"),
+      "tomo cada mañana\nla pastilla del tiroides")
+check("es: a number stays with its noun",
+      cap.finalize_caption("Ahora tomo 2 cápsulas al día"),
+      "Ahora tomo\n2 cápsulas al día")
+check("es: “no” + pronoun + verb stays whole",
+      cap.finalize_caption("Así que no lo pienses más"), "Así que\nno lo pienses más")
+check("es: a capital after “no” is the next sentence, and the break goes there",
+      cap.finalize_caption("Pero no Se me caía el pelo"),
+      "Pero no\nSe me caía el pelo")
+check("es: a spelled-out number binds like a digit",
+      cap._binds_forward("dos"), True)
+check("es: “no” on its own binds nothing (Pero no. / creo que no)",
+      cap._binds_forward("no"), False)
+
+# ¿ opens every question and stays; ¡ goes with the ! it opens, both of them.
+check("es: keeps the ¿ of a question",
+      cap.clean_for_output("¿Sabes"), "¿Sabes")
+check("es: drops an ¡ whose ! is gone",
+      cap.finalize_caption("¡Qué bien! ¿Sabes lo que me pasó?"),
+      "Qué bien ¿Sabes\nlo que me pasó?")
+
+# Spain's forms and Spain's casing — and no German rule reaches Spanish.
+check("es: the prompt tells the model it is Spain, and to keep vosotros",
+      "vosotros" in cap.build_generic_prompt("es", [{"word": "hola"}], ""), True)
+check("es: the prompt asks for digits, as German's does",
+      '"2 cápsulas"' in cap.build_generic_prompt("es", [{"word": "hola"}], ""), True)
+check("es: the prompt names the pronoun-before-verb unit",
+      "se me olvida" in cap.build_generic_prompt("es", [{"word": "hola"}], ""), True)
+check("es: does not force-lowercase Spanish words",
+      [cap.normalize_case(w) for w in ("Die", "Mi", "Se", "Con")],
+      ["Die", "Mi", "Se", "Con"])
+check("es: no compound hyphenation",
+      cap.insert_compound_hyphens("Desafortunadamente complicadísimo"),
+      "Desafortunadamente complicadísimo")
+check("es: soft hyphens are not German's business here",
+      cap.join_soft_hyphens("físico-químico"), "físico-químico")
+check("es: knows a label number", "paso" in cap._number_labels(), True)
+check("es: “no” is not a label word (it is the negation)",
+      "no" in cap._number_labels(), False)
+# A label number is a finished unit; a quantity waits for its noun.
+check("es: a quantity at a caption end joins its noun",
+      [s["text"] for s in cap.merge_split_numbers(
+          [{"start": 0, "end": 1, "text": "tomo 2"},
+           {"start": 2, "end": 4, "text": "cápsulas al día"}])],
+      ["tomo 2 cápsulas al día"])
+check("es: “paso 1” is a label, not a quantity",
+      [s["text"] for s in cap.merge_split_numbers(
+          [{"start": 0, "end": 1, "text": "paso 1"},
+           {"start": 2, "end": 4, "text": "bebe agua"}])],
+      ["paso 1", "bebe agua"])
+
+# The emphasis check knows Spanish function words, and never peels an article:
+# "…sino la" lost its "la" to a caption of its own before.
+check("es: an article at a caption end is not an emphatic repeat",
+      [s["text"] for s in cap.split_emphasis_repeats(
+          [{"start": 0, "end": 2, "text": "la tiroides en"},
+           {"start": 3, "end": 5, "text": "sí sino la"}])],
+      ["la tiroides en", "sí sino la"])
+check("es: a repeated content word still stands alone",
+      [s["text"] for s in cap.split_emphasis_repeats(
+          [{"start": 0, "end": 2, "text": "nunca más cansada"},
+           {"start": 3, "end": 5, "text": "de verdad cansada"}])],
+      ["nunca más cansada", "de verdad", "cansada"])
+
+# The heuristic fallback breaks before Spanish conjunctions, never before "que".
+check("es: the no-Gemini fallback breaks before “pero”",
+      "pero" in cap._break_before(), True)
+check("es: ...and never before “que” (lo que, así que, ya que)",
+      "que" in cap._break_before(), False)
+
+# One-letter words. The Spanish aligner scores a real "y" 0.004 — below every
+# invented word — so the junk filter used to delete it from running speech.
+with _tempfile_mod.TemporaryDirectory() as _tmp:
+    _p = Path(_tmp) / "x.es.json"
+    _p.write_text(_json_mod.dumps({"segments": [{"words": [
+        {"word": "frías", "start": 11.30, "end": 11.60, "score": 0.73},
+        {"word": "y", "start": 11.62, "end": 11.64, "score": 0.004},
+        {"word": "la", "start": 11.68, "end": 11.72, "score": 0.98},
+        {"word": "báscula", "start": 11.75, "end": 12.1, "score": 0.9},
+        # residue at the edge of a hole is still junk, one letter or not
+        {"word": "y", "start": 40.0, "end": 40.02, "score": 0.01},
+    ]}]}), encoding="utf-8")
+    check("es: keeps a one-letter word inside running speech",
+          [w["word"] for w in cap.load_words(_p)], ["frías", "y", "la", "báscula"])
+cap.ACTIVE_LANG = "de"
+with _tempfile_mod.TemporaryDirectory() as _tmp:
+    _p = Path(_tmp) / "x.de.json"
+    _p.write_text(_json_mod.dumps({"segments": [{"words": [
+        {"word": "und", "start": 1.0, "end": 1.2, "score": 0.9},
+        {"word": "a", "start": 1.21, "end": 1.23, "score": 0.004},
+        {"word": "dann", "start": 1.25, "end": 1.5, "score": 0.9},
+    ]}]}), encoding="utf-8")
+    check("de: the junk threshold is exactly what it was",
+          [w["word"] for w in cap.load_words(_p)], ["und", "dann"])
+cap.LINE_MODE = "hybrid"
+
 # ─── company-specific words, in any market ──────────────────────────────────
 os.environ["CAPTION_BRAND"] = "miavola"
 os.environ["CAPTION_TERMS"] = "L-Thyroxin"
@@ -121,6 +268,19 @@ check("en: leaves ordinary words alone",
 cap.ACTIVE_LANG = "de"
 check("de: falls back to the global terms",
       cap._canonical_terms(), ["miavola", "L-Thyroxin"])
+# ...but no other market borrows German's SPELLINGS. A term is a spelling, and
+# the repair pass would "fix" a correct Spanish "L-Tiroxina" into "L-Thyroxin".
+os.environ.pop("CAPTION_TERMS_ES", None)
+cap.ACTIVE_LANG = "es"
+check("es: never inherits German's terms", cap._terms_config(), [])
+check("es: ...though the brand, one word everywhere, still falls back",
+      cap._brand_config(), "miavola")
+os.environ["CAPTION_TERMS_ES"] = "L-Tiroxina, Selenio"
+check("es: its own terms are enforced",
+      cap.apply_canonical_terms("tomo l-tiroxina y selenyo cada día"),
+      "tomo L-Tiroxina y Selenio cada día")
+os.environ.pop("CAPTION_TERMS_ES", None)
+cap.ACTIVE_LANG = "de"
 
 # ...and they are NOT handed to the transcriber as hints: the bias cost 13
 # words of real speech on a measured window (see run_whisperx).
@@ -183,6 +343,73 @@ check("de: still hands a trailing subordinator forward",
 check("de: still hyphenates an over-long compound",
       cap.finalize_caption("meine Schilddrüsenunterfunktion"),
       "meine Schilddrüsen-\nunterfunktion")
+
+# ─── the brand-term repair pass refuses everything it cannot verify ─────────
+#
+# The pass calls Gemini, but every guard is on our side of the call, so all of
+# it is testable with a stubbed response and no network. What matters is not
+# that a good answer works — it is that a BAD answer cannot damage a caption.
+cap.ACTIVE_LANG = "de"
+os.environ["CAPTION_BRAND"] = "miavola"
+os.environ["CAPTION_TERMS"] = "L-Thyroxin, Umwandler"
+
+
+def repaired(texts, reply):
+    """Run the pass over `texts` with Gemini stubbed to return `reply`."""
+    real = cap._call_gemini
+    cap._call_gemini = lambda _p: reply
+    try:
+        segs = [{"start": i, "end": i, "text": t} for i, t in enumerate(texts)]
+        return [s["text"] for s in cap.repair_terms_with_ai(segs, language="de")]
+    finally:
+        cap._call_gemini = real
+
+
+print("\nthe brand-term repair pass applies only what it can verify")
+check("it repairs a word split in two — what the deterministic pass cannot reach",
+      repaired(["der Umwandeler arbeitet", "mit dem Um Wandler"],
+               [{"i": 1, "was": "Um Wandler", "now": "Umwandler"}]),
+      ["der Umwandeler arbeitet", "mit dem Umwandler"])
+check("it keeps the punctuation that sat around the word",
+      repaired(["nimmst du L-Tyroxin?"],
+               [{"i": 0, "was": "L-Tyroxin", "now": "L-Thyroxin"}]),
+      ["nimmst du L-Thyroxin?"])
+check("a replacement that is not a configured term is refused",
+      repaired(["mit dem Umwandeler"],
+               [{"i": 0, "was": "Umwandeler", "now": "Konverter"}]),
+      ["mit dem Umwandeler"])
+check("text the model quoted but that is not in the caption is refused",
+      repaired(["mit dem Umwandeler"],
+               [{"i": 0, "was": "Umformer", "now": "Umwandler"}]),
+      ["mit dem Umwandeler"])
+check("a word that is already correct is never touched",
+      repaired(["mit dem Umwandler"],
+               [{"i": 0, "was": "Umwandler", "now": "L-Thyroxin"}]),
+      ["mit dem Umwandler"])
+check("a caption index out of range cannot reach another caption",
+      repaired(["eins", "zwei"],
+               [{"i": 7, "was": "eins", "now": "miavola"}]),
+      ["eins", "zwei"])
+check("a phrase longer than the span cap is refused — this repairs words, "
+      "it does not rewrite sentences",
+      repaired(["das ist der beste Umwandeler hier"],
+               [{"i": 0, "was": "ist der beste Umwandeler", "now": "Umwandler"}]),
+      ["das ist der beste Umwandeler hier"])
+check("a malformed answer leaves every caption alone",
+      repaired(["mit dem Umwandeler"], "not a list"),
+      ["mit dem Umwandeler"])
+check("junk entries are dropped one by one, the good one still lands",
+      repaired(["mit dem Umwandeler"],
+               ["nonsense", {"i": 0}, {"i": 0, "was": "Umwandeler", "now": "Umwandler"}]),
+      ["mit dem Umwandler"])
+check("with nothing configured the pass is a no-op and costs no call",
+      (lambda: (os.environ.__setitem__("CAPTION_BRAND", ""),
+                os.environ.__setitem__("CAPTION_TERMS", ""),
+                repaired(["mit dem Umwandeler"], [{"i": 0, "was": "Umwandeler",
+                                                   "now": "Umwandler"}]))[-1])(),
+      ["mit dem Umwandeler"])
+os.environ["CAPTION_BRAND"] = ""
+os.environ["CAPTION_TERMS"] = ""
 
 print("\nALL CAPTION CHECKS PASSED" if not bad
       else f"\n{bad} CAPTION CHECK(S) FAILED")

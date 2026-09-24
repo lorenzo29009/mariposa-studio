@@ -97,12 +97,26 @@ ENV_PATH = CAPTIONS_DIR / ".env"
 # scripts/new-shortcut.ps1 and install-windows.ps1.
 APP_USER_MODEL_ID = "Mariposa.Studio"
 
+#: The markets the captions tool is calibrated for, in display order — German
+#: first so it stays the default. ONE ordered list, because two places need it
+#: and they must not drift: the Captions page offers it per job, and Settings
+#: keys the per-market brand/terms off the same codes
+#: (CAPTION_BRAND_<LANG> / CAPTION_TERMS_<LANG> in ENV_PATH).
+CAPTION_MARKETS = [
+    ("German", "de"),
+    ("English", "en"),
+    ("Polish", "pl"),
+    ("French", "fr"),
+    ("Italian", "it"),
+    ("Spanish", "es"),
+]
+
 __all__ = [
     "IS_MAC", "IS_WINDOWS", "IS_LINUX",
     "APP_DIR", "TOOLS_DIR", "EXPORTS_DIR", "VENV_PY", "APP_VERSION",
     "APP_USER_MODEL_ID",
     "FLOW_CROPPER_DIR", "CAPTIONS_DIR", "EXTRACT_DIR", "CAMERA_PROMPT_DIR",
-    "WHISPERX_PY", "ENV_PATH",
+    "WHISPERX_PY", "ENV_PATH", "CAPTION_MARKETS",
     "studio_python", "make_qprocess_env", "chevron_icon", "arrow_icon",
     "reveal_in_finder", "open_folder", "notify",
     "read_env_value", "write_env_value",

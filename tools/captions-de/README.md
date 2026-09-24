@@ -1,11 +1,12 @@
 # Captions — TikTok caption generator
 
 Turns a video into a TikTok-style `.srt` subtitle file ready for CapCut.
-German is the default; English, Polish, French and Italian are supported too —
-in the Mariposa Studio app pick the language in the Captions tool, or on the
-command line pass `--language en|pl|fr|it` to `caption.py`. Each language gets
-its own transcription, caption rules and product spelling (Conversol for FR/IT,
-Przetwornik for PL, `CAPTION_TERMS_EN` for English — configured in `.env`).
+German is the default; English, Polish, French, Italian and Spanish (as spoken
+in Spain) are supported too — in the Mariposa Studio app pick the language in the
+Captions tool, or on the command line pass `--language en|pl|fr|it|es` to
+`caption.py`. Each language gets its own transcription, caption rules and
+product spelling (Conversol for FR/IT, Przetwornik for PL, `CAPTION_TERMS_EN`
+for English — set per market in Settings → Words, which writes `.env`).
 
 Works on **macOS** and **Windows**. No coding required.
 
@@ -19,7 +20,7 @@ Works on **macOS** and **Windows**. No coding required.
 2. **Right-click** `install-mac.command` → **Open**. (Right-click the first time so macOS lets you run it.)
 3. Follow the prompts. The installer:
    - Installs Homebrew + Python + ffmpeg if missing (may ask for your Mac password).
-   - Installs WhisperX (the German speech-to-text engine).
+   - Installs WhisperX (the speech-to-text engine).
    - Asks you to paste a free Gemini API key (see below).
 
 ### Windows
@@ -73,7 +74,13 @@ Reinstall Python from <https://python.org> and check **"Add Python to PATH"**.
 
 **Caption text is wrong or weird**
 - For one-off fixes: just edit the `.srt` in any text editor before importing.
-- For systematic fixes (a new specialist word that gets transcribed wrong): tell whoever built this and they'll add it to the rules.
+- For a word that keeps coming out wrong (a brand, a product, an ingredient):
+  add it in Mariposa Studio under **Settings → Words**, for the market you
+  caption in. From then on it is repaired automatically — both by an exact
+  rewrite and, when the transcriber garbled it beyond recognition, by a Gemini
+  pass that only ever substitutes words from that list.
+- To check a finished file against the script you wrote, use **Check against
+  the script** in the Captions tool.
 
 **Gemini quota exceeded**
 The free tier is 1500 calls per day. If you've hit it, wait a day or temporarily skip AI mode (the tool falls back automatically).
@@ -107,7 +114,14 @@ WhisperX  →  words + timings
    │       • never strand a single word; merge it into a neighbour
    │       • merge a caption shown for < 0.6 s into a neighbour
    │
-   └─ 4) Timing + line-breaking → clean SRT
+   ├─ 4) Brand-term repair — only when words are configured in Settings.
+   │       Gemini is asked where the transcriber garbled one of THOSE words;
+   │       it returns substitutions, never text, and each one is refused
+   │       unless the replacement is a configured word and the text being
+   │       replaced is really in that caption. Then the exact-spelling
+   │       rewrite runs regardless, so it can only add repairs.
+   │
+   └─ 5) Timing + line-breaking → clean SRT
            Line width is budgeted by REAL on-screen width (proportional: narrow
            i/l/t cost ~half a wide m/w), ~22.5 units ≈ 25-26 chars per line, so
            CapCut never wraps mid-word. One line by default, two only when the

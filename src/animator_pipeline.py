@@ -96,7 +96,7 @@ _LANG_HINTS: dict[str, dict[str, str]] = {
     "Spanish": {
         "numbers": "2.400 → dos mil cuatrocientos · 15 % → quince por ciento · "
                    "T3 → T tres ·\n   2 meses → dos meses · 90 días → noventa "
-                   "días · 200 mg → doscientos miligramos",
+                   "días · 200 mg → doscientos miligramos · p. ej. → por ejemplo",
         "subordinators": "que, porque, si, cuando, mientras, aunque, para que, "
                          "relative pronouns",
         "conjunctions": "y, pero, o, sino",

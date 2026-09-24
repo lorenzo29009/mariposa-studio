@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 Generate TikTok-style captions (SRT) from a video file.
-German is the default; English, Polish, French and Italian (plus Spanish)
-are selected with --language and adapt transcription, prompts, brand
-spelling and the formatting safety nets to that language.
+German is the default; English, Polish, French, Italian and Spanish (as
+spoken in Spain) are selected with --language and adapt transcription,
+prompts, brand spelling and the formatting safety nets to that language.
 
 Usage:
     python caption.py video.mp4
     python caption.py video.mp4 --out custom_name.srt
-    python caption.py video.mp4 --language en     # English (also: pl, fr, it, es)
+    python caption.py video.mp4 --language es     # Spanish (also: en, pl, fr, it)
     python caption.py video.mp4 --no-ai           # skip Gemini, use heuristic only
     python caption.py video.mp4 --model medium    # use smaller Whisper model
 """
@@ -71,7 +71,7 @@ MIN_PIECE_DUR = 0.6
 #     "und außer Herzrasen hat mir" 22.4 u  WRAPS
 # so the real ceiling sits just above 20. Re-measure (one screenshot of a burned
 # caption is enough) if the caption font or `line_max_width` ever changes.
-NARROW_CHARS = set("iIlj.,'!:;|ftr ()[]-")
+NARROW_CHARS = set("iIlíj.,'!:;|ftr ()[]-")
 WIDE_CHARS = set("mwMW—")
 LINE_W_MAX = 20.0     # max width units on one visible line (~82% of frame width)
 ORPHAN_W_MAX = 7.0    # a single word this narrow is too short to stand alone
@@ -314,8 +314,10 @@ def strip_punct(w: str) -> str:
 
 def clean_for_output(w: str) -> str:
     # Allow Unicode word characters + the punctuation we want to preserve.
-    # ¿¡ kept for Spanish; everything else common across DE/EN/ES/FR/IT/PL.
-    return re.sub(r'[^\w\'\-?%/&"¿¡]', "", normalize_apostrophes(w),
+    # Spanish opens a question with ¿ and an exclamation with ¡. The ? survives
+    # here, so its ¿ does too; the ! never does, so neither may its ¡ — keeping
+    # it put a dangling "¡qué bien" on screen with nothing to close it.
+    return re.sub(r'[^\w\'\-?%/&"¿]', "", normalize_apostrophes(w),
                   flags=re.UNICODE)
 
 
@@ -680,19 +682,44 @@ def _rewrite_cache(json_path: Path, recovered: list) -> None:
 #: competitor, invented, on screen. Truncated is survivable; wrong is not.
 JUNK_SCORE = 0.15
 
+#: Words one letter long, per language. German has none, so the score above was
+#: calibrated on words that have acoustic substance. Spanish's "y", "o", "a" are
+#: a few milliseconds of vowel, and the Spanish aligner scores a real one 0.004 —
+#: below every invented word the threshold exists for — so it silently deleted
+#: the "y" of "siempre frías y la báscula". A word this short is only junk where
+#: junk lives: at the edge of a hole, not between two words of running speech.
+SHORT_WORDS_BY_LANG = {
+    "es": {"y", "e", "o", "u", "a"},
+}
+#: How close both neighbours must be for a short word to count as running speech.
+SHORT_WORD_NEIGHBOUR = 1.0
+
+
+def _in_running_speech(prev, w, nxt) -> bool:
+    """A short word flanked on both sides by words within SHORT_WORD_NEIGHBOUR."""
+    short = SHORT_WORDS_BY_LANG.get(ACTIVE_LANG, ())
+    if strip_punct(w.get("word", "")).lower() not in short:
+        return False
+    if prev is None or nxt is None:
+        return False
+    return (w["start"] - prev["end"] <= SHORT_WORD_NEIGHBOUR
+            and nxt["start"] - w["end"] <= SHORT_WORD_NEIGHBOUR)
+
 
 def load_words(json_path: Path):
     data = json.load(open(json_path, encoding="utf-8"))
     words = []
     junk = []
-    for seg in data["segments"]:
-        for w in seg.get("words", []):
-            if "start" not in w or "end" not in w:
-                continue
-            if w.get("score", 1.0) < JUNK_SCORE:
+    timed = [w for seg in data["segments"] for w in seg.get("words", [])
+             if "start" in w and "end" in w]
+    for i, w in enumerate(timed):
+        if w.get("score", 1.0) < JUNK_SCORE:
+            prev = timed[i - 1] if i > 0 else None
+            nxt = timed[i + 1] if i + 1 < len(timed) else None
+            if not _in_running_speech(prev, w, nxt):
                 junk.append(w)
                 continue
-            words.append(w)
+        words.append(w)
     if junk:
         # Never silently: a dropped word is a decision about the copy, and the
         # operator is the one who knows whether that word was really said.
@@ -722,22 +749,50 @@ LANGUAGE_META = {
         ),
         "punctuation_extra": "",
     },
+    # Spanish as spoken in SPAIN. Two things set it apart from the generic
+    # prompt, and both are optional keys the other languages don't carry, so
+    # their prompts stay byte-for-byte what they were:
+    #   * "variety" — the transcriber and the model both lean Latin American,
+    #     and a "fix" of vosotros/os into ustedes/les rewrites what was said;
+    #   * "extra_units" — an unstressed pronoun sits BEFORE its verb ("se me
+    #     olvida", "os lo digo") and is as inseparable from it as an article
+    #     is from its noun. No other rule names it, and it is the most common
+    #     bad break in Spanish captions.
     "es": {
         "name": "Spanish",
+        "variety": (
+            "This is Castilian Spanish as spoken in Spain. Keep the vosotros "
+            "forms (sois, tenéis, os), the pronoun os, and Spain's vocabulary "
+            "exactly as spoken — never convert them to Latin American usage."
+        ),
         "aux_examples": '"ha hecho", "está haciendo", "va a correr", "han ido"',
-        "modal_examples": '"puede ir", "debería saber", "tengo que terminar"',
-        "neg_examples": '"nunca tuve", "no pensé", "ninguna idea", "nada más"',
-        "prep_examples": '"con el médico", "para personas con", "en la ciudad"',
+        "modal_examples": '"puede ir", "debería saber", "tengo que terminar", "hay que tomar"',
+        "neg_examples": '"no me gusta", "nunca tuve", "ni idea", "nada más"',
+        "prep_examples": '"con el médico", "para personas con", "en la ciudad", "del cuerpo"',
         "art_examples": '"el problema", "una doctora", "estos medicamentos", "mi idea"',
-        "idiom_examples": '"Brain Fog", "L-Tiroxina", "fun fact"',
-        "conjunctions": "y, pero, o, porque, cuando, si, mientras, aunque",
-        "list_example": '"manos frías, niebla mental, caída del cabello"',
+        "idiom_examples": '"niebla mental", "L-Tiroxina", "fun fact"',
+        "conjunctions": "y, pero, o, porque, cuando, si, mientras, aunque, así que",
+        "list_example": '"manos frías, niebla mental, caída del pelo"',
+        # German writes spoken numbers as digits, and the nets that keep "2
+        # Kapseln" together only know digits. Without the same rule "dos
+        # cápsulas" came out as two captions.
+        "numbers": (
+            'Write spoken cardinal numbers as DIGITS: "dos cápsulas" → "2 '
+            'cápsulas", "noventa días" → "90 días", "veinte por ciento" → '
+            '"20%". "un" and "una" stay words.'
+        ),
+        "extra_units": (
+            'Unstressed pronoun + the verb it precedes: e.g., "me duele", '
+            '"se me olvida", "os lo digo", "no te lo pierdas". Never end a '
+            'caption or a line on me, te, se, nos, os, lo, la, le or les.'
+        ),
         "capitalization": (
             "Standard Spanish capitalization: capitalize proper nouns and "
             "sentence starts only. Days, months, nationalities and languages "
-            "stay lowercase. Don't capitalize words randomly."
+            "stay lowercase, and so does usted. Don't capitalize words randomly."
         ),
-        "punctuation_extra": ", inverted ¿ and ¡ at clause openings (only if they were spoken)",
+        "punctuation_extra": (", and the opening ¿ of every question "
+                              "(an ¡ goes, together with its exclamation mark)"),
     },
     "fr": {
         "name": "French",
@@ -798,6 +853,11 @@ def build_generic_prompt(lang_code: str, words: list, video_context: str) -> str
     meta = LANGUAGE_META[lang_code]
     numbered = "\n".join(f"[{i}] {w['word']}" for i, w in enumerate(words))
     ctx_line = f"Context: {video_context}" if video_context else ""
+    # Optional per-language lines — absent keys add nothing, so a language
+    # without them gets exactly the prompt it always had.
+    extra_units = (f"\nL2. {meta['extra_units']}" if meta.get("extra_units") else "")
+    variety = (f" {meta['variety']}" if meta.get("variety") else "")
+    numbers = (f"\nP2. {meta['numbers']}" if meta.get("numbers") else "")
     prompt = f"""You are a TikTok-style {meta['name']} caption editor. Split the transcription below into short, well-paced captions for a vertical 9:16 video.
 
 LAYOUT (hard — CapCut renders captions at large font; lines wider than ~24 chars wrap awkwardly):
@@ -814,7 +874,7 @@ H. Adjective + noun, adverb + adjective/verb.
 I. Auxiliary + participle: e.g., {meta['aux_examples']}.
 J. Modal + infinitive: e.g., {meta['modal_examples']}.
 K. Negation + element it negates: e.g., {meta['neg_examples']}.
-L. Idiomatic units, product names and English borrowings: e.g., {meta['idiom_examples']}.
+L. Idiomatic units, product names and English borrowings: e.g., {meta['idiom_examples']}.{extra_units}
 
 CAPTION BOUNDARY RULES:
 M. A caption MUST end at a natural prosodic/clause boundary: end of sentence, end of clause, after a comma that opens a new clause, or before a coordinating conjunction ({meta['conjunctions']}) when the caption already has ≥3 words.
@@ -823,7 +883,7 @@ O. GROUP INTO NATURAL UNITS (~4–7 words): a caption is a breath group / short 
 O2. NEVER leave a single short word (e.g. "to", "and", "is", "so", a 1–4 letter word) alone as its own caption. Attach it to the adjacent caption it belongs with. EXCEPTIONS that DO stand alone: a word the speaker repeats for emphasis, and each item of a list.
 
 TEXT RULES:
-P. Fix obvious Whisper transcription errors. Never add or skip words.
+P. Fix obvious Whisper transcription errors. Never add or skip words.{variety}{numbers}
 Q. {meta['capitalization']}
 R. Remove periods, commas, semicolons, colons, exclamation marks. KEEP question marks, percent signs (%), slashes (/), ampersands (&), quotation marks{meta['punctuation_extra']}.
 {project_terms_block()}
@@ -1145,6 +1205,21 @@ BREAK_BEFORE = {"und", "aber", "oder", "denn", "doch", "sondern",
                 "weil", "dass", "wenn", "als", "ob", "obwohl", "während",
                 "bevor", "nachdem", "damit", "sodass", "falls"}
 
+# Where the no-Gemini fallback may start a new caption, per language. A language
+# not listed keeps the German set it always used. Spanish leaves out "que" on
+# purpose: it is the second half of "lo que", "así que", "ya que", "para que",
+# and a break before it tears every one of them in two; "cuando" is left out
+# for "de vez en cuando", which ends a clause.
+BREAK_BEFORE_BY_LANG = {
+    "de": BREAK_BEFORE,
+    "es": {"y", "e", "o", "u", "ni", "pero", "sino", "porque", "aunque",
+           "mientras", "pues", "si"},
+}
+
+
+def _break_before() -> set:
+    return BREAK_BEFORE_BY_LANG.get(ACTIVE_LANG, BREAK_BEFORE)
+
 
 def segment_heuristic(words: list, max_words: int = 6) -> list:
     groups = []
@@ -1155,7 +1230,7 @@ def segment_heuristic(words: list, max_words: int = 6) -> list:
         hard_end = bool(re.search(r"[.!?]$", raw))
         soft_end = raw.endswith(",") or raw.endswith(";") or raw.endswith(":")
         nxt = words[i + 1] if i + 1 < len(words) else None
-        next_clause = nxt and strip_punct(nxt["word"]).lower() in BREAK_BEFORE
+        next_clause = nxt and strip_punct(nxt["word"]).lower() in _break_before()
         should_break = (
             hard_end
             or (soft_end and len(cur) >= 2)
@@ -1250,15 +1325,35 @@ def fix_line_break(text: str) -> str:
     # a one-word preposition (FORWARD_PREPS) or an intensifier (FORWARD_INTENS).
     # _no_line_end() is the ACTIVE_LANG's union of all of these, so this keeps
     # "seit über 10 Jahren" / "chez le médecin" / "u lekarza" intact.
-    if clean(line1_words[-1]) not in _no_line_end():
-        return text
+    def binds(k):
+        """Does the word before break position k bind to the one after it?"""
+        w = all_words[k - 1]
+        if w.endswith(("?", "!")):
+            return False  # it closes a question: it binds to nothing after it
+        if _unbound(all_words[k - 2] if k >= 2 else "", w):
+            return False
+        # A bare number binds to its noun ("2 | cápsulas"), exactly as the
+        # caption-level nets already treat it (_binds_forward).
+        c = clean(w)
+        return (c in _no_line_end() or bool(re.fullmatch(r"\d+([.,]\d+)?", c))
+                or _binds_pair(w, all_words[k]))
 
     current_break = len(line1_words)
-    for new_break in range(current_break - 1, 0, -1):
+    if not binds(current_break):
+        return text
+
+    # Backwards first, as this always did — then, only if nothing backwards
+    # fits, forwards. Giving up used to leave line 1 ending on the very word
+    # this exists to move ("und du im / schlimmsten Fall auch"). Forwards is
+    # never preferred when backwards works: replayed over real German and
+    # Italian captions, "nearest either way" swapped good breaks for worse
+    # ones as often as it fixed bad ones ("cura / con un primo dosaggio").
+    order = (list(range(current_break - 1, 0, -1))
+             + list(range(current_break + 1, len(all_words))))
+    for new_break in order:
         new_line1 = " ".join(all_words[:new_break])
         new_line2 = " ".join(all_words[new_break:])
-        last = clean(all_words[new_break - 1])
-        if last in _no_line_end():
+        if binds(new_break):
             continue
         if max(text_width(new_line1), text_width(new_line2)) <= LINE_W_MAX:
             return new_line1 + "\n" + new_line2
@@ -1288,11 +1383,18 @@ def _brand_config():
 
 
 def _terms_config() -> list:
-    """Extra canonical terms (comma-separated). Same per-language override as
-    the brand: CAPTION_TERMS_<LANG> wins over CAPTION_TERMS, so e.g. German
-    "L-Thyroxin" isn't enforced onto a Polish video (set CAPTION_TERMS_PL)."""
-    raw = os.environ.get(f"CAPTION_TERMS_{ACTIVE_LANG.upper()}",
-                         os.environ.get("CAPTION_TERMS", ""))
+    """Extra canonical terms (comma-separated), per market: CAPTION_TERMS_<LANG>.
+
+    Unlike the brand, the bare CAPTION_TERMS is German's own list and is never
+    borrowed by another market. A term is a SPELLING, and a spelling belongs to
+    one language: falling back put German "L-Thyroxin" into the prompt and the
+    repair pass of any market that had no list yet, where the repair pass would
+    happily "fix" a correct Spanish "L-Tiroxina" into it. Settings writes the
+    bare pair for German and a suffixed pair for everything else, and shows an
+    empty list as "nothing set" — which is now exactly what the captioner does."""
+    raw = os.environ.get(f"CAPTION_TERMS_{ACTIVE_LANG.upper()}", "")
+    if not raw.strip() and ACTIVE_LANG == "de":
+        raw = os.environ.get("CAPTION_TERMS", "")
     return [t.strip() for t in raw.split(",") if t.strip()]
 
 
@@ -1410,6 +1512,169 @@ def apply_canonical_terms(text: str) -> str:
     return "".join(pieces)
 
 
+# --------------------------------------------------------------------------- #
+# Brand-term repair pass (Gemini)                                              #
+# --------------------------------------------------------------------------- #
+#
+# apply_canonical_terms() below is deterministic and catches a lot, but it is
+# structurally blind in three ways: its fuzzy layer requires the SAME FIRST
+# LETTER, needs a 5-character skeleton, and works one whitespace token at a
+# time. So it repairs "Umwandeler" and cannot repair "Um Wandler" (the word
+# split in two), "Ombandler" (the first letter misheard), or a mishearing that
+# is close in sound and far in edit distance. It also has no idea whether the
+# word makes sense where it sits.
+#
+# This pass asks Gemini for exactly that judgement, and is built so a wrong
+# answer cannot damage the captions: the model returns SUBSTITUTIONS, never
+# rewritten text. Each one is checked on our side — the replacement must be a
+# configured term, the thing being replaced must really be in that caption, and
+# nothing that is already correct may be touched. Anything else is dropped.
+# Same shape as the grouping review, which returns index ranges for the same
+# reason.
+
+#: The most tokens a single mishearing may span ("L-Thyroxin" heard as
+#: "L Tyro xin"). Beyond this we are no longer repairing a word, we are
+#: rewriting a phrase, which is not this pass's job.
+TERM_SPAN_MAX = 3
+
+
+def _strip_edges(tok: str) -> tuple:
+    """(leading punctuation, bare word, trailing punctuation)."""
+    m = re.match(r"^(\W*)(.*?)(\W*)$", tok, flags=re.UNICODE)
+    return m.group(1), m.group(2), m.group(3)
+
+
+def _sub_phrase(text: str, was: str, now: str) -> tuple:
+    """Replace whole-token runs equal to `was` with `now`, keeping whatever
+    punctuation sat around them. Returns (new_text, replacements)."""
+    was_words = [w for w in was.split() if w]
+    if not was_words or len(was_words) > TERM_SPAN_MAX:
+        return text, 0
+    pieces = re.split(r"(\s+)", text)
+    idx = [i for i, p in enumerate(pieces) if p and not p.isspace()]
+    out, hits, k = list(pieces), 0, 0
+    while k + len(was_words) <= len(idx):
+        run = idx[k:k + len(was_words)]
+        bodies = [_strip_edges(pieces[i])[1] for i in run]
+        if bodies == was_words:
+            pre = _strip_edges(pieces[run[0]])[0]
+            suf = _strip_edges(pieces[run[-1]])[2]
+            out[run[0]] = pre + now + suf
+            for i in run[1:]:
+                out[i] = ""
+                if i - 1 >= 0 and out[i - 1].isspace():
+                    out[i - 1] = ""
+            hits += 1
+            k += len(was_words)
+        else:
+            k += 1
+    if not hits:
+        return text, 0
+    return " ".join("".join(out).split()), hits
+
+
+def _build_terms_prompt(captions: list, terms: list, language: str) -> str:
+    name = LANGUAGE_META.get(language, {}).get("name", language)
+    listing = "\n".join(f"[{i}] {t}" for i, t in enumerate(captions))
+    return f"""These are finished {name} captions from one video, numbered one per line. The video is about a product whose vocabulary is fixed and listed below.
+
+FIXED SPELLINGS:
+{chr(10).join('- ' + t for t in terms)}
+
+Find places where the transcriber GARBLED one of those fixed spellings — it wrote down what it heard, so the word may be split in two, run together with a neighbour, or replaced by a similar-sounding word that makes no sense in this sentence.
+
+RULES:
+- Only report a garbled FIXED SPELLING. Ignore every other error: ordinary typos, casing, punctuation, grammar, word choice.
+- Only report it when the surrounding words make the intended term unambiguous. If an ordinary word simply resembles a fixed spelling and reads correctly where it is, LEAVE IT — a wrong substitution is far worse than a missed one.
+- Never report a word that is already spelled exactly like its fixed spelling.
+- "was" must be copied character for character from the caption, and must be between 1 and {TERM_SPAN_MAX} whole words.
+- "now" must be one of the FIXED SPELLINGS above, copied exactly.
+
+Captions:
+{listing}
+
+Return a JSON array of objects, one per garbled occurrence, each {{"i": <caption number>, "was": "<exact text in that caption>", "now": "<the fixed spelling>"}}. Return [] if every fixed spelling is already correct."""
+
+
+def repair_terms_with_ai(segments: list, language: str = "de") -> list:
+    """Repair brand/product words the transcriber garbled beyond what the
+    deterministic pass can reach.
+
+    A no-op unless CAPTION_BRAND / CAPTION_TERMS are configured, so the tool
+    still ships brand-agnostic. Gemini returns substitutions rather than text,
+    and every one is validated here before it is applied:
+
+      * "now" must be a configured term, exactly as configured;
+      * "was" must actually occur in that caption, as whole words;
+      * "was" must not already BE a configured term (nothing correct is touched);
+      * applying it may only shorten the caption by the words it merges, so no
+        word can be invented, dropped or reordered.
+
+    Anything that fails is discarded and that caption is left alone. On a network
+    failure, an unparseable answer or no key, the captions come back untouched --
+    apply_canonical_terms() still runs afterwards, so this pass can only ever add
+    repairs, never remove them."""
+    terms = _canonical_terms()
+    if not terms or len(segments) < 1:
+        return segments
+    flats = [" ".join(_flat_text(s).split()) for s in segments]
+    data = _call_gemini(_build_terms_prompt(flats, terms, language))
+    if not isinstance(data, list):
+        print("Term repair: no usable response — keeping the deterministic repair.")
+        return segments
+    if not data:
+        return segments
+
+    canon = {t.lower(): t for t in terms}
+    texts = list(flats)
+    applied, refused = 0, 0
+    for item in data:
+        if not isinstance(item, dict):
+            refused += 1
+            continue
+        i, was, now = item.get("i"), item.get("was"), item.get("now")
+        if not isinstance(i, int) or not (0 <= i < len(texts)):
+            refused += 1
+            continue
+        if not isinstance(was, str) or not isinstance(now, str):
+            refused += 1
+            continue
+        was, now = was.strip(), now.strip()
+        # The replacement must be something the operator actually configured —
+        # this is what stops the pass from being a free-text rewriter.
+        if now not in terms:
+            refused += 1
+            continue
+        # Never "repair" a word that is already written exactly as configured.
+        # This compares the LITERAL text on purpose: _term_core() folds away
+        # spaces and hyphens, which is precisely what a split-word mishearing
+        # ("Um Wandler") collapses to, so testing skeletons here would refuse
+        # the one repair this pass exists for.
+        if was in terms:
+            refused += 1
+            continue
+        before = texts[i]
+        after, hits = _sub_phrase(before, was, now)
+        if not hits:
+            refused += 1          # the model quoted text that is not there
+            continue
+        # A substitution may merge words; it may never add or lose any others.
+        span = len([w for w in was.split() if w])
+        if len(after.split()) != len(before.split()) - (span - 1) * hits:
+            refused += 1
+            continue
+        texts[i] = after
+        applied += hits
+
+    if refused:
+        print(f"Term repair: ignored {refused} unusable suggestion(s).")
+    if not applied:
+        return segments
+    print(f"Term repair: fixed {applied} garbled brand word(s) with Gemini.")
+    return [seg if texts[i] == flats[i] else {**seg, "text": texts[i]}
+            for i, seg in enumerate(segments)]
+
+
 def project_terms_block() -> str:
     """An optional prompt section listing project-specific spellings (brand +
     CAPTION_TERMS), injected only when configured. Keeps the base prompt neutral
@@ -1525,11 +1790,12 @@ NO_LINE_END = LINE_BREAK_BAD_LAST | MOVE_TRAILING | FORWARD_PREPS | FORWARD_INTE
 # The German sets above power the language-sensitive safety nets: fix_line_break
 # and _binds_forward (where a visible line must NOT end) and
 # move_trailing_binders (which trailing word is moved to the next caption).
-# English / French / Italian / Polish get their own closed-class sets so the
-# same nets apply that language's grammar. Like the German lists these are
-# EVERGREEN: only closed classes (determiners, prepositions, subordinators,
-# intensifiers, negation) — never video vocabulary. A language without a set
-# (es) falls back to the German sets, preserving its long-standing behaviour.
+# English / Spanish / French / Italian / Polish get their own closed-class sets
+# so the same nets apply that language's grammar. Like the German lists these
+# are EVERGREEN: only closed classes (determiners, prepositions, subordinators,
+# intensifiers, negation) — never video vocabulary. Spanish used to have none and
+# fell back to the German sets, which contain no Spanish word at all: every net
+# was silently off, so a line could end on "de", "la" or "no".
 
 # English — the set is deliberately SPLIT along the two things the nets do,
 # because English strands prepositions where German cannot ("what's it for",
@@ -1639,9 +1905,91 @@ _DET_INTENS_PL = {
     "tak", "trochę", "prawie", "całkiem", "naprawdę", "dość", "tylko",
 }
 
+# Spanish (Spain) — MOVED only when the word can essentially never end a Spanish
+# clause. Spanish writing helps here: the words that CAN end one carry an accent
+# that tells them apart ("¿por qué?", "creo que sí", "¿cuándo?", "¿dónde?", "té",
+# "sé"), so the unaccented "que", "si", "donde" are always the start of what
+# follows. Deliberately NOT moved, as homographs or clause-final in common use:
+# "como" (the verb "I eat", in a diet ad: "lo que como"), "cuando" ("de vez en
+# cuando"), "entre" (the verb, "que entre"), "más"/"menos" ("nada más", "un poco
+# más"), and every coordinator — like German's und/oder, a natural pause.
+MOVE_TRAILING_ES = {
+    # subordinators — the clause follows
+    "que", "porque", "si", "aunque", "mientras", "donde", "sino",
+    # prepositions and their contractions — the noun phrase follows
+    "a", "al", "de", "del", "en", "con", "sin", "para", "por", "contra",
+    "hacia", "hasta", "desde", "sobre", "tras", "ante", "durante", "mediante",
+    # intensifiers that never close a phrase
+    "muy", "tan",
+}
+# Never the last word of a LINE, never moved between captions: determiners,
+# possessives (Spain's vosotros set included), quantifiers, the unstressed
+# pronouns that precede their verb ("se me | olvida" is the classic bad break),
+# negation, and the prepositions/subordinators too ambiguous to move. A wrong
+# guess here only moves a line break, which costs nothing.
+_DET_INTENS_ES = {
+    # articles
+    "el", "la", "los", "las", "un", "una", "unos", "unas", "lo",
+    # demonstratives (the determiner forms — "esto"/"eso" are pronouns and can
+    # close a clause, so they are not here)
+    "este", "esta", "estos", "estas", "ese", "esa", "esos", "esas",
+    "aquel", "aquella", "aquellos", "aquellas",
+    # possessives — unaccented "tu" is "your"; "tú" (you) is not in here
+    "mi", "mis", "tu", "tus", "su", "sus", "nuestro", "nuestra", "nuestros",
+    "nuestras", "vuestro", "vuestra", "vuestros", "vuestras",
+    # quantifiers that open a noun phrase
+    "cada", "algún", "alguna", "algunos", "algunas", "ningún", "ninguna",
+    "varios", "varias", "muchos", "muchas", "pocos", "pocas", "cualquier",
+    # unstressed object pronouns — separate words only BEFORE a verb, since
+    # after one they are written onto it ("dámelo"); "sé"/"té" carry an accent
+    "me", "te", "se", "nos", "os", "le", "les",
+    # "ni" binds to what it negates. "no" does NOT go here, although it usually
+    # precedes its verb: "Pero no.", "creo que no" and the tag "¿no?" end a
+    # clause all the time, and with the full stops gone a guard on "no" pushed
+    # the line break into the next sentence ("Pero / no Se me caía el pelo").
+    "ni",
+    # a number the model left spelled out still belongs to its noun, exactly as
+    # a digit does ("dos | cápsulas")
+    "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez",
+    "once", "doce", "quince", "veinte", "treinta", "cuarenta", "cincuenta",
+    "sesenta", "setenta", "ochenta", "noventa", "cien", "doscientos",
+    "trescientos", "quinientos", "mil",
+    # degree words that bind to what follows
+    "más", "menos", "casi", "súper", "super",
+    # too ambiguous to move (see above), still never the end of a line
+    "como", "cuando", "entre", "según", "bajo",
+}
+# Pronouns, auxiliaries, modals, coordinators and discourse words — like
+# _PRONOUNS_AUX_EN, not part of the nets, only what separates a function word
+# from a content word for the emphasis check.
+_PRONOUNS_AUX_ES = {
+    "yo", "tú", "él", "ella", "usted", "nosotros", "nosotras", "vosotros",
+    "vosotras", "ellos", "ellas", "ustedes", "mí", "ti", "sí", "conmigo",
+    "contigo", "esto", "eso", "aquello", "algo", "nada", "nadie", "alguien",
+    "todo", "toda", "todos", "todas", "mucho", "mucha", "poco", "poca", "otro",
+    "otra", "otros", "otras", "qué", "cuál", "quién", "cómo", "cuándo",
+    "dónde", "cuánto",
+    "soy", "eres", "es", "somos", "sois", "son", "era", "eras", "éramos",
+    "erais", "eran", "fue", "fui", "fueron", "sea", "ser", "estar",
+    "estoy", "estás", "está", "estamos", "estáis", "están", "estaba",
+    "estaban", "he", "has", "ha", "hemos", "habéis", "han", "había", "habían",
+    "hay", "haya", "voy", "vas", "va", "vamos", "vais", "van",
+    "puedo", "puedes", "puede", "podemos", "podéis", "pueden", "podría",
+    "quiero", "quieres", "quiere", "debo", "debes", "debe", "debería",
+    "tengo", "tienes", "tiene", "tenemos", "tenéis", "tienen", "sé", "sabes",
+    "y", "e", "o", "u", "pero", "pues", "entonces", "luego", "también",
+    "tampoco", "ya", "aquí", "ahí", "allí", "hoy", "ayer", "mañana", "ahora",
+    "siempre", "nunca", "jamás", "solo", "sólo", "bien", "así", "bueno",
+    "vale", "claro",
+}
+#: Every Spanish closed-class word we know — the counterpart of GERMAN_LOWERCASE
+#: and ENGLISH_FUNCTION, used only to tell a function word from a content word.
+SPANISH_FUNCTION = MOVE_TRAILING_ES | _DET_INTENS_ES | _PRONOUNS_AUX_ES
+
 MOVE_TRAILING_BY_LANG = {
     "de": MOVE_TRAILING,
     "en": MOVE_TRAILING_EN,
+    "es": MOVE_TRAILING_ES,
     "fr": MOVE_TRAILING_FR,
     "it": MOVE_TRAILING_IT,
     "pl": MOVE_TRAILING_PL,
@@ -1649,6 +1997,7 @@ MOVE_TRAILING_BY_LANG = {
 NO_LINE_END_BY_LANG = {
     "de": NO_LINE_END,
     "en": MOVE_TRAILING_EN | _DET_INTENS_EN,
+    "es": MOVE_TRAILING_ES | _DET_INTENS_ES,
     "fr": MOVE_TRAILING_FR | _DET_INTENS_FR,
     "it": MOVE_TRAILING_IT | _DET_INTENS_IT,
     "pl": MOVE_TRAILING_PL | _DET_INTENS_PL,
@@ -1683,14 +2032,37 @@ def _no_line_end() -> set:
 
 def _function_words() -> set:
     """The active language's closed-class vocabulary, where the list is complete
-    enough to separate function words from content words. German and English
-    have one; the others return an empty set, and callers then fall back to
-    their narrower, language-agnostic bracket."""
+    enough to separate function words from content words. German, English and
+    Spanish have one; the others return an empty set, and callers then fall back
+    to their narrower, language-agnostic bracket."""
     if ACTIVE_LANG == "de":
         return GERMAN_LOWERCASE
     if ACTIVE_LANG == "en":
         return ENGLISH_FUNCTION
+    if ACTIVE_LANG == "es":
+        return SPANISH_FUNCTION
     return set()
+
+
+# A word that travels WITH the binder it precedes. Spanish builds its most common
+# conjunctions and relatives as "<word> que" — "lo que", "así que", "ya que",
+# "para que", "el que" — and moving only the "que" leaves the first half behind:
+# "sé lo" + "que quieres" splits the unit the move exists to protect. So when the
+# moved word is the key here, a preceding word in its set comes along
+# ("sé" + "lo que quieres"). Keyed per language and per moved word, so no other
+# language's mover changes: German "fällt aus, weil" must never carry "aus".
+MOVE_CARRY_BY_LANG = {
+    "es": {"que": {"lo", "el", "la", "los", "las", "así", "ya", "para", "sin",
+                   "hasta", "de", "en", "con", "a", "antes", "después", "desde",
+                   # "es que", "lo peor era que", and the periphrases of must
+                   "es", "era", "fue", "hay", "tengo", "tienes", "tiene",
+                   "tenemos", "tenéis", "tienen"}},
+}
+
+
+def _carried(prev_tok: str, moved_tok: str) -> bool:
+    carry = MOVE_CARRY_BY_LANG.get(ACTIVE_LANG, {}).get(_norm_word(moved_tok), ())
+    return _norm_word(prev_tok) in carry
 
 
 def move_trailing_binders(segments: list) -> list:
@@ -1699,7 +2071,7 @@ def move_trailing_binders(segments: list) -> list:
     next caption so the bound pair stays together — but only when the next
     caption still fits two lines afterwards, and never for a sentence-final
     token (e.g. "oder?"). Word index ranges shift with it so timing stays
-    correct."""
+    correct. See MOVE_CARRY_BY_LANG for the one case that moves two words."""
     segs = [dict(s) for s in segments]
     for i in range(len(segs) - 1):
         toks = _seg_tokens(segs[i])
@@ -1707,12 +2079,22 @@ def move_trailing_binders(segments: list) -> list:
         if not (len(toks) >= 2 and _norm_word(last) in _move_trailing()
                 and not re.search(r"[?!.]", last)):
             continue
+        # How many trailing words go: the binder, plus the word it completes,
+        # as long as the caption keeps at least one word of its own.
+        n = 1
+        if _carried(toks[-2], last):
+            # The pair goes together or not at all: moving only the "que" of
+            # "así que" is the split this exists to prevent. It also needs a
+            # word of the caption to stay behind, and a word index to give up.
+            if len(toks) < 3 or segs[i]["end"] - 1 <= segs[i]["start"]:
+                continue
+            n = 2
         nxt = segs[i + 1]
-        candidate = last + " " + _flat_text(nxt)
+        candidate = " ".join(toks[-n:]) + " " + _flat_text(nxt)
         if not _fits_two_lines(candidate):
             continue  # moving it would overflow the next caption — leave as is
-        word_idx = segs[i]["end"]
-        segs[i]["text"] = " ".join(toks[:-1])
+        word_idx = segs[i]["end"] - (n - 1)
+        segs[i]["text"] = " ".join(toks[:-n])
         segs[i]["end"] = max(segs[i]["start"], word_idx - 1)
         nxt["text"] = candidate
         nxt["start"] = word_idx
@@ -1730,7 +2112,7 @@ def split_emphasis_repeats(segments: list) -> list:
     Guards against false positives: the word must be short (≤ORPHAN_W_MAX) and a
     CONTENT word — function words (und, die, nicht, mehr, … / the, and, just, …)
     repeat constantly and are never peeled. A language with no function-word
-    list of its own (fr/it/pl/es) falls back to the narrow "repeats the previous
+    list of its own (fr/it/pl) falls back to the narrow "repeats the previous
     caption's first word" bracket, since another language's list can't filter
     it safely."""
     out: list = []
@@ -1745,6 +2127,13 @@ def split_emphasis_repeats(segments: list) -> list:
             func = _function_words()
             if func and last not in func:
                 is_repeat = last in {_norm_word(t) for t in prev_toks}
+            elif _binds_forward(toks[-1]):
+                # An article, preposition or clitic belongs to what follows, so
+                # it is never an emphatic repeat. The narrow bracket below still
+                # peeled one: Spanish "…sino la" lost its "la" to a caption of its
+                # own because the caption before happened to open on "la" too.
+                # ("Nie … Nie" is untouched: "nie" binds nothing.)
+                is_repeat = False
             else:
                 is_repeat = last == _norm_word(prev_toks[0])
         if is_repeat:
@@ -1854,6 +2243,12 @@ NUMBER_LABELS_BY_LANG = {
         "week", "episode", "phase", "level", "tip", "reason", "rule",
         "place", "round", "lesson", "mistake", "myth", "sign",
     },
+    # "no" is left out: in Spanish it is the negation long before it is "nº".
+    "es": {
+        "número", "nº", "parte", "punto", "paso", "capítulo", "día",
+        "semana", "episodio", "fase", "nivel", "consejo", "motivo", "razón",
+        "regla", "puesto", "lugar", "truco", "error", "mito", "señal",
+    },
     "fr": {
         "numéro", "no", "partie", "point", "étape", "chapitre", "jour",
         "semaine", "épisode", "phase", "niveau", "astuce", "raison", "règle",
@@ -1955,12 +2350,51 @@ def merge_short_durations(segments: list, words: list, min_dur: float = 0.6) -> 
     return res
 
 
-def _binds_forward(tok: str) -> bool:
+#: Pairs that bind although neither word does on its own. Spanish "no" cannot be
+#: a no-line-end word (see _DET_INTENS_ES), but "no" + an unstressed pronoun is
+#: always the start of a verb phrase — "no lo pienses", "no me gusta", "no se
+#: mueve" — and "Así que no / lo pienses más" is exactly the break to avoid.
+PAIR_BINDERS_BY_LANG = {
+    "es": ({"no"}, {"me", "te", "se", "nos", "os", "lo", "la", "le", "los",
+                    "las", "les"}),
+}
+
+
+def _binds_pair(tok: str, nxt: str) -> bool:
+    first, second = PAIR_BINDERS_BY_LANG.get(ACTIVE_LANG, ((), ()))
+    if _norm_word(tok) not in first or _norm_word(nxt) not in second:
+        return False
+    # A capital pronoun after "no" opens the NEXT sentence ("Pero no. Se me
+    # caía el pelo" with its full stop gone) — Spanish capitalises nothing
+    # else mid-caption, so here the capital is the full stop.
+    return not strip_punct(nxt)[:1].isupper()
+
+
+#: Word pairs after which the second word binds NOTHING, although on its own it
+#: would. Spanish "así que" is a connector ("so"), and what follows it is a main
+#: clause, not the subordinate one a bare "que" opens: "Así que / no lo pienses
+#: más" is the right break, and treating "que" as binding forced "Así / que…".
+UNBOUND_AFTER_BY_LANG = {
+    "es": {("así", "que")},
+}
+
+
+def _unbound(prev: str, tok: str) -> bool:
+    pairs = UNBOUND_AFTER_BY_LANG.get(ACTIVE_LANG, ())
+    return bool(prev) and (_norm_word(prev), _norm_word(tok)) in pairs
+
+
+def _binds_forward(tok: str, nxt: str = "", prev: str = "") -> bool:
     """True if `tok` binds to what FOLLOWS it, so a line/caption must not end on
     it: a determiner/preposition/intensifier (the ACTIVE_LANG's no-line-end set)
     or a bare number (which binds to its noun, "10 | Jahren")."""
+    if tok.endswith(("?", "!")):
+        return False  # it closes a sentence — "¿verdad que no?" | "pues…"
+    if _unbound(prev, tok):
+        return False
     w = _norm_word(tok)
-    return w in _no_line_end() or bool(re.fullmatch(r"\d+([.,]\d+)?", w))
+    return (w in _no_line_end() or bool(re.fullmatch(r"\d+([.,]\d+)?", w))
+            or bool(nxt and _binds_pair(tok, nxt)))
 
 
 def _split_one_line(tokens: list) -> list:
@@ -1974,7 +2408,8 @@ def _split_one_line(tokens: list) -> list:
         return [tokens]
     best = None
     for k in range(1, len(tokens)):
-        if _binds_forward(tokens[k - 1]):
+        if _binds_forward(tokens[k - 1], tokens[k],
+                          tokens[k - 2] if k >= 2 else ""):
             continue  # can't end a line on a forward-binding word
         left = tokens[:k]
         if text_width(" ".join(left)) > LINE_W_MAX:
@@ -1999,7 +2434,8 @@ def _split_two_lines(tokens: list) -> list:
         return [tokens]
     best = None
     for k in range(1, len(tokens)):
-        if _binds_forward(tokens[k - 1]):
+        if _binds_forward(tokens[k - 1], tokens[k],
+                          tokens[k - 2] if k >= 2 else ""):
             continue  # can't end a caption on a forward-binding word
         left = tokens[:k]
         if not _fits_two_lines(" ".join(left)):
@@ -2295,6 +2731,13 @@ def main():
         segments = enforce_single_line(segments, words)
     else:
         segments = enforce_two_lines(segments, words)
+    # Brand words, before the casing pass so it sees the repaired spelling and
+    # before write_srt, whose finalize_caption() runs apply_canonical_terms()
+    # last (exact case wins) and only then packs the lines — a repair that
+    # changes a line's width must be re-laid-out, not shipped over budget.
+    # Self-guards to a no-op with no key, no configured terms, or any failure.
+    if not args.no_ai and os.environ.get("GEMINI_API_KEY", "").strip():
+        segments = repair_terms_with_ai(segments, language=args.language)
     # German casing — two layers. First the deterministic learner (always; sets
     # LEARNED_UPPER, fixes obvious caption-initial words; the offline floor).
     segments = learn_and_relabel_case(segments)

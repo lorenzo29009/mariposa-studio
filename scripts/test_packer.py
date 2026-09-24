@@ -690,6 +690,79 @@ check("no word of the copy moved",
       it_words == IT_LONG.lower().replace(",", "").replace(".", "").split(),
       " ".join(s["text"] for s in it_scenes))
 
+print("\n— Spanish (Spain): the same language layer, and its own two marks —")
+# Spanish drops the subject like Italian, so its clauses resume on a conjunction,
+# a negation or an unstressed pronoun — Spain's "os" included.
+ES_CLAUSE = ("Tu médico de cabecera no te lo dice, pero si no haces nada la dosis "
+             "del tratamiento seguirá subiendo, aunque tus síntomas sigan igual.")
+es_pieces = fragment_sentence(ES_CLAUSE, "Spanish")
+check("a Spanish clause comma is a seam", len(es_pieces) >= 3, es_pieces)
+check("and it is graded as a clause, not as a fragment",
+      all(p["link"] in (None, LINK_SAME_THOUGHT) for p in es_pieces),
+      [(p["link"], p["text"][:20]) for p in es_pieces])
+check("Spain's “os” resumes a clause",
+      any(p["text"].startswith("os ") for p in fragment_sentence(
+          "Chicas, sé que es duro y que cansa muchísimo, os lo digo por "
+          "experiencia propia.", "Spanish")),
+      [p["text"][:12] for p in fragment_sentence(
+          "Chicas, sé que es duro y que cansa muchísimo, os lo digo por "
+          "experiencia propia.", "Spanish")])
+check("count_syllables reads Spanish hiatus",
+      count_syllables("día", "Spanish") == 2
+      and count_syllables("tiroides", "Spanish") == 3
+      and count_syllables("cuatro", "Spanish") == 2,
+      [count_syllables(w, "Spanish") for w in ("día", "tiroides", "cuatro")])
+# The teens and twenties are one word, and three hundreds change stem, so the
+# prefix match on the units reached none of them; "un"/"una" stay out (articles).
+from script_text import numeral_re  # noqa: E402
+check("the Spanish teens, twenties and odd hundreds are numerals",
+      all(numeral_re("Spanish").match(n) for n in
+          ("quince", "veinticinco", "dieciocho", "quinientas", "setecientos",
+           "novecientos", "millones", "doscientos"))
+      and not any(numeral_re("Spanish").match(n) for n in ("un", "una", "grandes")),
+      [n for n in ("quince", "veinticinco", "quinientas", "un")
+       if bool(numeral_re("Spanish").match(n)) != (n != "un")])
+for listy in ("El cuerpo regula la energía, el pelo, el peso y el ánimo solo.",
+              "El cuerpo regula la energía, el pelo y el peso él solo."):
+    check(f"a Spanish list item is not a clause seam ({listy[22:40]}…)",
+          not any(p["text"].startswith("el pelo") and p["link"] == LINK_SAME_THOUGHT
+                  for p in fragment_sentence(listy, "Spanish")),
+          [(p["link"], p["text"]) for p in fragment_sentence(listy, "Spanish")])
+# A question longer than any clip is cut in two, and — the Spanish part — each
+# half is its own question: the first closed with ?, the second opened with ¿,
+# so no clip carries an ¿ nothing closes or a ? nothing opened.
+ES_Q = ("¿De verdad crees que es normal levantarte cansada todas las mañanas del "
+        "año sin excepción y sin ninguna explicación médica, y encima ver cómo el "
+        "pelo se te cae a puñados en la ducha mientras tu médico te dice que tus "
+        "análisis están perfectos y que no te preocupes tanto?")
+es_q, _ = finalise_block("Body", [sent(ES_Q, LINK_NEW_SECTION)], "body", "Spanish")
+check("an over-long Spanish question is cut", len(es_q) > 1,
+      [s["text"][:30] for s in es_q])
+check("and nothing overruns", not overruns(es_q), overruns(es_q))
+check("the first half closes as a question, not with a full stop",
+      es_q[0]["text"].rstrip().endswith("?"), es_q[0]["text"][-30:])
+check("the second half opens its own question, capitalised after the ¿",
+      es_q[1]["text"].startswith("¿Y "), es_q[1]["text"][:12])
+check("every clip's ¿ and ? pair up",
+      all(s["text"].count("¿") == s["text"].count("?") for s in es_q),
+      [s["text"] for s in es_q])
+check("still not one word of the copy moved",
+      not verbatim_gaps(ES_Q, " ".join(s["text"] for s in es_q)))
+ES_EX = ("¡Esto es lo que nadie te cuenta sobre la tiroides cuando empiezas a notar "
+         "los síntomas por primera vez en tu vida, y lo peor es que muchas mujeres "
+         "tardan años en descubrirlo porque los médicos solo miran un valor y se "
+         "olvidan de todo lo demás!")
+es_ex, _ = finalise_block("Body", [sent(ES_EX, LINK_NEW_SECTION)], "body", "Spanish")
+check("an exclamation cut in two becomes two exclamations",
+      len(es_ex) > 1 and es_ex[0]["text"].endswith("!")
+      and es_ex[1]["text"].startswith("¡Y "), [s["text"] for s in es_ex])
+check("German's tidy is untouched by the marks: it still ends on a full stop",
+      long_scenes[0]["text"].rstrip().endswith("."), long_scenes[0]["text"][-20:])
+check("the Spanish map keeps Spanish words and respells the brand",
+      apply_pronunciation("Cada mañana tomo Selenio y Miavola.",
+                          parse_pronunciation(pronunciation_for("Spanish")))[0]
+      == "Cada mañana tomo Selenio y miavòla.")
+
 print("\n— prompts / export —")
 tail = "Static shot. Single shot. No cuts. UGC style."
 one, _ = finalise_block("H1", [

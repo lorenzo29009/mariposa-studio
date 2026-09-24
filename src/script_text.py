@@ -238,8 +238,10 @@ RESUMPTIONS: dict[str, tuple[str, ...]] = {
     "Spanish": ("entonces", "que", "porque", "pero", "y", "o", "si", "aunque",
                 "mientras", "cuando", "como", "donde", "luego", "así",
                 "además", "también", "sino", "pues", "no", "ya", "tú", "yo",
-                "él", "ella", "nosotros", "usted", "me", "te", "se", "le",
-                "nos", "lo", "les", "es", "son", "hay", "tienes", "puedes"),
+                "él", "ella", "nosotros", "vosotros", "vosotras", "ellos",
+                "ellas", "usted", "ustedes", "me", "te", "se", "le", "nos",
+                "os", "lo", "les", "es", "son", "hay", "tienes", "puedes",
+                "tenéis", "podéis"),
     "French":  ("alors", "que", "parce", "mais", "et", "ou", "si", "bien",
                 "pendant", "puis", "ensuite", "ainsi", "donc", "car",
                 "pourtant", "ne", "tu", "je", "il", "elle", "nous", "vous",
@@ -444,12 +446,16 @@ STANDALONE_OPENERS: dict[str, frozenset] = {
                           "wir", "man", "hier", "so", "dabei", "dadurch")),
     "English": frozenset(("then", "so", "and", "but", "or", "you", "i", "he",
                           "she", "it", "we", "they", "this", "that", "here")),
+    # Spain's plural "you" is vosotros, and its object pronoun "os" opens a
+    # sentence as readily as "te" does ("Os lo digo en serio.").
     "Spanish": frozenset(("entonces", "y", "pero", "o", "sino", "así",
                           "además", "luego", "también", "tú", "yo", "él",
-                          "ella", "nosotros", "usted", "esto", "eso", "este",
+                          "ella", "nosotros", "vosotros", "vosotras", "ellos",
+                          "ellas", "usted", "ustedes", "esto", "eso", "este",
                           "esta", "el", "la", "los", "las", "un", "una", "no",
-                          "ya", "te", "se", "me", "es", "son", "hay",
-                          "tienes", "puedes")),
+                          "ya", "te", "se", "me", "nos", "os", "lo", "le",
+                          "les", "es", "son", "hay", "tienes", "puedes",
+                          "tenéis", "podéis")),
     "French":  frozenset(("alors", "et", "mais", "ou", "donc", "ainsi", "puis",
                           "ensuite", "pourtant", "tu", "je", "il", "elle",
                           "nous", "vous", "on", "cela", "ça", "ce", "c",
@@ -495,9 +501,13 @@ NUMERALS: dict[str, str] = {
     "Italian": r"zero|due|tre|quattro|cinque|sette|otto|nove|dieci|undici"
                r"|dodici|venti|trenta|quaranta|cinquanta|sessanta|settanta"
                r"|ottanta|novanta|cento|mille|mila|milione|miliardo",
+    # The teens and twenties are one word ("quince", "veinticinco") and three
+    # of the hundreds change their stem ("quinientos", not "cinco-cientos"), so
+    # the prefix match on the units reaches none of them.
     "Spanish": r"cero|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once"
-               r"|doce|veinte|treinta|cuarenta|cincuenta|sesenta|setenta"
-               r"|ochenta|noventa|cien|ciento|mil|millón",
+               r"|doce|trece|catorce|quince|dieci|veinte|veinti|treinta"
+               r"|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien"
+               r"|ciento|quinient|setecient|novecient|mil|millón|millones",
     "French":  r"zéro|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze"
                r"|vingt|trente|quarante|cinquante|soixante|cent|mille|million",
     # The hundreds are their own words in Polish (dwieście, not "two hundred"),

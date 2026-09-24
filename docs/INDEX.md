@@ -50,30 +50,30 @@ Camera Prompts - the gallery widgets.
 
 `RoundedImage`:57 · `PromptCard`:90 · `PromptCard.set_selected`:147 · `FlowLayout`:175 · `FlowLayout.count`:187 · `CategorySection`:250 · `CategorySection.add_card`:286 · `CategorySection.reflow`:289
 
-### `src/caption_compare.py` — 516 lines
-ComparePanel — EXPERIMENTAL caption QA overlay (approach B).
+### `src/caption_compare.py` — 526 lines
+ComparePanel — checking finished captions against the script.
 
-`ComparePanel`:55 · `ComparePanel.set_srt`:179
+`ComparePanel`:56 · `ComparePanel.set_srt`:184 · `ComparePanel.set_language`:193
 
-### `src/captions_page.py` — 463 lines
+### `src/captions_page.py` — 462 lines
 Captions DE: WhisperX + Gemini -> .srt, run in the separate WhisperX venv.
 
-`whisperx_arch_ok`:37 · `CaptionsPage`:65 · `CaptionsPage.build_form`:107 · `CaptionsPage.validate`:251 · `CaptionsPage.build_command`:269 · `CaptionsPage.on_output_line`:299 · `CaptionsPage.advance_batch`:307 · `CaptionsPage.env_lines`:316 · `CaptionsPage.can_fix`:333 · `CaptionsPage.apply_fix`:336 · `CaptionsPage.after_finished`:354 · `CaptionsPage.progress_from_line`:424
+`whisperx_arch_ok`:36 · `CaptionsPage`:64 · `CaptionsPage.build_form`:109 · `CaptionsPage.validate`:250 · `CaptionsPage.build_command`:268 · `CaptionsPage.on_output_line`:298 · `CaptionsPage.advance_batch`:306 · `CaptionsPage.env_lines`:315 · `CaptionsPage.can_fix`:331 · `CaptionsPage.apply_fix`:334 · `CaptionsPage.after_finished`:352 · `CaptionsPage.progress_from_line`:423
 
-### `src/clip_cutter_page.py` — 1180 lines
+### `src/clip_cutter_page.py` — 1181 lines
 Clip Cutter: assemble a UGC creative from a clip folder and hand it to CapCut.
 
-`hook_number`:186 · `ClipCutterPage`:228 · `ClipCutterPage.build_form`:327 · `ClipCutterPage.validate`:944 · `ClipCutterPage.job_facts`:974 · `ClipCutterPage.repro_files`:1005 · `ClipCutterPage.build_command`:1038 · `ClipCutterPage.after_finished`:1087 · `ClipCutterPage.can_fix`:1122 · `ClipCutterPage.apply_fix`:1171
+`hook_number`:186 · `ClipCutterPage`:228 · `ClipCutterPage.build_form`:328 · `ClipCutterPage.validate`:945 · `ClipCutterPage.job_facts`:975 · `ClipCutterPage.repro_files`:1006 · `ClipCutterPage.build_command`:1039 · `ClipCutterPage.after_finished`:1088 · `ClipCutterPage.can_fix`:1123 · `ClipCutterPage.apply_fix`:1172
 
 ### `src/clip_cutter_widgets.py` — 536 lines
 Clip Cutter's drag-and-drop assembly widgets.
 
 `video_urls`:39 · `register_thumb`:64 · `ClipChip`:102 · `PoolCard`:162 · `DropArea`:180 · `DropArea.names`:223 · `DropArea.set_names`:226 · `DropArea.add_name`:230 · `DropArea.remove_name`:236 · `BodyStrip`:376 · `SlotRow`:405 · `SlotRow.set_code`:466 · `SlotRow.names`:470 · `SlotRow.headline_text`:473 · `DropCue`:477 · `DashedButton`:530
 
-### `src/core.py` — 374 lines
+### `src/core.py` — 388 lines
 Shared foundation for Mariposa Studio: paths, the .env helpers, and the small platform/icon helpers used across every page module.
 
-`studio_python`:115 · `make_qprocess_env`:121 · `chevron_icon`:139 · `arrow_icon`:146 · `reveal_in_finder`:151 · `notify`:169 · `open_folder`:197 · `make_nonactivating_panel`:214 · `ensure_windows_shortcut`:296 · `read_env_value`:340 · `gemini_model_override`:350 · `write_env_value`:361
+`studio_python`:129 · `make_qprocess_env`:135 · `chevron_icon`:153 · `arrow_icon`:160 · `reveal_in_finder`:165 · `notify`:183 · `open_folder`:211 · `make_nonactivating_panel`:228 · `ensure_windows_shortcut`:310 · `read_env_value`:354 · `gemini_model_override`:364 · `write_env_value`:375
 
 ### `src/design.py` — 342 lines
 Mariposa Studio — Design System (single source of truth).
@@ -120,25 +120,25 @@ Render AppIcon.icns for the Mariposa Studio .app bundle.
 
 `draw_icon`:66 · `write_multi_ico`:115 · `main`:135
 
-### `src/script_packer.py` — 850 lines
+### `src/script_packer.py` — 877 lines
 Scene logic for the Script Animator — pure logic, no Qt, no network.
 
-`ceiling`:96 · `split_long_sentence`:238 · `performance_beats`:277 · `pause_between`:302 · `analytic_seconds`:324 · `timing_source`:348 · `estimate_seconds`:354 · `nearest_slot`:368 · `assign_duration`:384 · `pack_sentences`:484 · `collapse_to_one`:522 · `relabel`:531 · `merge_scenes`:555 · `split_scene`:576 · `best_seam`:593 · `set_duration`:616 · `overruns`:636 · `flag_for`:646 · `ends_mid_sentence`:707 · `finalise_block`:751 · `pack_block`:800 · `build_prompt`:824 · `build_markdown`:839 · `format_runtime`:848
+`ceiling`:96 · `split_long_sentence`:238 · `performance_beats`:277 · `pause_between`:302 · `analytic_seconds`:324 · `timing_source`:348 · `estimate_seconds`:354 · `nearest_slot`:368 · `assign_duration`:384 · `pack_sentences`:484 · `collapse_to_one`:522 · `relabel`:531 · `merge_scenes`:555 · `split_scene`:576 · `best_seam`:593 · `set_duration`:616 · `overruns`:636 · `flag_for`:646 · `ends_mid_sentence`:707 · `finalise_block`:778 · `pack_block`:827 · `build_prompt`:851 · `build_markdown`:866 · `format_runtime`:875
 
-### `src/script_text.py` — 634 lines
+### `src/script_text.py` — 644 lines
 The language layer under the Animator: words, sentences and seams.
 
-`count_syllables`:145 · `split_sentences`:152 · `word_forms`:180 · `in_vocabulary`:198 · `fragment_sentence`:362 · `infer_link`:386 · `openers_for`:473 · `numeral_re`:522 · `pronunciation_for`:550 · `parse_pronunciation`:560 · `apply_pronunciation`:577 · `leftover_symbols`:595 · `verbatim_gaps`:609
+`count_syllables`:145 · `split_sentences`:152 · `word_forms`:180 · `in_vocabulary`:198 · `fragment_sentence`:364 · `infer_link`:388 · `openers_for`:479 · `numeral_re`:532 · `pronunciation_for`:560 · `parse_pronunciation`:570 · `apply_pronunciation`:587 · `leftover_symbols`:605 · `verbatim_gaps`:619
 
 ### `src/session.py` — 97 lines
 What this launch has made — held in memory, and only in memory.
 
 `Artefact`:29 · `Artefact.is_dir`:37 · `record`:49 · `items`:59 · `clear`:67 · `note_gemini`:74 · `gemini_note`:79 · `ago`:87
 
-### `src/settings_page.py` — 528 lines
-Settings — still one field, because there is still only one thing to set.
+### `src/settings_page.py` — 631 lines
+Settings — the few things that are the user's to set, and nothing else.
 
-`pref`:48 · `set_pref`:55 · `notify_if_enabled`:59 · `folder_size`:72 · `human_size`:93 · `stale_entries`:100 · `SettingsPage`:118
+`pref`:52 · `set_pref`:59 · `notify_if_enabled`:63 · `folder_size`:76 · `human_size`:97 · `stale_entries`:104 · `SettingsPage`:122
 
 ### `src/speech_clock.py` — 455 lines
 How long a line takes to say — **measured**, not estimated.
@@ -202,10 +202,10 @@ Headless smoke test: construct and show MainWindow offscreen, then quit.
 
 _No public symbols._
 
-### `scripts/test_captions.py` — 189 lines
+### `scripts/test_captions.py` — 416 lines
 Offline checks for the captions tool's language layer (no Qt, no WhisperX).
 
-`check`:25 · `moved`:33
+`check`:27 · `moved`:35 · `repaired`:357
 
 ### `scripts/test_clipcutter_gate.py` — 190 lines
 The one thing Clip Cutter can still ask of a person, and how it asks.
@@ -247,7 +247,7 @@ Offline checks for `src/gemini.py`'s model chain and its error sentences.
 
 `check`:36 · `http_error`:44 · `FakeTransport`:63 · `FakeTransport.urlopen`:72 · `FakeTransport.sleep`:81 · `run`:99 · `main`:118
 
-### `scripts/test_packer.py` — 751 lines
+### `scripts/test_packer.py` — 824 lines
 Offline checks for script_packer — no Qt, no network, no API key.
 
 `check`:50 · `sent`:58
@@ -262,7 +262,7 @@ Prove the release zip is the app — before it is a release.
 
 `check`:47 · `section`:54 · `build_archive`:58 · `reachable_modules`:83 · `icon_names`:111 · `wanted_font_files`:128 · `main`:141
 
-### `scripts/test_settings.py` — 109 lines
+### `scripts/test_settings.py` — 155 lines
 Does the Settings screen actually reach the app?
 
 `check`:44 · `source`:49
@@ -284,15 +284,15 @@ Upsert a KEY=VALUE into tools/captions-de/.env, preserving every other line.
 
 ## Bundled tool scripts (`tools/`) — separate processes, not imported
 
-### `tools/captions-de/caption.py` — 2322 lines
-Generate TikTok-style captions (SRT) from a video file. German is the default; English, Polish, French and Italian (plus Spanish) are selected with --language a
+### `tools/captions-de/caption.py` — 2765 lines
+Generate TikTok-style captions (SRT) from a video file. German is the default; English, Polish, French, Italian and Spanish (as spoken in Spain) are selected wi
 
-`text_width`:87 · `auto_hyphenate`:207 · `apply_auto_hyphenation`:227 · `join_soft_hyphens`:247 · `flatten_lines`:265 · `drop_midline_hyphens`:285 · `normalize_apostrophes`:305 · `strip_punct`:309 · `clean_for_output`:315 · `normalize_case`:348 · `insert_compound_hyphens`:362 · `tokenize_for_packing`:370 · `pack_lines`:386 · `format_caption`:437 · `fmt_time`:441 · `get_video_duration`:451 · `run_whisperx`:477 · `find_gaps`:562 · `repair_gaps`:590 · `load_words`:684 · `build_generic_prompt`:797 · `segment_with_ai`:902 · `review_grouping`:974 · `segment_heuristic`:1149 · `compute_boundaries`:1180 · `caption_spans`:1202 · `fix_line_break`:1233 · `normalize_text_preserve_breaks`:1269 · `apply_canonical_terms`:1366 · `project_terms_block`:1413 · `finalize_caption`:1427 · `move_trailing_binders`:1696 · `split_emphasis_repeats`:1722 · `merge_orphans`:1766 · `merge_split_numbers`:1879 · `merge_short_durations`:1906 · `enforce_single_line`:2067 · `enforce_two_lines`:2075 · `learn_and_relabel_case`:2085 · `recase_with_ai`:2163 · `write_srt`:2202 · `main`:2211
+`text_width`:87 · `auto_hyphenate`:207 · `apply_auto_hyphenation`:227 · `join_soft_hyphens`:247 · `flatten_lines`:265 · `drop_midline_hyphens`:285 · `normalize_apostrophes`:305 · `strip_punct`:309 · `clean_for_output`:315 · `normalize_case`:350 · `insert_compound_hyphens`:364 · `tokenize_for_packing`:372 · `pack_lines`:388 · `format_caption`:439 · `fmt_time`:443 · `get_video_duration`:453 · `run_whisperx`:479 · `find_gaps`:564 · `repair_gaps`:592 · `load_words`:709 · `build_generic_prompt`:852 · `segment_with_ai`:962 · `review_grouping`:1034 · `segment_heuristic`:1224 · `compute_boundaries`:1255 · `caption_spans`:1277 · `fix_line_break`:1308 · `normalize_text_preserve_breaks`:1364 · `apply_canonical_terms`:1468 · `repair_terms_with_ai`:1599 · `project_terms_block`:1678 · `finalize_caption`:1692 · `move_trailing_binders`:2068 · `split_emphasis_repeats`:2104 · `merge_orphans`:2155 · `merge_split_numbers`:2274 · `merge_short_durations`:2301 · `enforce_single_line`:2503 · `enforce_two_lines`:2511 · `learn_and_relabel_case`:2521 · `recase_with_ai`:2599 · `write_srt`:2638 · `main`:2647
 
-### `tools/captions-de/caption_qa.py` — 342 lines
-PROTOTYPE — Approach B: Gemini-based caption QA pass.
+### `tools/captions-de/caption_qa.py` — 380 lines
+Gemini-based caption QA pass — finished captions vs the briefing.
 
-`parse_srt`:45 · `qa_check`:171 · `main`:277
+`parse_srt`:45 · `qa_check`:200 · `main`:306
 
 ### `tools/captions-de/install.py` — 167 lines
 Cross-platform installer for the caption tool.
@@ -414,10 +414,10 @@ Where everything is, on whatever machine this is running on.
 
 `ffmpeg`:111 · `ffprobe`:122 · `caption_tool`:131 · `cropper`:136 · `whisperx_python`:142 · `no_window_kwargs`:162 · `concat_line`:167 · `draft_file`:213 · `draft_file_name`:226 · `capcut_projects`:266 · `capcut_app`:338 · `capcut_font`:443 · `capcut_installed`:487 · `reset_cache`:493 · `capcut_template_count`:510 · `preflight`:520 · `missing`:561 · `require`:566
 
-### `tools/clip-cutter/scripts/report.py` — 293 lines
+### `tools/clip-cutter/scripts/report.py` — 306 lines
 Build manifest.json + review.tsv + a short review.md.
 
-`font_spec_or_none`:45 · `measure`:54 · `flags_for`:64 · `main`:96 · `derive_manual`:258
+`font_spec_or_none`:45 · `measure`:54 · `flags_for`:64 · `main`:96 · `derive_manual`:271
 
 ### `tools/clip-cutter/scripts/run_clip_cutter.py` — 150 lines
 One command behind Mariposa Studio's Clip Cutter: config.json -> CapCut project.

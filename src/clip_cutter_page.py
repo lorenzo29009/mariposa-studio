@@ -3,7 +3,7 @@
 
 Clips are sorted out of their filenames (C1H· hooks, C1B· body, CTA·.· endings),
 dropped into hook / body / CTA slots, given per-hook headlines, then exported as a
-CapCut project with the trims, the dead-air cuts and the German captions already in
+CapCut project with the trims, the dead-air cuts and the captions already in
 place — so the editor revises on a real timeline instead of asking for a re-render.
 
 The heavy lifting lives in the caption-ugc skill's scripts; this page is the form
@@ -237,8 +237,9 @@ class ClipCutterPage(ToolPage):
     START_HOOKS = 3          # the board opens with three empty hooks to fill
     MAX_HOOK_SLOTS = 12      # beyond this, honouring the numbers is a wall of empty rows
     START_CTAS = 1           # ...and the one ending every ad has
-    LANGUAGES = ["German", "English", "Italiano", "Français"]
-    LANG_CODES = {"German": "de", "English": "en", "Italiano": "it", "Français": "fr"}
+    LANGUAGES = ["German", "English", "Italiano", "Français", "Español"]
+    LANG_CODES = {"German": "de", "English": "en", "Italiano": "it", "Français": "fr",
+                  "Español": "es"}
 
     def __init__(self, on_back):
         super().__init__(on_back)

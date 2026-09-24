@@ -42,8 +42,8 @@ APP_TAGLINES = {
                   "every few seconds.",
     "flow":       "Reframes a folder to 4:5 and renames every clip to the "
                   "creative-id convention.",
-    "caption":    "Ready-to-import .srt subtitles, in German, Polish, French "
-                  "or Italian.",
+    "caption":    "Ready-to-import .srt subtitles, in German, English, Polish, "
+                  "French, Italian or Spanish.",
     "clipcutter": "Sorts a folder into hooks, body and endings, cuts the "
                   "silences, exports a CapCut project.",
 }

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""ComparePanel — EXPERIMENTAL caption QA overlay (approach B).
+"""ComparePanel — checking finished captions against the script.
 
-A full-canvas overlay shown over CaptionsPage when the user reveals it (press K →
-"Compare .srt"). It compares a generated .srt against a pasted briefing using the
+A full-canvas overlay shown over CaptionsPage from its "Check against the
+script" button. It compares a generated .srt against a pasted briefing using the
 Gemini QA pass in tools/captions-de/caption_qa.py (run as a subprocess, --json),
 and lists likely mistranscriptions / capitalization errors — styled in the
-Mariposa "Club Paper" light theme, modelled on the editor's SRT-checker draft.
+Mariposa "Club Paper" light theme.
 
-EXPERIMENTAL / DISCARDABLE: lives on the experiment/caption-qa branch, in its own
-module so it can be deleted cleanly. Wired into CaptionsPage but hidden by default.
+It answers what a glossary cannot: a word that is spelled fine but is the wrong
+word here, a line the transcriber skipped. Read-only — it reports, it does not
+rewrite the .srt.
 """
 
 from __future__ import annotations
@@ -60,6 +61,10 @@ class ComparePanel(QWidget):
         self.setStyleSheet(f"QWidget#ComparePanel {{ background: {PAPER_CANVAS}; }}")
         self._on_close = on_close
         self._srt_path: Optional[Path] = None
+        #: The market the .srt was captioned in. caption_qa.py defaults to
+        #: German, so running without this judged every other market's clip
+        #: against the wrong language's rules.
+        self._language = "de"
         self.proc: Optional[QProcess] = None
         self._brief_tmp: Optional[str] = None
 
@@ -185,6 +190,11 @@ class ComparePanel(QWidget):
         else:
             self.srt_hint.setText("No subtitles generated yet — drop a .srt above.")
 
+    def set_language(self, code: str):
+        """The market the captions were made in, so the QA pass judges them
+        against that language's rules rather than its own default."""
+        self._language = (code or "de").strip() or "de"
+
     # ---- helpers ----
     @staticmethod
     def _panel_title(text: str) -> QLabel:
@@ -256,7 +266,7 @@ class ComparePanel(QWidget):
         self.proc.finished.connect(self._finished)
         self.proc.start(studio_python(), [
             "-u", str(CAPTIONS_DIR / "caption_qa.py"),
-            "--json", str(srt), self._brief_tmp,
+            "--json", "--language", self._language, str(srt), self._brief_tmp,
         ])
 
         # Tick a live elapsed counter so the user always sees it's working.

@@ -15,17 +15,16 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QEvent
 from PySide6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit, QComboBox,
-    QFrame, QApplication, QPlainTextEdit,
+    QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QApplication,
 )
 
 from design import TXT_HI, TXT_META, svg_icon
 from core import (
-    IS_MAC, IS_WINDOWS, CAPTIONS_DIR, WHISPERX_PY, studio_python,
-    reveal_in_finder,
+    IS_MAC, IS_WINDOWS, CAPTION_MARKETS, CAPTIONS_DIR, WHISPERX_PY,
+    studio_python, reveal_in_finder,
 )
 from widgets import DropZone, Segmented, SettingRow, Switch
-from caption_compare import ComparePanel  # EXPERIMENTAL: hidden "Compare .srt" QA overlay
+from caption_compare import ComparePanel
 from tool_page import ToolPage
 
 
@@ -90,19 +89,22 @@ class CaptionsPage(ToolPage):
         ("write",      "Writing the .srt"),
     ]
 
-    # Caption length: "Hybrid" is the long-standing default (a natural mix of 1-
-    # and 2-line captions); "Single line" asks for one line per caption. Index
-    # order must match LINE_CODES below — Hybrid first so it's the default.
-    LENGTH_LABELS = ["Hybrid", "Single line"]
-    LINE_CODES = ["hybrid", "1"]
+    #: One line per caption, always. This used to be a choice between "Hybrid"
+    #: (a mix of 1- and 2-line captions) and this, and the choice was not one
+    #: anybody wanted to make per job. caption.py still accepts --lines hybrid,
+    #: because the Clip Cutter pipeline asks for it deliberately: it renders
+    #: through Remotion, which honours an .srt's own breaks literally, while
+    #: CapCut re-wraps anything over its own budget.
+    LINE_MODE = "1"
 
-    # Language of the spoken video. Index order must match LANG_CODES —
-    # German first so it stays the default. caption.py adapts everything to
+    # Language of the spoken video, both halves derived from ONE ordered list
+    # in core so they cannot drift apart or fall out of step with the market
+    # Settings writes the brand and terms for. caption.py adapts everything to
     # the choice: WhisperX transcription, the Gemini prompts, casing rules,
     # the line-break/binder safety nets, and the per-market product name
     # (CAPTION_BRAND_<LANG> in tools/captions-de/.env).
-    LANG_LABELS = ["German", "English", "Polish", "French", "Italian"]
-    LANG_CODES = ["de", "en", "pl", "fr", "it"]
+    LANG_LABELS = [name for name, _ in CAPTION_MARKETS]
+    LANG_CODES = [code for _, code in CAPTION_MARKETS]
 
     def build_form(self):
         self._queue: list[Path] = []
@@ -129,11 +131,6 @@ class CaptionsPage(ToolPage):
         self.language = Segmented(self.LANG_LABELS)
         lay.addWidget(SettingRow("Market", "the language spoken in the clip",
                                  self.language))
-        lay.addWidget(self.divider())
-
-        self.length = Segmented(self.LENGTH_LABELS)
-        lay.addWidget(SettingRow("Caption length", "how the lines are broken",
-                                 self.length))
         lay.addWidget(self.divider())
 
         self.use_ai = Switch(checked=True)
@@ -182,34 +179,33 @@ class CaptionsPage(ToolPage):
                           if f.is_file() and f.suffix.lower() in self.MEDIA_EXTS)
         return []
 
-    # ---- EXPERIMENTAL: hidden "Compare .srt" QA view (reveal with U) ----
+    # ---- checking the captions against the script --------------------------
+    #
+    # This used to be revealed by pressing U, which meant the one surface that
+    # answers "are these captions right?" could only be found by accident. Two
+    # testers built the same check for themselves outside the app rather than
+    # discover it here. It is a button now; what it cannot do is check nothing,
+    # so it stays disabled until a run has produced an .srt.
     def _setup_compare(self):
         self._last_srt: Optional[Path] = None
         self._compare: Optional[ComparePanel] = None
 
-        self.compare_btn = QPushButton("  Compare .srt")
+        self.compare_btn = QPushButton("  Check against the script")
         self.compare_btn.setObjectName("SecondaryBtn")
         self.compare_btn.setCursor(Qt.PointingHandCursor)
         self.compare_btn.setIcon(svg_icon("search", TXT_HI, 14))
-        self.compare_btn.setToolTip("Check the captions against the briefing")
-        self.compare_btn.setVisible(False)   # hidden until the user presses U
+        self.compare_btn.setEnabled(False)
         self.compare_btn.clicked.connect(self._open_compare)
         self.app_bar.add_right(self.compare_btn)
 
-        # App-level filter so U toggles the button (and Esc closes the view)
-        # regardless of which child has focus — but never while typing in a field.
+        # App-level filter so Esc closes the view regardless of which child has
+        # focus.
         QApplication.instance().installEventFilter(self)
 
     def eventFilter(self, obj, e):
         if e.type() == QEvent.KeyPress and self.isVisible():
-            key = e.key()
-            if key == Qt.Key_U:
-                fw = QApplication.focusWidget()
-                if isinstance(fw, (QLineEdit, QPlainTextEdit, QComboBox)):
-                    return False  # let the keystroke type into the field
-                self.compare_btn.setVisible(not self.compare_btn.isVisible())
-                return True
-            if key == Qt.Key_Escape and self._compare is not None and self._compare.isVisible():
+            if (e.key() == Qt.Key_Escape and self._compare is not None
+                    and self._compare.isVisible()):
                 self._close_compare()
                 return True
         return super().eventFilter(obj, e)
@@ -221,6 +217,9 @@ class CaptionsPage(ToolPage):
             self._outer.addWidget(self._compare, 1)
             self._compare.hide()
         self._compare.set_srt(self._last_srt)
+        # Without this the QA pass ran on its own German default, so every
+        # finding on an English or Italian clip was judged in the wrong language.
+        self._compare.set_language(self.LANG_CODES[self.language.currentIndex()])
         self.body_area.hide()                # form *and* log column
         self.run_btn.setVisible(False)       # the form's primary action is irrelevant here
         self.compare_btn.setVisible(False)
@@ -283,7 +282,7 @@ class CaptionsPage(ToolPage):
                            f"of {len(self._queue)} — {clip.name}")
         args = ["-u", str(CAPTIONS_DIR / "caption.py"), str(clip)]
         args += ["--language", self.LANG_CODES[self.language.currentIndex()]]
-        args += ["--lines", self.LINE_CODES[self.length.currentIndex()]]
+        args += ["--lines", self.LINE_MODE]
         if self._model:
             args += ["--model", self._model]
         if not self.use_ai.isChecked():   # toggle off → heuristic only
@@ -319,12 +318,11 @@ class CaptionsPage(ToolPage):
         no version numbers we would have to spawn a process to learn."""
         import shutil
         market = self.LANG_CODES[self.language.currentIndex()]
-        lines = self.LINE_CODES[self.length.currentIndex()]
         model = self._model or "large-v3"
         ff = shutil.which("ffmpeg", path=os.environ.get("PATH", "")) or "not on PATH"
         return [
             f"whisper model: {model} · engine: {WHISPERX_PY.parent.parent.name}",
-            f"market: {market} · {lines} lines · gemini refine "
+            f"market: {market} · single line · gemini refine "
             f"{'on' if self.use_ai.isChecked() else 'off'}",
             f"ffmpeg: {ff}",
         ]
@@ -365,7 +363,8 @@ class CaptionsPage(ToolPage):
             self._sentence("Finished, but no .srt turned up")
             return
 
-        self._last_srt = made[-1]     # remembered for the "Compare .srt" panel
+        self._last_srt = made[-1]     # remembered for the check-against-script panel
+        self.compare_btn.setEnabled(True)
         n = len(made)
         where = made[0].parent
         for p in made:
