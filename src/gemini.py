@@ -1,7 +1,8 @@
 """Gemini over plain HTTPS — the one transport the app uses.
 
-No SDK: a POST to `generativelanguage.googleapis.com` with `urllib`. Two entry
-points, matching the two shapes the app asks for:
+No SDK: a POST to `generativelanguage.googleapis.com` with `urllib`, the key in
+the `x-goog-api-key` header. Two entry points, matching the two shapes the app
+asks for:
 
     generate_text(...)  -> str    free-form answer (Camera Prompts)
     generate_json(...)  -> dict   `response_schema`-constrained answer, with
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 import sys
 import time
@@ -57,6 +59,63 @@ _WORKING_MODEL: "str | None" = None
 # not surface as a failure.
 RETRY_CODES = (429, 500, 502, 503, 504)
 BACKOFF_S = (2, 5, 10)
+
+
+# --- the key ---------------------------------------------------------------
+
+# The two shapes a Gemini key comes in. AI Studio handed out "AIza…" keys (39
+# characters, always) until 28 May 2026, and "AQ.…" auth keys — no fixed
+# length — since. An AQ. key must travel in the header: Google is retiring it
+# from the `?key=` URL parameter, which is where this module used to put it.
+_KEY_SHAPE = re.compile(r"AIza[0-9A-Za-z_\-]{35}|AQ\.[0-9A-Za-z_\-]{20,}")
+# Cut before every key prefix first: an AQ. key has no fixed length, so a
+# second key glued onto one would otherwise read as part of it.
+_KEY_START = re.compile(r"(?=AIza)|(?=AQ\.)")
+
+
+def key_tokens(text: str) -> list[str]:
+    """Every key-shaped run in `text`, in order. Two keys end to end are two."""
+    found = []
+    for part in _KEY_START.split(text or ""):
+        m = _KEY_SHAPE.match(part)
+        if m:
+            found.append(m.group(0))
+    return found
+
+
+def clean_key(text: str, previous: str = "") -> str:
+    """The one key in whatever was pasted, given the key saved before it.
+
+    A paste brings more than the key: whitespace, quotes, a `GEMINI_API_KEY=`
+    copied out of a .env — or the saved key itself, because Settings shows it
+    masked and a paste lands next to it instead of over it. Google refuses two
+    keys run together on every model, and the saved string still looks fine
+    as a row of dots. So the new key wins: the key-shaped
+    runs that aren't the saved one, the last of them.
+
+    Text with no key shape in it is kept as typed. Google has changed the shape
+    once already; refusing to save a third one would be worse than letting
+    Google say no.
+    """
+    text = (text or "").strip()
+    found = key_tokens(text)
+    if not found:
+        return text.strip('"\'').strip()
+    fresh = [k for k in found if k != (previous or "").strip()]
+    return (fresh or found)[-1]
+
+
+def key_shape(key: str) -> str:
+    """What a saved key looks like, without saying what it is."""
+    key = (key or "").strip()
+    found = key_tokens(key)
+    if len(found) > 1:
+        return "%d keys run together" % len(found)
+    if found and found[0] == key:
+        return "AQ. auth key" if key.startswith("AQ.") else "AIza key"
+    if found:
+        return "a key with other text around it"
+    return "not shaped like a Gemini key"
 
 
 # --- TLS -------------------------------------------------------------------
@@ -190,14 +249,19 @@ def _post(api_key: str, model: str, body: dict, timeout: int,
 
 def _post_one(api_key: str, model: str, body: dict, timeout: int, *,
               retries: bool, quota_is_fatal: bool) -> dict:
-    """One model's turn: POST, with backoff on the codes worth waiting out."""
-    url = f"{API_ROOT}/{model}:generateContent?key={api_key}"
+    """One model's turn: POST, with backoff on the codes worth waiting out.
+
+    The key goes in the header, never the URL — an AQ. key is only accepted
+    there, and a URL is what a traceback prints.
+    """
+    url = f"{API_ROOT}/{model}:generateContent"
     data = json.dumps(body).encode("utf-8")
     backoff = BACKOFF_S if retries else ()
 
     for attempt in range(len(backoff) + 1):
         req = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"})
+            url, data=data, headers={"Content-Type": "application/json",
+                                     "x-goog-api-key": api_key})
         try:
             with urllib.request.urlopen(req, timeout=timeout,
                                         context=ssl_context()) as resp:
@@ -206,17 +270,32 @@ def _post_one(api_key: str, model: str, body: dict, timeout: int, *,
             spent = attempt >= len(backoff)
             if (e.code not in RETRY_CODES or spent
                     or (e.code == 429 and quota_is_fatal)):
-                raise _http_error(e, model) from e
+                raise _http_error(e, model, api_key) from e
             time.sleep(backoff[attempt])
 
     raise GeminiError("No response from Gemini.")
 
 
-def _http_error(e: urllib.error.HTTPError, model: str = "") -> GeminiError:
+def _http_error(e: urllib.error.HTTPError, model: str = "",
+                api_key: str = "") -> GeminiError:
     try:
         detail = e.read().decode("utf-8", "ignore")[:600]
     except Exception:
         detail = ""
+    # The key itself. 400 API_KEY_INVALID for a string that isn't an AQ. key,
+    # 401 for one that is — and either way the raw JSON on screen was all the
+    # user got, so the next step was an error report instead of Settings.
+    if (e.code == 401 or (e.code == 400 and (
+            "API_KEY_INVALID" in detail or "API key not valid" in detail))):
+        if len(key_tokens(api_key)) > 1:
+            return GeminiError(
+                "The saved Gemini key is two keys run together, so Google "
+                "refuses it. Open Settings and paste just the one from Google "
+                "AI Studio.", e.code)
+        return GeminiError(
+            "Google doesn't accept the saved Gemini key — it may be mistyped, "
+            "or deleted in Google AI Studio. Paste a fresh one in Settings.",
+            e.code)
     if e.code == 429:
         # A per-day quota doesn't clear by waiting a few seconds, and the raw
         # JSON tells the user nothing they can act on.

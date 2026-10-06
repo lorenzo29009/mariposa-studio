@@ -36,6 +36,7 @@ from design import DONE, STOP, TXT_META, WINE, svg_icon
 from core import (
     APP_VERSION, EXPORTS_DIR, open_folder, read_env_value, write_env_value,
 )
+from gemini import clean_key
 from widgets import AppBar, SettingRow, Switch, ask_confirm, _panel
 
 #: Preference keys, stored in the same .env everything else uses.
@@ -117,6 +118,21 @@ def stale_entries(path: Path, days: int = STALE_DAYS) -> list[Path]:
     return out
 
 
+class _KeyField(QLineEdit):
+    """The saved key, masked — and selected whole the moment it is clicked.
+
+    A row of dots gives no hint that a key is already in the field, so a click
+    and a paste used to put the new key next to the old one, and both were
+    saved as one. Selecting on focus makes the paste replace it.
+    """
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        # After the click that focused it, which would otherwise place the
+        # caret and drop the selection.
+        QTimer.singleShot(0, self.selectAll)
+
+
 class SettingsPage(QWidget):
     title = "Settings"
     subtitle = ""
@@ -179,9 +195,9 @@ class SettingsPage(QWidget):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(9)
-        self.api_key = QLineEdit(read_env_value("GEMINI_API_KEY"))
+        self.api_key = _KeyField(read_env_value("GEMINI_API_KEY"))
         self.api_key.setEchoMode(QLineEdit.Password)
-        self.api_key.setPlaceholderText("AIza…")
+        self.api_key.setPlaceholderText("AQ.…")
         self.api_key.returnPressed.connect(self._save_key)
         row.addWidget(self.api_key, 1)
         self.show_btn = QPushButton("Show")
@@ -221,8 +237,11 @@ class SettingsPage(QWidget):
         self.show_btn.setText("Hide" if on else "Show")
 
     def _save_key(self):
+        key = clean_key(self.api_key.text(),
+                        previous=read_env_value("GEMINI_API_KEY"))
+        self.api_key.setText(key)
         try:
-            write_env_value("GEMINI_API_KEY", self.api_key.text().strip())
+            write_env_value("GEMINI_API_KEY", key)
         except Exception:
             self.save_btn.setText("Couldn't save")
             QTimer.singleShot(1600, lambda: self.save_btn.setText("Save"))

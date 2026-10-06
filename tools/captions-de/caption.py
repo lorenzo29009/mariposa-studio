@@ -52,6 +52,11 @@ TRAIL_MIN = 0.0
 # Shortest a single-line caption may stay on screen before single-line splitting
 # prefers a (readable) two-line caption instead. Matches merge_short_durations.
 MIN_PIECE_DUR = 0.6
+# The same floor when the user asked for ONE line per caption. One line at
+# speaking pace (~4 words/s) is two or three words, on screen ~0.5s; at 0.6 most
+# splits of fast speech were refused and came back on two lines, which is not
+# what was asked for. Measured on AI220: 0.4 halves the two-line fallbacks.
+MIN_PIECE_DUR_ONE_LINE = 0.4
 
 # ─── Real-screen line width model ────────────────────────────────────────────
 # A line is budgeted by *real width*, not by raw character count: narrow German
@@ -216,6 +221,13 @@ def auto_hyphenate(word: str) -> str:
     if word in FORCE_HYPHEN:
         return FORCE_HYPHEN[word]
     if "-" in word:
+        # Already hyphenated ("21-Schilddrüsennährstoffe", "90-Tage-Geldzurück-
+        # Garantie"): the packer can break at those hyphens, so only a PART still
+        # wider than a line needs one of its own. Returned whole, such a part
+        # had no break at all and the renderer split it mid-word.
+        parts = word.split("-")
+        if all(parts):
+            return "-".join(auto_hyphenate(p) for p in parts)
         return word
     for prefix in sorted(COMPOUND_PREFIXES, key=len, reverse=True):
         for cand in (prefix, prefix.lower()):
@@ -930,10 +942,13 @@ def _gemini_generate(prompt: str, retries: int = 3, timeout: int = 180):
                                 "gemini-3.1-flash-lite"]
     for i, model_id in enumerate(models):
         more = i < len(models) - 1
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}"
+        # The key in the header, as src/gemini.py sends it: an "AQ." key (all
+        # AI Studio makes since May 2026) is not accepted as a URL parameter.
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent"
         for attempt in range(1, retries + 1):
             try:
-                req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+                req = urllib.request.Request(url, data=body, headers={
+                    "Content-Type": "application/json", "x-goog-api-key": api_key})
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     payload = json.loads(resp.read().decode("utf-8"))
                 if i:
@@ -1282,7 +1297,13 @@ def caption_spans(segments: list, words: list, boundaries: list) -> list:
         start = boundaries[i]
         end = boundaries[i + 1]
         spoken_end = words[seg["end"]]["end"]
-        spans.append((start, max(start + 0.2, min(end, spoken_end + TAIL_MAX))))
+        span_end = max(start + 0.2, min(end, spoken_end + TAIL_MAX))
+        # The 0.2s floor must not reach into the next caption: two cues on
+        # screen at once is an overlap every editor flags (CapCut keeps one
+        # text track per layer and cannot hold both).
+        if i + 1 < len(segments):
+            span_end = min(span_end, max(end, start + 0.001))
+        spans.append((start, span_end))
     return spans
 
 
@@ -1399,6 +1420,26 @@ HOUSE_TERMS = {
     "es": "levotiroxina, L-tiroxina",
     "pl": "L-tyroksyna",
 }
+
+
+#: Real words a configured term is one or two letters away from, which the
+#: repairs must leave exactly as spoken. Tyrosine is an amino acid that thyroid
+#: supplements list as an ingredient; within edit distance 2 of "L-Thyroxin",
+#: the fuzzy pass rewrote "150 Milligramm L-Tyrosin" into the name of a drug.
+#: Skeletons (see _term_core), per market.
+HOUSE_KEEP = {
+    "de": {"ltyrosin", "tyrosin"},
+    "en": {"ltyrosine", "tyrosine"},
+    "fr": {"ltyrosine", "tyrosine"},
+    "it": {"ltirosina", "tirosina"},
+    "es": {"ltirosina", "tirosina"},
+    "pl": {"ltyrozyna", "tyrozyna"},
+}
+
+
+def _kept(word: str) -> bool:
+    """True if `word` is a real neighbour of a term that no repair may touch."""
+    return _term_core(word) in HOUSE_KEEP.get(ACTIVE_LANG, ())
 
 
 def _market_setting(kind: str, lang: str):
@@ -1541,7 +1582,7 @@ def apply_canonical_terms(text: str) -> str:
         m = re.match(r"^(\W*)(.*?)(\W*)$", tok, flags=re.UNICODE)
         prefix, body, suffix = m.group(1), m.group(2), m.group(3)
         core = _term_core(body)
-        if len(core) < 5:
+        if len(core) < 5 or _kept(body):
             continue
         for term, tcore in cores:
             if core == tcore:
@@ -1696,6 +1737,10 @@ def repair_terms_with_ai(segments: list, language: str = "de") -> list:
         if was in terms:
             refused += 1
             continue
+        # Nor a real word that merely sounds like a term (L-Tyrosin).
+        if any(_kept(w) for w in was.split()):
+            refused += 1
+            continue
         before = texts[i]
         after, hits = _sub_phrase(before, was, now)
         if not hits:
@@ -1734,23 +1779,60 @@ def project_terms_block() -> str:
             f"{', '.join(items)}.\n")
 
 
+def _render_flat(text: str):
+    """The caption as finalize_caption will write it, before any line break:
+    (normalized text, its single-line form). Casing, punctuation removal and
+    brand spellings all change a caption's width, so every decision about
+    whether a caption fits is taken on THIS string, never on the raw one.
+    Memoised: the splitters ask about the same pieces many times, and the
+    brand-term pass is the expensive part. Keyed on everything it reads."""
+    key = (text, ACTIVE_LANG, CASE_FIXED_BY_AI, id(LEARNED_UPPER),
+           tuple(_canonical_terms()))
+    hit = _RENDER_CACHE.get(key)
+    if hit is None:
+        normalized = apply_canonical_terms(normalize_text_preserve_breaks(text))
+        hit = (normalized, " ".join(flatten_lines(normalized).split()))
+        if len(_RENDER_CACHE) > 20000:
+            _RENDER_CACHE.clear()
+        _RENDER_CACHE[key] = hit
+    return hit
+
+
+_RENDER_CACHE: dict = {}
+
+
+def rendered_width(text: str) -> float:
+    """Width of `text` on one line, exactly as it will be written."""
+    return text_width(_render_flat(text)[1])
+
+
 def finalize_caption(text: str) -> str:
-    normalized = apply_canonical_terms(normalize_text_preserve_breaks(text))
+    """Casing, brand spellings, then the line layout — what the .srt gets."""
+    return layout_caption(_render_flat(text)[0])
+
+
+def layout_caption(text: str) -> str:
+    """The line layout alone: one line if it fits, else two at a safe break.
+
+    Split out of finalize_caption so a caller holding text that is already
+    final — Clip Cutter re-laying out a cue it cut in two, or one a person
+    edited — gets exactly this layout without its casing being redone."""
     # Collapse any model-inserted in-word compound hyphen back into the whole
     # word, WHEREVER it sits — even mid-line (e.g. "meine Schilddrüsen-werte").
     # A hyphen is only valid at the end of line 1 of a real two-line split, and
     # that split is re-derived below from whole words; it is never shown mid-line.
-    whole = join_soft_hyphens(normalized)
-    flat = " ".join(flatten_lines(normalized).split())
+    whole = join_soft_hyphens(text)
+    flat = " ".join(flatten_lines(text).split())
     if text_width(flat) <= LINE_W_MAX:
         return flat  # one line, whole words, no hyphen
     # Two lines are needed. Keep the model's own break when both halves already
     # fit a line (it reflects a semantic unit, e.g. "meine\nWassereinlagerungen");
     # otherwise re-pack by width. auto_hyphenate (width-gated) only splits a word
     # that is itself wider than a whole line, and the hyphen lands at end of line 1.
-    if "\n" in whole:
-        parts = [p.strip() for p in whole.split("\n", 1)]
-        if len(parts) == 2 and all(text_width(p) <= LINE_W_MAX for p in parts):
+    # Exactly ONE model break: with two, the "halves" would be three lines.
+    if whole.count("\n") == 1:
+        parts = [p.strip() for p in whole.split("\n")]
+        if all(parts) and all(text_width(p) <= LINE_W_MAX for p in parts):
             return fix_line_break(whole)
     return drop_midline_hyphens(fix_line_break(pack_lines(apply_auto_hyphenation(flat))))
 
@@ -1763,11 +1845,14 @@ def _flat_text(seg: dict) -> str:
 def _fits_two_lines(text: str) -> bool:
     """True if `text` lands on at most two lines that each fit the width budget.
 
-    Mirrors what finalize_caption actually writes — auto-hyphenation included, so
-    a long compound that WILL be broken across the two lines is not counted as
-    overflowing. Used both to decide whether a caption can absorb a merged orphan
-    and to decide whether it must be split (enforce_two_lines)."""
-    lines = pack_lines(apply_auto_hyphenation(text)).split("\n")
+    Asks finalize_caption itself — auto-hyphenation included, so a long compound
+    that WILL be broken across the two lines is not counted as overflowing. It
+    used to re-pack the RAW text instead, which still has its punctuation:
+    "Wassereinlagerungen," is wide enough to be hyphenated, the bare word that
+    is actually written is not, so a caption judged to fit two lines was
+    written on three. Used both to decide whether a caption can absorb a merged
+    orphan and to decide whether it must be split (enforce_two_lines)."""
+    lines = finalize_caption(text).split("\n")
     return len(lines) <= 2 and all(text_width(l) <= LINE_W_MAX for l in lines)
 
 
@@ -2449,7 +2534,7 @@ def _split_one_line(tokens: list) -> list:
     (the greedy "pack then strand the remainder" failure). A run that cannot be
     broken safely (a bound pair, or a word wider than a line) is returned whole
     and rendered on two lines by finalize_caption. Returns a list of token lists."""
-    if text_width(" ".join(tokens)) <= LINE_W_MAX or len(tokens) < 2:
+    if rendered_width(" ".join(tokens)) <= LINE_W_MAX or len(tokens) < 2:
         return [tokens]
     best = None
     for k in range(1, len(tokens)):
@@ -2457,7 +2542,7 @@ def _split_one_line(tokens: list) -> list:
                           tokens[k - 2] if k >= 2 else ""):
             continue  # can't end a line on a forward-binding word
         left = tokens[:k]
-        if text_width(" ".join(left)) > LINE_W_MAX:
+        if rendered_width(" ".join(left)) > LINE_W_MAX:
             continue  # left half must itself fit one line to make progress
         cost = abs(text_width(" ".join(left)) - text_width(" ".join(tokens[k:])))
         if best is None or cost < best[0]:
@@ -2494,63 +2579,159 @@ def _split_two_lines(tokens: list) -> list:
     return [tokens[:k]] + _split_two_lines(tokens[k:])
 
 
-def _enforce_width(segments: list, words: list, chunker, fits_whole) -> list:
-    """Split every caption `chunker` can break into narrower pieces, re-deriving
-    each piece's word-index range so timing stays correct. A piece that genuinely
-    cannot be reduced (a bound pair, or a single word wider than the budget) is
-    kept whole and laid out by finalize_caption. Shared by the one-line and the
-    two-line enforcement so both stay deterministic rather than relying on the
-    model to count characters."""
+def _safe_splits(tokens: list, fits) -> list:
+    """Every way to cut `tokens` into consecutive pieces that each pass `fits`,
+    cutting only at safe boundaries (never after a forward-binding word). Fewest
+    pieces first, then the most even widths. Bounded: a run long enough to make
+    this explode is one the balanced splitter alone has to handle."""
+    n = len(tokens)
+    if n < 2 or n > 16:
+        return []
+    found = []
+
+    def walk(i, acc):
+        if len(found) >= 400:
+            return
+        if i == n:
+            found.append(list(acc))
+            return
+        for k in range(i + 1, n + 1):
+            piece = tokens[i:k]
+            if not fits(" ".join(piece)):
+                if k - i > 1:
+                    break  # only gets wider from here
+                continue
+            if k < n and _binds_forward(tokens[k - 1], tokens[k],
+                                        tokens[k - 2] if k >= 2 else ""):
+                continue
+            acc.append(piece)
+            walk(k, acc)
+            acc.pop()
+
+    walk(0, [])
+    found = [f for f in found if len(f) >= 2]
+
+    def key(ch):
+        ws = [text_width(" ".join(c)) for c in ch]
+        return (len(ch), max(ws) - min(ws))
+    return sorted(found, key=key)
+
+
+def _place(seg: dict, chunks: list):
+    """Map token pieces onto word-index ranges ~1:1 within the caption's span,
+    strictly increasing and reserving one index per remaining piece. None when
+    the caption spans too few words to give each piece its own."""
+    s, e = seg["start"], seg["end"]
+    if len(chunks) > (e - s + 1):
+        return None
+    cuts, acc = [], 0
+    for ch in chunks:
+        cuts.append(acc)
+        acc += len(ch)
+    starts = [s]
+    for j in range(1, len(chunks)):
+        starts.append(max(starts[-1] + 1, min(s + cuts[j], e - (len(chunks) - 1 - j))))
+    if starts[-1] > e or any(starts[k] >= starts[k + 1] for k in range(len(starts) - 1)):
+        return None
+    return [{**seg, "start": starts[j],
+             "end": e if j == len(chunks) - 1 else starts[j + 1] - 1,
+             "text": " ".join(ch)} for j, ch in enumerate(chunks)]
+
+
+def _readable(pieces: list, words: list, next_start, floor: float) -> bool:
+    """True if every piece stays on screen at least `floor` seconds.
+
+    On-screen time, not spoken time: a caption is shown until the next one
+    starts (compute_boundaries), so a piece lasts from its first word to the
+    next piece's first word. Measuring the spoken span instead failed nearly
+    every split of fast speech — four words a second leaves no two-word piece
+    0.6s of its OWN audio — and the caption was kept whole, on three lines."""
+    for j, p in enumerate(pieces):
+        try:
+            t0 = words[p["start"]]["start"]
+            if j + 1 < len(pieces):
+                t1 = words[pieces[j + 1]["start"]]["start"]
+            elif next_start is not None:
+                t1 = min(words[next_start]["start"], words[p["end"]]["end"] + TAIL_MAX)
+            else:
+                t1 = words[p["end"]]["end"] + TAIL_MAX
+        except Exception:
+            continue  # unknown timing -> don't block the split
+        if t1 - t0 < floor:
+            return False
+    return True
+
+
+def _enforce_width(segments: list, words: list, candidates, fits_whole,
+                   floor: float = MIN_PIECE_DUR) -> list:
+    """Split every too-wide caption into narrower pieces, re-deriving each
+    piece's word-index range so timing stays correct. `candidates(tokens)` gives
+    the ways to cut it, best first; the first whose pieces all stay readable
+    wins. Shared by the one-line and the two-line enforcement so both stay
+    deterministic rather than relying on the model to count characters.
+
+    A caption no candidate can split readably is kept whole — unless whole means
+    more than two lines. Three lines is never the honest answer: then the best
+    two-line split is taken even with a brief piece."""
     out = []
-    for seg in segments:
+    for i, seg in enumerate(segments):
         flat = " ".join(flatten_lines(seg["text"]).split())
         tokens = flat.split()
-        s, e = seg["start"], seg["end"]
-        chunks = chunker(tokens) if len(tokens) >= 2 else [tokens]
-        # Need one distinct word index per chunk; if the caption already fits,
-        # can't be reduced, or spans fewer words than chunks, leave it whole.
-        if fits_whole(flat) or len(chunks) < 2 or len(chunks) > (e - s + 1):
-            out.append({**seg, "text": flat})
+        whole = {**seg, "text": flat}
+        if fits_whole(flat) or len(tokens) < 2:
+            out.append(whole)
             continue
-        # Map token cut points to word indices ~1:1 within [s, e], strictly
-        # increasing and reserving one index per remaining chunk so it stays valid.
-        cuts, acc = [], 0
-        for ch in chunks:
-            cuts.append(acc)
-            acc += len(ch)
-        starts = [s]
-        for j in range(1, len(chunks)):
-            st = max(starts[-1] + 1, min(s + cuts[j], e - (len(chunks) - 1 - j)))
-            starts.append(st)
-        if starts[-1] > e or any(starts[k] >= starts[k + 1] for k in range(len(starts) - 1)):
-            out.append({**seg, "text": flat})  # degenerate mapping → don't split
-            continue
-        pieces = []
-        for j, ch in enumerate(chunks):
-            en = e if j == len(chunks) - 1 else starts[j + 1] - 1
-            pieces.append({**seg, "start": starts[j], "end": en, "text": " ".join(ch)})
-        # Duration guard: a piece that flashes by too briefly to read is WORSE than
-        # one wide caption. If splitting would create such a piece, keep the caption
-        # whole (finalize lays it out as best it can).
-        def _piece_dur(p):
-            try:
-                d = words[p["end"]]["end"] - words[p["start"]]["start"]
-                return d if d > 0 else MIN_PIECE_DUR
-            except Exception:
-                return MIN_PIECE_DUR  # unknown timing → don't block the split
-        if any(_piece_dur(p) < MIN_PIECE_DUR for p in pieces):
-            out.append({**seg, "text": flat})
-            continue
-        out.extend(pieces)
+        next_start = segments[i + 1]["start"] if i + 1 < len(segments) else None
+        chosen = None
+        for chunks in candidates(tokens):
+            if len(chunks) < 2:
+                continue
+            pieces = _place(seg, chunks)
+            if pieces and _readable(pieces, words, next_start, floor):
+                chosen = pieces
+                break
+        pieces = chosen or [whole]
+        # A chosen piece can itself be too long for two lines: the balanced
+        # splitters hand back a run they find no safe cut INSIDE as one piece
+        # ("mehr Schilddrüsenhormone herstellt"), and the readability guard
+        # never looks at width. Three lines is never the honest answer, so any
+        # such piece is cut again on two-line boundaries, readable or not.
+        for p in pieces:
+            out.extend(_within_two_lines(p))
     return out
+
+
+def _within_two_lines(seg: dict) -> list:
+    """`seg`, cut into pieces that each fit two lines — at safe boundaries
+    only. A run with no safe cut at all (a forward-binding chain around a word
+    wider than a line) is the one case left whole."""
+    flat = " ".join(flatten_lines(seg["text"]).split())
+    if _fits_two_lines(flat) or len(flat.split()) < 2:
+        return [{**seg, "text": flat}]
+    two = _split_two_lines(flat.split())
+    placed = _place(seg, two) if len(two) >= 2 else None
+    if not placed:
+        return [{**seg, "text": flat}]
+    return [q for p in placed for q in _within_two_lines(p)]
+
+
+def _one_line_candidates(tokens: list) -> list:
+    """One-line splits, the balanced one first, then every other safe one; the
+    two-line split last, so a caption too fast to break into readable single
+    lines still lands on two lines, never three."""
+    fits = lambda t: rendered_width(t) <= LINE_W_MAX
+    first = _split_one_line(tokens)
+    rest = [c for c in _safe_splits(tokens, fits) if c != first]
+    return [first] + rest + [_split_two_lines(tokens)]
 
 
 def enforce_single_line(segments: list, words: list) -> list:
     """Single-line mode: split any caption wider than one line into several
-    one-line captions at safe, balanced word boundaries. A piece that genuinely
-    cannot fit one line is kept whole and rendered on two lines."""
-    return _enforce_width(segments, words, _split_one_line,
-                          lambda t: text_width(t) <= LINE_W_MAX)
+    one-line captions at safe boundaries. A caption that cannot be split into
+    readable one-liners falls back to two lines, never more."""
+    return _enforce_width(segments, words, _one_line_candidates,
+                          lambda t: rendered_width(t) <= LINE_W_MAX,
+                          MIN_PIECE_DUR_ONE_LINE)
 
 
 def enforce_two_lines(segments: list, words: list) -> list:
@@ -2560,7 +2741,8 @@ def enforce_two_lines(segments: list, words: list) -> list:
     it, so a 10-word / 59-char caption reached the packer, which had no honest way
     to lay it out — it emitted two over-wide lines and the renderer wrapped them
     into four. This is the enforcement: fix the grouping, not the packing."""
-    return _enforce_width(segments, words, _split_two_lines, _fits_two_lines)
+    return _enforce_width(segments, words, lambda t: [_split_two_lines(t)],
+                          _fits_two_lines)
 
 
 def learn_and_relabel_case(segments: list) -> list:

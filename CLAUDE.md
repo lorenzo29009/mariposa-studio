@@ -104,7 +104,7 @@ speech_clock ← script_text ← script_packer ← animator_*   (no Qt, no netwo
 | `script_packer.py` | Every cut: the DP, `ceiling()`, hook collapsing, merge/split/pin, the `overruns()` invariant, prompt/markdown output. Deterministic. |
 | `script_text.py` | The language layer: syllables, sentence splitting, seams, pronunciation map, copy guards. |
 | `speech_clock.py` | How long a line takes to say, **measured** via an offline synthesiser. Must NOT import `core` (that would drag PySide6 into the offline tests). |
-| `gemini.py` | The one Gemini HTTPS transport: `generate_text()` / `generate_json()`, TLS context, retry/backoff, and `MODEL_CHAIN` — named models tried in order, because a pin dies on retirement (404) and a `…-latest` alias dies on free-tier quota (429). No Qt. |
+| `gemini.py` | The one Gemini HTTPS transport: `generate_text()` / `generate_json()`, TLS context, retry/backoff, and `MODEL_CHAIN` — named models tried in order, because a pin dies on retirement (404) and a `…-latest` alias dies on free-tier quota (429). The key travels in the `x-goog-api-key` header, never the URL (AI Studio's `AQ.` keys, the only kind since May 2026, are not accepted there); `clean_key()` is how every key field saves a paste. No Qt. |
 | `launcher.py` | Home (`LauncherPage`, `AppIcon`, `APP_TAGLINES`/`APP_DESCS`) and the ⌘K overlay (`SpotlightOverlay`). |
 | `settings_page.py` | Settings: the key + whether it *works*, the exports folder (size, change, clean up), and two switches about leaving. `notify_if_enabled()` is the ONE gate for the notification switch — a tool that calls `core.notify` directly silently ignores the user. |
 | `first_run.py` | The one-time setup screen: the key, and the real state of ffmpeg / eSpeak / WhisperX. |

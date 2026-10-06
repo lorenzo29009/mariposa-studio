@@ -39,7 +39,8 @@ import caption_spec as CS                                   # noqa: E402
 import portable                                              # noqa: E402
 from edits import effective_plan, load_edits, project        # noqa: E402
 from plan_io import load_plan                               # noqa: E402
-from srt import align_cues_to_boundaries, load_srt, remap_cues  # noqa: E402
+from srt import (align_cues_to_boundaries, load_srt, remap_cues,  # noqa: E402
+                 split_deep_cues)
 
 CAPCUT_PROJECTS = portable.capcut_projects()
 EXTRA_BUCKETS = ["speeds", "placeholder_infos", "canvases",
@@ -578,6 +579,7 @@ def build_timeline(segs, eff, plan, edits, proj, tpl, fps, snap_ms, want_caption
                   for c in cues]
             inb = [b for b in bounds_ms if off_ms - 1 <= b <= off_ms + seg_len_ms + 1]
             tl, _al = align_cues_to_boundaries(tl, inb, snap_ms=snap_ms)
+            tl, _deep = split_deep_cues(tl)
             for c in tl:
                 st = int(c["start"] * 1000)
                 du = int((c["end"] - c["start"]) * 1000)
@@ -891,6 +893,12 @@ def main():
 
     proj = os.path.abspath(a.proj)
     plan = load_plan(os.path.join(proj, "plan.json"))
+    try:
+        import caption_tool
+        if caption_tool.available():
+            caption_tool.set_language((plan.get("config") or {}).get("lang", "de"))
+    except Exception:
+        pass                             # no tool: house_layout has no opinion either
     edits = load_edits(proj)
     eff = effective_plan(plan, edits)          # trims + dead-air cuts applied
     fps = eff["fps"]
@@ -1234,6 +1242,7 @@ def main():
                           % (seg, nsnap, nsplit))
                 cues = [{"start": c["start"] - off_ms, "end": c["end"] - off_ms,
                          "text": c["text"]} for c in tl]
+            cues, _deep = split_deep_cues(cues)
             for c in cues:
                 st = base_us + int(c["start"] * 1000)
                 du = int((c["end"] - c["start"]) * 1000)

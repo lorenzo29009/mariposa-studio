@@ -489,6 +489,96 @@ check("with nothing configured the pass is a no-op and costs no call",
 os.environ["CAPTION_BRAND"] = ""
 os.environ["CAPTION_TERMS"] = ""
 
+# ─── one line per caption, at the pace people actually speak ────────────────
+# Real word timings from a hook (~4 words/s). The readability guard measured
+# each piece's SPOKEN span, which fast speech never gives two words 0.6s of, so
+# every split was refused and the caption shipped whole — on three lines.
+cap.ACTIVE_LANG = "de"
+_fast = [("Kann", .24, .38), ("man", .40, .50), ("den", .52, .68),
+         ("Umwandler", .70, 1.19), ("auch", 1.21, 1.43), ("nehmen,", 1.47, 1.77),
+         ("wenn", 1.79, 1.93), ("man", 1.97, 2.25), ("gar", 2.27, 2.47),
+         ("keine", 2.51, 2.71), ("Schilddrüse", 2.75, 3.31), ("mehr", 3.33, 3.50),
+         ("hat?", 3.54, 3.66)]
+_fw = [{"word": w, "start": a, "end": b} for w, a, b in _fast]
+_fs = [{"start": 0, "end": 5, "text": "Kann man den Umwandler auch nehmen"},
+       {"start": 6, "end": 12, "text": "wenn man gar keine Schilddrüse mehr hat?"}]
+_one = [cap.finalize_caption(s["text"]) for s in cap.enforce_single_line(_fs, _fw)]
+_two = [cap.finalize_caption(s["text"]) for s in cap.enforce_two_lines(_fs, _fw)]
+check("1-line: fast speech is still split into one-liners",
+      sum("\n" not in c for c in _one) >= 4, True)
+check("1-line: no caption ever lands on three lines",
+      max(c.count("\n") for c in _one), 1)
+check("hybrid: no caption ever lands on three lines",
+      max(c.count("\n") for c in _two), 1)
+check("1-line: every word survives the split, in order",
+      " ".join(c.replace("\n", " ") for c in _one).lower().split(),
+      "kann man den umwandler auch nehmen wenn man gar keine schilddrüse mehr hat?".split())
+
+
+def _timed(text, per_word=0.18):
+    ws = text.split()
+    return [{"word": w, "start": i * per_word, "end": i * per_word + per_word * .9}
+            for i, w in enumerate(ws)]
+
+
+def _laid_out(text, mode, per_word=0.18):
+    cap.LINE_MODE = mode
+    ws = _timed(text, per_word)
+    fn = cap.enforce_single_line if mode == "1" else cap.enforce_two_lines
+    out = [cap.finalize_caption(s["text"])
+           for s in fn([{"start": 0, "end": len(ws) - 1, "text": text}], ws)]
+    cap.LINE_MODE = "hybrid"
+    return out
+
+
+# A balanced splitter hands back a run it finds no safe cut INSIDE as one
+# piece; that piece passed the readability guard and shipped on three lines.
+for _mode in ("1", "hybrid"):
+    _o = _laid_out("Diese Kombination hilft deiner Schilddrüse dabei, dass sie "
+                   "mehr Schilddrüsenhormone herstellt.", _mode)
+    check(f"{_mode}: a piece with no safe cut inside is still cut to two lines",
+          max(c.count("\n") for c in _o), 1)
+
+# The fit was judged on the raw text, which still has its commas:
+# "Wassereinlagerungen," is wide enough to be hyphenated, the bare word that is
+# written is not — "fits two lines" was decided on a string that never shipped.
+check("the two-line test measures the caption as written, punctuation gone",
+      cap._fits_two_lines("aus, Wassereinlagerungen, trockene Haut,"),
+      cap.finalize_caption("aus, Wassereinlagerungen, trockene Haut,").count("\n") <= 1)
+for _mode in ("1", "hybrid"):
+    _o = _laid_out("Haare fallen aus, Wassereinlagerungen, trockene Haut, "
+                   "Schlafstörungen", _mode, per_word=0.13)
+    check(f"{_mode}: a list with a long compound never lands on three lines",
+          max(c.count("\n") for c in _o), 1)
+
+# Two model line breaks are not "both halves fit": they are three lines.
+check("finalize never keeps a model layout of three lines",
+      cap.finalize_caption("ich war\ngestern\nim Laden").count("\n") <= 1, True)
+
+# An already-hyphenated word wider than a line breaks at a part, not mid-word.
+_h = cap.layout_caption("alle 21-Schilddrüsennährstoffe")
+check("an over-wide hyphenated word still fits the line budget",
+      all(cap.text_width(l) <= cap.LINE_W_MAX for l in _h.split("\n")), True)
+
+# The 0.2s floor must not reach into the next caption.
+_w3 = [{"word": "a", "start": 0.0, "end": 0.05}, {"word": "b", "start": 0.1, "end": 0.15},
+       {"word": "c", "start": 0.2, "end": 1.0}]
+_s3 = [{"start": i, "end": i, "text": t} for i, t in enumerate("abc")]
+_sp = cap.caption_spans(_s3, _w3, cap.compute_boundaries(_s3, _w3, 1.5))
+check("caption spans never overlap",
+      all(a[1] <= b[0] + 1e-9 for a, b in zip(_sp, _sp[1:])), True)
+
+# A real word one or two letters from a term is not a mishearing of it.
+_saved = {k: os.environ.pop(k, None) for k in ("CAPTION_BRAND", "CAPTION_TERMS")}
+cap.ACTIVE_LANG = "de"
+check("L-Tyrosin (an ingredient) is never rewritten into L-Thyroxin (a drug)",
+      cap.apply_canonical_terms("150 Milligramm L-Tyrosin"), "150 Milligramm L-Tyrosin")
+check("…while a real mishearing of L-Thyroxin is still repaired",
+      cap.apply_canonical_terms("mein L-Tyroxin"), "mein L-Thyroxin")
+for _k, _v in _saved.items():
+    if _v is not None:
+        os.environ[_k] = _v
+
 print("\nALL CAPTION CHECKS PASSED" if not bad
       else f"\n{bad} CAPTION CHECK(S) FAILED")
 sys.exit(1 if bad else 0)

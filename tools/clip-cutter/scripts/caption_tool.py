@@ -63,8 +63,40 @@ def pack_lines(text):
 
 
 def format_caption(text):
-    """The tool's full output formatting (pack + line-break repair)."""
-    return _load().format_caption(text)
+    """The tool's own line layout — the one caption.py writes into every .srt.
+
+    It used to call the tool's bare `format_caption` (pack only), which split
+    the text on whitespace without flattening first: a cue carrying
+    "Schilddrüsen-\nunterfunktion" came back as "Schilddrüsen- unterfunktion",
+    and nothing kept a line from ending on "den" or "eine"."""
+    m = _load()
+    layout = getattr(m, "layout_caption", None)
+    return layout(text) if layout else m.format_caption(m.flatten_lines(text))
+
+
+def flatten(text):
+    """A cue's text on one line, the tool's way: a word broken across two
+    lines ("Schilddrüsen-\nunterfunktion") is rejoined, not left as "- "."""
+    return " ".join(_load().flatten_lines(text).split())
+
+
+def two_line_pieces(text):
+    """`text` cut into consecutive pieces that each fit two lines, at the
+    tool's own safe boundaries (never after "den", "eine", a bare number...).
+    One piece when it already fits, or when no safe cut exists."""
+    m = _load()
+    flat = flatten(text)
+    if len(format_caption(flat).split("\n")) <= 2:
+        return [flat]
+    split = getattr(m, "_split_two_lines", None)
+    return [" ".join(p) for p in split(flat.split())] if split else [flat]
+
+
+def set_language(lang):
+    """The project's caption language. Compound hyphenation, soft-hyphen joins
+    and the words a line may not end on are all per language; left at the
+    default, an Italian cue cut in two was laid out by German rules."""
+    _load().ACTIVE_LANG = lang or "de"
 
 
 def fits(text):

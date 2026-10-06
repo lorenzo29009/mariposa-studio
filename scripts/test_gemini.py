@@ -67,11 +67,13 @@ class FakeTransport:
         self.plan = plan
         self.body = body
         self.calls: list[str] = []
+        self.requests: list = []
         self.slept = 0.0
 
     def urlopen(self, req, timeout=None, context=None):
         model = req.full_url.split("/models/")[1].split(":")[0]
         self.calls.append(model)
+        self.requests.append(req)
         outcome = self.plan.get(model, 200)
         if outcome != 200:
             raise http_error(outcome, self.body)
@@ -96,7 +98,7 @@ class _Resp:
         return False
 
 
-def run(plan: dict, body: str = "", model: str = None, **kw):
+def run(plan: dict, body: str = "", model: str = None, key: str = "KEY", **kw):
     """Call generate_json through a fake transport; return (result, transport)."""
     fake = FakeTransport(plan, body)
     real_open, real_sleep = gemini.urllib.request.urlopen, gemini.time.sleep
@@ -104,7 +106,7 @@ def run(plan: dict, body: str = "", model: str = None, **kw):
     gemini.time.sleep = fake.sleep
     gemini._WORKING_MODEL = None
     try:
-        out = gemini.generate_json("KEY", "p", SCHEMA,
+        out = gemini.generate_json(key, "p", SCHEMA,
                                    model=model or gemini.DEFAULT_MODEL, **kw)
         return out, fake, None
     except Exception as e:
@@ -192,6 +194,51 @@ def main():
     finally:
         gemini._WORKING_MODEL = None
 
+    print("\nthe key travels in the header, never the URL")
+    out, t, err = run({})
+    req = t.requests[0]
+    check("no key in the URL", "key=" not in req.full_url, req.full_url)
+    check("x-goog-api-key carries it", req.get_header("X-goog-api-key") == "KEY",
+          str(req.header_items()))
+
+    print("\na key Google refuses is a sentence, not JSON, and not a chain walk")
+    BAD_KEY = ('{"error": {"code": 400, "message": "API key not valid. Please pass '
+               'a valid API key.", "status": "INVALID_ARGUMENT", "details": '
+               '[{"reason": "API_KEY_INVALID"}]}}')
+    _, t, err = run({first: 400}, BAD_KEY)
+    msg = str(err)
+    check("only the first model was asked", t.calls == [first], str(t.calls))
+    check("points at Settings", "Settings" in msg, msg)
+    check("is not raw JSON", "INVALID_ARGUMENT" not in msg, msg)
+    AQ = "AQ." + "Ab8RN6" + "x" * 44
+    _, t, err = run({first: 401}, '{"error": {"code": 401, "status": '
+                    '"UNAUTHENTICATED"}}', key=AQ + AQ)
+    check("an AQ. key's 401 gets the same treatment", "Settings" in str(err), str(err))
+    check("two keys run together are named as such",
+          "two keys run together" in str(err), str(err))
+
+    print("\na pasted key comes out as one key")
+    AIZA = "AIza" + "Sy" + "b" * 33
+    check("AIza is 39 characters", len(AIZA) == 39)
+    check("whitespace and quotes go", gemini.clean_key(' "%s"\n' % AQ) == AQ)
+    check("an .env line is reduced to its key",
+          gemini.clean_key("GEMINI_API_KEY=" + AQ) == AQ)
+    check("old + new keeps the new one",
+          gemini.clean_key(AIZA + AQ, previous=AIZA) == AQ)
+    check("new + old keeps the new one too",
+          gemini.clean_key(AQ + AIZA, previous=AIZA) == AQ)
+    AQ2 = "AQ." + "Zz" * 25
+    check("two AQ. keys glued together are two",
+          gemini.key_tokens(AQ + AQ2) == [AQ, AQ2], str(gemini.key_tokens(AQ + AQ2)))
+    check("saving the saved key again keeps it",
+          gemini.clean_key(AQ, previous=AQ) == AQ)
+    check("an unknown shape is saved as typed",
+          gemini.clean_key("  sk-something-else ") == "sk-something-else")
+    check("the report can tell the cases apart",
+          (gemini.key_shape(AQ), gemini.key_shape(AIZA),
+           gemini.key_shape(AIZA + AQ)) ==
+          ("AQ. auth key", "AIza key", "2 keys run together"))
+
     print("\nthe captioner, which has its own copy of the transport")
     cap = (os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "tools", "captions-de", "caption.py"))
@@ -205,6 +252,9 @@ def main():
           "chain: %s" % (gemini.MODEL_CHAIN,))
     check("...and falls through on 404/429",
           "404, 429" in csrc or "(404, 429)" in csrc)
+    check("...and sends the key in the header",
+          "x-goog-api-key" in csrc and "?key=" not in csrc,
+          "an AQ. key is not accepted as a ?key= parameter")
 
     print()
     if FAILURES:

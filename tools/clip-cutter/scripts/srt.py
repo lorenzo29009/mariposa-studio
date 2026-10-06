@@ -242,17 +242,33 @@ def align_cues_to_boundaries(cues, bounds_ms, words=None, snap_ms=SNAP_MS,
     cues = [dict(c) for c in sorted(cues, key=lambda c: c["start"])]
 
     # ---- pass 1: snap near edges onto the cut -----------------------------
-    for c in cues:
+    # A snap may only move an edge through silence or onto its neighbour's
+    # matching edge — never across the neighbour itself. Unguarded, a segment's
+    # second caption snapped its start back onto the segment's own first cut
+    # (t=0) and buried the first one: a hook that opens on "Ja" lost it.
+    for i, c in enumerate(cues):
+        prev = cues[i - 1] if i else None
+        nxt = cues[i + 1] if i + 1 < len(cues) else None
         for key in ("start", "end"):
             near = [b for b in bounds if abs(c[key] - b) <= snap_ms]
             if not near:
                 continue
             b = min(near, key=lambda x: abs(c[key] - x))
-            if c[key] != b:
-                other = c["end"] if key == "start" else c["start"]
-                if abs(b - other) >= min_cue_ms:
-                    log.append(("snap", key, c[key], b))
-                    c[key] = b
+            if c[key] == b:
+                continue
+            other = c["end"] if key == "start" else c["start"]
+            if abs(b - other) < min_cue_ms:
+                continue
+            if key == "start" and prev and b < prev["end"] and b - prev["start"] < min_cue_ms:
+                continue             # would leave the previous cue no time at all
+            if key == "start" and nxt and b > nxt["start"]:
+                continue             # would jump past the next cue
+            if key == "end" and nxt and b > nxt["start"] and nxt["end"] - b < min_cue_ms:
+                continue             # would leave the next cue no time at all
+            if key == "end" and prev and b < prev["end"]:
+                continue             # would end before the previous cue does
+            log.append(("snap", key, c[key], b))
+            c[key] = b
 
     # ---- pass 2: split cues that still genuinely span a cut ---------------
     for c in cues:
@@ -270,7 +286,22 @@ def align_cues_to_boundaries(cues, bounds_ms, words=None, snap_ms=SNAP_MS,
             pieces.append(left)
             cur = right
         pieces.append(cur)
-        pieces = [p for p in pieces if p["end"] - p["start"] >= min_cue_ms and p["text"].strip()]
+        # A piece too brief to show hands its words to its neighbour; dropping
+        # it would delete them from the edit.
+        kept = []
+        for p in pieces:
+            if not p["text"].strip():
+                continue
+            if kept and p["end"] - p["start"] < min_cue_ms:
+                kept[-1]["end"] = p["end"]
+                kept[-1]["text"] = rewrap(_flat(kept[-1]["text"]) + " " + _flat(p["text"]))
+            elif kept and kept[-1]["end"] - kept[-1]["start"] < min_cue_ms:
+                p["start"] = kept[-1]["start"]
+                p["text"] = rewrap(_flat(kept[-1]["text"]) + " " + _flat(p["text"]))
+                kept[-1] = p
+            else:
+                kept.append(p)
+        pieces = kept
         if len(pieces) > 1:
             log.append(("split", c["start"], [p["text"] for p in pieces]))
             out.extend(pieces)
@@ -281,12 +312,69 @@ def align_cues_to_boundaries(cues, bounds_ms, words=None, snap_ms=SNAP_MS,
     for i in range(len(out) - 1):
         if out[i]["end"] > out[i + 1]["start"]:
             out[i]["end"] = out[i + 1]["start"]
-    return [c for c in out if c["end"] > c["start"]], log
+    # Every word stays in the edit: a cue squeezed to nothing joins the next.
+    res = []
+    for c in out:
+        if res and res[-1]["end"] <= res[-1]["start"]:
+            gone = res.pop()
+            c = dict(c, text=rewrap(_flat(gone["text"]) + " " + _flat(c["text"])))
+        res.append(c)
+    if len(res) > 1 and res[-1]["end"] <= res[-1]["start"]:
+        gone = res.pop()
+        res[-1]["text"] = rewrap(_flat(res[-1]["text"]) + " " + _flat(gone["text"]))
+    return [c for c in res if c["end"] > c["start"]], log
+
+
+def split_deep_cues(cues):
+    """No cue leaves here on more than two lines.
+
+    The captions tool keeps every caption it writes within two lines, but Clip
+    Cutter keeps the .srt it already has — so a caption written by an older
+    tool, or edited by hand, reached CapCut on three. Such a cue is cut into
+    consecutive cues at the tool's own safe word boundaries, its time shared
+    out by the width of each piece (there are no word timings at this stage).
+    Returns (new_cues, log)."""
+    out, log = [], []
+    try:
+        import caption_tool
+        if not caption_tool.available():
+            return [dict(c) for c in cues], log
+    except Exception:
+        return [dict(c) for c in cues], log
+    for c in cues:
+        if len(rewrap(c["text"]).split("\n")) <= 2:
+            out.append(dict(c))
+            continue
+        pieces = caption_tool.two_line_pieces(c["text"])
+        if len(pieces) < 2:
+            out.append(dict(c))
+            continue
+        widths = [max(1.0, caption_tool.text_width(p)) for p in pieces]
+        total, t = sum(widths), c["start"]
+        for i, (p, w) in enumerate(zip(pieces, widths)):
+            end = c["end"] if i == len(pieces) - 1 else t + (c["end"] - c["start"]) * w / total
+            out.append({"start": t, "end": end, "text": rewrap(p)})
+            t = end
+        log.append((c["text"], pieces))
+    return out, log
+
+
+def _flat(text):
+    """A cue's text on one line. Through the captions tool when it is there: a
+    bare split() leaves "Schilddrüsen-\nunterfunktion" as "Schilddrüsen-
+    unterfunktion", and that stray hyphen then shipped in the middle of a line."""
+    try:
+        import caption_tool
+        if caption_tool.available():
+            return caption_tool.flatten(text)
+    except Exception:
+        pass
+    return " ".join(re.sub(r"-[ \t]*\n[ \t]*", "-", text).split())
 
 
 def _split_cue_at(cue, at_ms, words):
     """Break one cue at `at_ms`, dividing its text on a word boundary."""
-    flat = " ".join(cue["text"].split())
+    flat = _flat(cue["text"])
     toks = flat.split(" ")
     if len(toks) < 2:
         return None, cue

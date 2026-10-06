@@ -59,6 +59,18 @@ for label, raw in ROUTES.items():
     check("redacted from %s" % label, KEY not in clean and "gho_ABCDEFGH" not in clean,
           clean[:70])
 
+# The shape AI Studio has made since May 2026, and the header it travels in.
+AQ_KEY = "AQ.Ab8RN6FAKEKEYFORTESTSabcdefghijklmnopqrstuvwxyz12"
+AQ_ROUTES = {
+    "a bare AQ. key": AQ_KEY,
+    "an AQ. key in a URL": f"https://x/v1beta/models/y:generateContent?key={AQ_KEY}",
+    "the header it is sent in": f"x-goog-api-key: {AQ_KEY}",
+    "a printed headers dict": f"{{'Content-type': 'application/json', 'X-goog-api-key': '{AQ_KEY}'}}",
+}
+for label, raw in AQ_ROUTES.items():
+    clean = d.redact(raw)
+    check("redacted from %s" % label, "FAKEKEYFORTESTS" not in clean, clean[:70])
+
 print("\nredaction does not destroy the useful parts")
 u = d.redact("https://generativelanguage.googleapis.com/v1beta/models/"
              "gemini-3.5-flash:generateContent?key=" + KEY)

@@ -80,10 +80,10 @@ Mariposa Studio — Design System (single source of truth).
 
 `load_fonts`:46 · `tint`:68 · `apply_shadow`:255 · `svg_icon`:293 · `svg_pixmap`:298 · `app_accent`:303 · `primary_button_style`:309 · `brand_pixmap`:318
 
-### `src/diagnostics.py` — 680 lines
+### `src/diagnostics.py` — 690 lines
 One error report, complete enough to fix a bug from — and safe to paste.
 
-`redact`:85 · `note_log`:103 · `note_error`:110 · `last_error`:122 · `note_job`:126 · `note_job_finished`:154 · `report`:346 · `save_report`:445 · `save_bundle`:457 · `share_report`:499 · `shared_line`:528 · `start_log`:617 · `install_hooks`:642
+`redact`:89 · `note_log`:107 · `note_error`:114 · `last_error`:126 · `note_job`:130 · `note_job_finished`:158 · `report`:356 · `save_report`:455 · `save_bundle`:467 · `share_report`:509 · `shared_line`:538 · `start_log`:627 · `install_hooks`:652
 
 ### `src/extract_frame_page.py` — 367 lines
 Extract Frame: pull the last, first, random or every-N-seconds frame (OpenCV).
@@ -95,20 +95,20 @@ Turning a stack trace into a sentence and a button.
 
 `Failure`:26 · `classify`:173 · `last_error_line`:183 · `describe`:200
 
-### `src/first_run.py` — 334 lines
+### `src/first_run.py` — 337 lines
 First run — one thing to paste in, and a look at what installs itself.
 
-`should_show`:43 · `mark_done`:54 · `run_installer`:93 · `run_whisperx_installer`:105 · `FirstRunPage`:148
+`should_show`:44 · `mark_done`:55 · `run_installer`:94 · `run_whisperx_installer`:106 · `FirstRunPage`:149
 
 ### `src/flow_cropper_page.py` — 546 lines
 Flow Cropper: batch 9:16 -> 4:5 crops via ffmpeg, named from the briefing.
 
 `FlowCropperPage`:176 · `FlowCropperPage.build_form`:187 · `FlowCropperPage.extra_action_buttons`:330 · `FlowCropperPage.ad_format_value`:386 · `FlowCropperPage.validate`:413 · `FlowCropperPage.on_output_line`:437 · `FlowCropperPage.build_command`:444 · `FlowCropperPage.after_finished`:466 · `FlowCropperPage.can_fix`:511 · `FlowCropperPage.apply_fix`:514
 
-### `src/gemini.py` — 311 lines
+### `src/gemini.py` — 390 lines
 Gemini over plain HTTPS — the one transport the app uses.
 
-`ssl_context`:67 · `GeminiError`:124 · `models_to_try`:143 · `generate_text`:263 · `generate_json`:282
+`key_tokens`:76 · `clean_key`:86 · `key_shape`:108 · `ssl_context`:126 · `GeminiError`:183 · `models_to_try`:202 · `generate_text`:342 · `generate_json`:361
 
 ### `src/launcher.py` — 514 lines
 The shell: the home grid of tools and the ⌘K overlay.
@@ -135,10 +135,10 @@ What this launch has made — held in memory, and only in memory.
 
 `Artefact`:29 · `Artefact.is_dir`:37 · `record`:49 · `items`:59 · `clear`:67 · `note_gemini`:74 · `gemini_note`:79 · `ago`:87
 
-### `src/settings_page.py` — 530 lines
+### `src/settings_page.py` — 549 lines
 Settings — the few things that are the user's to set, and nothing else.
 
-`pref`:50 · `set_pref`:57 · `notify_if_enabled`:61 · `folder_size`:74 · `human_size`:95 · `stale_entries`:102 · `SettingsPage`:120
+`pref`:51 · `set_pref`:58 · `notify_if_enabled`:62 · `folder_size`:75 · `human_size`:96 · `stale_entries`:103 · `SettingsPage`:136
 
 ### `src/speech_clock.py` — 455 lines
 How long a line takes to say — **measured**, not estimated.
@@ -202,7 +202,7 @@ Headless smoke test: construct and show MainWindow offscreen, then quit.
 
 _No public symbols._
 
-### `scripts/test_captions.py` — 494 lines
+### `scripts/test_captions.py` — 584 lines
 Offline checks for the captions tool's language layer (no Qt, no WhisperX).
 
 `check`:27 · `moved`:35 · `repaired_es`:335 · `repaired`:435
@@ -217,7 +217,7 @@ Offline checks for speech_clock — no Qt, no network, no API key.
 
 `check`:33
 
-### `scripts/test_diagnostics.py` — 218 lines
+### `scripts/test_diagnostics.py` — 230 lines
 Is the error report complete — and is it safe to paste?
 
 `check`:41
@@ -242,10 +242,10 @@ Assert the stylesheet gets the type it asks for, on THIS machine.
 
 `check`:45
 
-### `scripts/test_gemini.py` — 218 lines
+### `scripts/test_gemini.py` — 268 lines
 Offline checks for `src/gemini.py`'s model chain and its error sentences.
 
-`check`:36 · `http_error`:44 · `FakeTransport`:63 · `FakeTransport.urlopen`:72 · `FakeTransport.sleep`:81 · `run`:99 · `main`:118
+`check`:36 · `http_error`:44 · `FakeTransport`:63 · `FakeTransport.urlopen`:73 · `FakeTransport.sleep`:83 · `run`:101 · `main`:120
 
 ### `scripts/test_packer.py` — 824 lines
 Offline checks for script_packer — no Qt, no network, no API key.
@@ -284,10 +284,10 @@ Upsert a KEY=VALUE into tools/captions-de/.env, preserving every other line.
 
 ## Bundled tool scripts (`tools/`) — separate processes, not imported
 
-### `tools/captions-de/caption.py` — 2810 lines
+### `tools/captions-de/caption.py` — 2992 lines
 Generate TikTok-style captions (SRT) from a video file. German is the default; English, Polish, French, Italian and Spanish (as spoken in Spain) are selected wi
 
-`text_width`:87 · `auto_hyphenate`:207 · `apply_auto_hyphenation`:227 · `join_soft_hyphens`:247 · `flatten_lines`:265 · `drop_midline_hyphens`:285 · `normalize_apostrophes`:305 · `strip_punct`:309 · `clean_for_output`:315 · `normalize_case`:350 · `insert_compound_hyphens`:364 · `tokenize_for_packing`:372 · `pack_lines`:388 · `format_caption`:439 · `fmt_time`:443 · `get_video_duration`:453 · `run_whisperx`:479 · `find_gaps`:564 · `repair_gaps`:592 · `load_words`:709 · `build_generic_prompt`:852 · `segment_with_ai`:962 · `review_grouping`:1034 · `segment_heuristic`:1224 · `compute_boundaries`:1255 · `caption_spans`:1277 · `fix_line_break`:1308 · `normalize_text_preserve_breaks`:1364 · `apply_canonical_terms`:1511 · `repair_terms_with_ai`:1642 · `project_terms_block`:1723 · `finalize_caption`:1737 · `move_trailing_binders`:2113 · `split_emphasis_repeats`:2149 · `merge_orphans`:2200 · `merge_split_numbers`:2319 · `merge_short_durations`:2346 · `enforce_single_line`:2548 · `enforce_two_lines`:2556 · `learn_and_relabel_case`:2566 · `recase_with_ai`:2644 · `write_srt`:2683 · `main`:2692
+`text_width`:92 · `auto_hyphenate`:212 · `apply_auto_hyphenation`:239 · `join_soft_hyphens`:259 · `flatten_lines`:277 · `drop_midline_hyphens`:297 · `normalize_apostrophes`:317 · `strip_punct`:321 · `clean_for_output`:327 · `normalize_case`:362 · `insert_compound_hyphens`:376 · `tokenize_for_packing`:384 · `pack_lines`:400 · `format_caption`:451 · `fmt_time`:455 · `get_video_duration`:465 · `run_whisperx`:491 · `find_gaps`:576 · `repair_gaps`:604 · `load_words`:721 · `build_generic_prompt`:864 · `segment_with_ai`:977 · `review_grouping`:1049 · `segment_heuristic`:1239 · `compute_boundaries`:1270 · `caption_spans`:1292 · `fix_line_break`:1329 · `normalize_text_preserve_breaks`:1385 · `apply_canonical_terms`:1552 · `repair_terms_with_ai`:1683 · `project_terms_block`:1768 · `rendered_width`:1804 · `finalize_caption`:1809 · `layout_caption`:1814 · `move_trailing_binders`:2198 · `split_emphasis_repeats`:2234 · `merge_orphans`:2285 · `merge_split_numbers`:2404 · `merge_short_durations`:2431 · `enforce_single_line`:2728 · `enforce_two_lines`:2737 · `learn_and_relabel_case`:2748 · `recase_with_ai`:2826 · `write_srt`:2865 · `main`:2874
 
 ### `tools/captions-de/caption_qa.py` — 380 lines
 Gemini-based caption QA pass — finished captions vs the briefing.
@@ -329,10 +329,10 @@ The caption look, as numbers. MUST mirror template/src/caption-style.ts.
 
 `spec_dict`:78
 
-### `tools/clip-cutter/scripts/caption_tool.py` — 78 lines
+### `tools/clip-cutter/scripts/caption_tool.py` — 110 lines
 Bridge to the Mariposa captions tool's OWN line-layout functions.
 
-`available`:43 · `text_width`:51 · `line_w_max`:55 · `pack_lines`:59 · `format_caption`:65 · `fits`:70 · `widest`:76
+`available`:43 · `text_width`:51 · `line_w_max`:55 · `pack_lines`:59 · `format_caption`:65 · `flatten`:77 · `two_line_pieces`:83 · `set_language`:95 · `fits`:102 · `widest`:108
 
 ### `tools/clip-cutter/scripts/check_font.py` — 20 lines
 Verify the vendored caption font is usable, and print the derived ASS numbers.
@@ -369,10 +369,10 @@ Split a hand-made CapCut project into one standalone project per compound clip.
 
 `project_dir`:52 · `compound_label`:73 · `placeholder_names`:89 · `media_of`:108 · `place_and_rewrite`:118 · `meta_entry`:167 · `cover_source`:182 · `write_solo`:197 · `explode`:234 · `main`:283
 
-### `tools/clip-cutter/scripts/export_capcut.py` — 1360 lines
+### `tools/clip-cutter/scripts/export_capcut.py` — 1369 lines
 Export a caption-ugc edit as a CapCut project, for manual revision by an editor.
 
-`gid`:49 · `us`:53 · `newest_template`:60 · `place_media`:112 · `describe_media`:141 · `make_cover`:152 · `cover_source`:177 · `as_shot`:204 · `pick_video_template`:234 · `pick_text_template`:261 · `template_token`:291 · `clone_extras`:322 · `build_text_content`:341 · `make_caption`:359 · `house_layout`:396 · `check_caption_widths`:421 · `make_headline`:458 · `wrap_headline`:484 · `build_timeline`:501 · `make_compound`:610 · `collect_media`:667 · `write_project`:687 · `meta_path`:744 · `reclaim`:763 · `register`:791 · `main`:845
+`gid`:50 · `us`:54 · `newest_template`:61 · `place_media`:113 · `describe_media`:142 · `make_cover`:153 · `cover_source`:178 · `as_shot`:205 · `pick_video_template`:235 · `pick_text_template`:262 · `template_token`:292 · `clone_extras`:323 · `build_text_content`:342 · `make_caption`:360 · `house_layout`:397 · `check_caption_widths`:422 · `make_headline`:459 · `wrap_headline`:485 · `build_timeline`:502 · `make_compound`:612 · `collect_media`:669 · `write_project`:689 · `meta_path`:746 · `reclaim`:765 · `register`:793 · `main`:847
 
 ### `tools/clip-cutter/scripts/fix.py` — 312 lines
 fix.py — the fast correction loop. One short command per fix, then `build.py`.
@@ -429,7 +429,7 @@ One-command entry point: scaffold a project if needed, then hand off to build.py
 
 `sh`:31 · `scaffold`:36 · `main`:83
 
-### `tools/clip-cutter/scripts/selftest.py` — 219 lines
+### `tools/clip-cutter/scripts/selftest.py` — 247 lines
 Fast, read-only assertions against a built fixture. No renders, no mutation.
 
 `check`:25
@@ -439,10 +439,10 @@ Cut a strip export back into the compounds it was built from.
 
 `run`:38 · `probe`:43 · `check`:66 · `cut_all`:81 · `main`:129
 
-### `tools/clip-cutter/scripts/srt.py` — 304 lines
+### `tools/clip-cutter/scripts/srt.py` — 392 lines
 SRT parsing / serialising / retiming — the one implementation.
 
-`parse_srt`:18 · `load_srt`:35 · `fmt_ms`:40 · `dump_srt`:48 · `remap_cues`:55 · `rewrap`:90 · `partially_cut`:126 · `split_wide_cues`:151 · `align_cues_to_boundaries`:224
+`parse_srt`:18 · `load_srt`:35 · `fmt_ms`:40 · `dump_srt`:48 · `remap_cues`:55 · `rewrap`:90 · `partially_cut`:126 · `split_wide_cues`:151 · `align_cues_to_boundaries`:224 · `split_deep_cues`:328
 
 ### `tools/clip-cutter/scripts/srt2ass.py` — 204 lines
 SRT -> ASS, reproducing template/src/caption-style.ts exactly.

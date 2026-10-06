@@ -82,6 +82,34 @@ check("no cue bridges a cut after alignment",
            if c["start"] < b - 1 and c["end"] > b + 1])
 check("SNAP_MS sits in the measured gap (390 < x < 577)", 390 < SNAP_MS < 577)
 
+# A segment starts at a cut, so its second caption's start was within SNAP_MS of
+# t=0 whenever the first was short — and snapping it there buried the first.
+_al, _ = align_cues_to_boundaries(
+    [{"start": 0, "end": 300, "text": "Ja"},
+     {"start": 300, "end": 2000, "text": "vor allem dann"}], [0.0, 2000.0])
+check("a snap never swallows the caption before it",
+      " ".join(c["text"] for c in _al).split() == ["Ja", "vor", "allem", "dann"],
+      " | ".join(c["text"] for c in _al))
+# Splitting a cue at a cut flattened "Schilddrüsen-\nunterfunktion" with a bare
+# split(), and "Schilddrüsen- unterfunktion" went on screen.
+_al, _ = align_cues_to_boundaries(
+    [{"start": 0, "end": 3000,
+      "text": "dass du eine Schilddrüsen-\nunterfunktion bekommst"}], [0.0, 1500.0, 3000.0])
+check("a cue split at a cut keeps a broken compound whole",
+      _al and not any("- " in l for c in _al for l in c["text"].split("\n")),
+      " | ".join(c["text"].replace("\n", " / ") for c in _al))
+
+# The .srt Clip Cutter keeps can predate the captions tool's two-line rule.
+from srt import split_deep_cues                                     # noqa: E402
+_deep, _ = split_deep_cues([{"start": 0, "end": 3000,
+                             "text": "Kann man den\nUmwandler auch\nnehmen"}])
+check("no cue reaches CapCut on three lines",
+      all(len(rewrap(c["text"]).split("\n")) <= 2 for c in _deep)
+      and " ".join(" ".join(c["text"].split()) for c in _deep)
+      == "Kann man den Umwandler auch nehmen"
+      and _deep[0]["start"] == 0 and _deep[-1]["end"] == 3000,
+      " | ".join(c["text"].replace("\n", " / ") for c in _deep))
+
 
 # ------------------------------------------------------- dead-air detector
 from tighten_gaps import WORD_TRUST_S, load_words, propose_cuts       # noqa: E402

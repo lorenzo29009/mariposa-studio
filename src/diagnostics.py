@@ -69,12 +69,16 @@ _job: dict = {}
 # --- redaction -------------------------------------------------------------
 
 #: Every shape a secret takes on its way into this file. Gemini keys start
-#: AIza; the transport puts one in the URL, so a failed request prints it in
+#: AIza, or AQ. for any made since May 2026. The app sends one in a header now,
+#: but an older build put it in the URL, so a failed request printed it in
 #: full. The env-assignment form catches a key echoed from the .env, and the
 #: generic token shapes catch anything else that wanders in.
 _SECRETS = [
     (re.compile(r"AIza[0-9A-Za-z_\-]{10,}"), "AIza…REDACTED"),
+    (re.compile(r"AQ\.[0-9A-Za-z_\-]{10,}"), "AQ.…REDACTED"),
     (re.compile(r"(?i)([?&]key=)[^&\s\"']+"), r"\1REDACTED"),
+    (re.compile(r"(?i)(x-goog-api-key['\"]?\s*[=:]\s*['\"]?)[^\s\"',}]+"),
+     r"\1REDACTED"),
     (re.compile(r"(?i)\b([A-Z_]*(?:API_?KEY|TOKEN|SECRET|PASSWORD)[A-Z_]*\s*[=:]\s*)"
                 r"[^\s\"',}]+"), r"\1REDACTED"),
     (re.compile(r"\b(gh[pousr]_|sk-|xox[abps]-)[0-9A-Za-z_\-]{10,}"), r"\1REDACTED"),
@@ -201,10 +205,16 @@ def _tool_facts() -> list[tuple[str, str]]:
         facts.append(("CapCut drafts", f"could not be resolved: {e}"))
 
     key = read_env_value("GEMINI_API_KEY").strip()
-    facts.append(("Gemini key", f"set, {len(key)} chars, ends …{key[-4:]}"
-                  if key else "NOT SET"))
     try:
         import gemini
+    except Exception:
+        gemini = None
+    # The shape, not the key: "2 keys run together" is the answer a length
+    # alone made the maintainer guess at.
+    shape = f", {gemini.key_shape(key)}" if gemini else ""
+    facts.append(("Gemini key", f"set, {len(key)} chars, ends …{key[-4:]}{shape}"
+                  if key else "NOT SET"))
+    try:
         pin = read_env_value("GEMINI_MODEL").strip()
         facts.append(("Gemini models", "pinned to %s" % pin if pin
                       else "chain %s" % (", ".join(gemini.MODEL_CHAIN))))

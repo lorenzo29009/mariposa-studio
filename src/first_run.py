@@ -34,6 +34,7 @@ from core import (
     APP_DIR, CAPTIONS_DIR, EXPORTS_DIR, IS_MAC, IS_WINDOWS, read_env_value,
     studio_python, write_env_value,
 )
+from gemini import clean_key
 from widgets import _panel
 
 #: Written once "Start using it" is pressed, so this screen never comes back.
@@ -238,7 +239,7 @@ class FirstRunPage(QWidget):
         # there is no key, so there is nothing to prefill — and a stored secret
         # rendered in the clear is not something to leave to that guarantee.
         self.key_field = QLineEdit()
-        self.key_field.setPlaceholderText("AIza…")
+        self.key_field.setPlaceholderText("AQ.…")
         self.key_field.returnPressed.connect(self._save)
         row.addWidget(self.key_field, 1)
         paste = QPushButton("Paste")
@@ -262,12 +263,14 @@ class FirstRunPage(QWidget):
 
     def _paste(self):
         from PySide6.QtGui import QGuiApplication
-        text = (QGuiApplication.clipboard().text() or "").strip()
+        text = clean_key(QGuiApplication.clipboard().text() or "")
         if text:
             self.key_field.setText(text)
 
     def _save(self):
-        write_env_value("GEMINI_API_KEY", self.key_field.text().strip())
+        key = clean_key(self.key_field.text())
+        self.key_field.setText(key)
+        write_env_value("GEMINI_API_KEY", key)
         self.save_btn.setText("Saved")
         QTimer.singleShot(1400, lambda: self.save_btn.setText("Save"))
         self._refresh()
