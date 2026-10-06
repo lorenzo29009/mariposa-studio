@@ -145,6 +145,44 @@ def main():
     check("tried all three", t.calls == [first, second, third], str(t.calls))
     check("still got an answer", out == {"ok": True}, str(err))
 
+    print("\n503 'high demand' on the first model -> one short retry, then the next")
+    BUSY = ('{"error": {"code": 503, "message": "This model is currently '
+            'experiencing high demand. Spikes in demand are usually temporary. '
+            'Please try again later.", "status": "UNAVAILABLE"}}')
+    out, t, err = run({first: 503}, BUSY)
+    check("fell through to the next model", t.calls == [first, first, second],
+          str(t.calls))
+    check("still got an answer", out == {"ok": True}, str(err))
+    check("waited once, briefly", t.slept == gemini.BACKOFF_S[0],
+          "slept %ss" % t.slept)
+
+    print("\n503 everywhere -> the last model gets the full backoff, then a sentence")
+    out, t, err = run({first: 503, second: 503, third: 503}, BUSY)
+    check("every model was tried", [m for m in gemini.MODEL_CHAIN if m in t.calls]
+          == list(gemini.MODEL_CHAIN), str(t.calls))
+    check("bounded wait", t.slept == 2 * gemini.BACKOFF_S[0] + sum(gemini.BACKOFF_S),
+          "slept %ss" % t.slept)
+    check("503 carries its code", getattr(err, "code", 0) == 503, repr(err))
+    check("says it's Google's side and temporary",
+          "overloaded" in str(err) and "few minutes" in str(err), str(err))
+    check("fits the Animator's status line whole",
+          len("Gemini failed — " + str(err)) <= 160, str(len(str(err))))
+    check("is not raw JSON", "UNAVAILABLE" not in str(err), str(err))
+
+    print("\na 503 on Camera Prompts (no retries) also falls through, without waiting")
+    fake = FakeTransport({first: 503}, BUSY)
+    real_open, real_sleep = gemini.urllib.request.urlopen, gemini.time.sleep
+    gemini.urllib.request.urlopen, gemini.time.sleep = fake.urlopen, fake.sleep
+    gemini._WORKING_MODEL = None
+    try:
+        text = gemini.generate_text("KEY", "p")
+    finally:
+        gemini.urllib.request.urlopen, gemini.time.sleep = real_open, real_sleep
+        gemini._WORKING_MODEL = None
+    check("answered from the next model", fake.calls == [first, second] and text,
+          str(fake.calls))
+    check("no sleep", fake.slept == 0, "slept %ss" % fake.slept)
+
     print("\n400 is about the request, not the model -> fail at once")
     out, t, err = run({first: 400, second: 400, third: 400}, "bad argument")
     check("only the first model was asked", t.calls == [first], str(t.calls))

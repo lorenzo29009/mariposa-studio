@@ -105,10 +105,10 @@ Flow Cropper: batch 9:16 -> 4:5 crops via ffmpeg, named from the briefing.
 
 `FlowCropperPage`:176 · `FlowCropperPage.build_form`:187 · `FlowCropperPage.extra_action_buttons`:330 · `FlowCropperPage.ad_format_value`:386 · `FlowCropperPage.validate`:413 · `FlowCropperPage.on_output_line`:437 · `FlowCropperPage.build_command`:444 · `FlowCropperPage.after_finished`:466 · `FlowCropperPage.can_fix`:511 · `FlowCropperPage.apply_fix`:514
 
-### `src/gemini.py` — 390 lines
+### `src/gemini.py` — 409 lines
 Gemini over plain HTTPS — the one transport the app uses.
 
-`key_tokens`:76 · `clean_key`:86 · `key_shape`:108 · `ssl_context`:126 · `GeminiError`:183 · `models_to_try`:202 · `generate_text`:342 · `generate_json`:361
+`key_tokens`:76 · `clean_key`:86 · `key_shape`:108 · `ssl_context`:126 · `GeminiError`:183 · `models_to_try`:206 · `generate_text`:361 · `generate_json`:380
 
 ### `src/launcher.py` — 514 lines
 The shell: the home grid of tools and the ⌘K overlay.
@@ -242,7 +242,7 @@ Assert the stylesheet gets the type it asks for, on THIS machine.
 
 `check`:45
 
-### `scripts/test_gemini.py` — 268 lines
+### `scripts/test_gemini.py` — 306 lines
 Offline checks for `src/gemini.py`'s model chain and its error sentences.
 
 `check`:36 · `http_error`:44 · `FakeTransport`:63 · `FakeTransport.urlopen`:73 · `FakeTransport.sleep`:83 · `run`:101 · `main`:120

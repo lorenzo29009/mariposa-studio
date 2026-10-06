@@ -184,19 +184,23 @@ class GeminiError(RuntimeError):
     """Anything the caller should show the user verbatim.
 
     Carries the HTTP status too, so `_post` can tell "this model won't work for
-    this key" (404/429 — try the next one) from "this request is wrong" (400 —
-    trying another model would only waste two more round trips)."""
+    this key right now" (404/429/5xx — try the next one) from "this request is
+    wrong" (400 — trying another model would only waste two more round
+    trips)."""
 
     def __init__(self, message: str, code: int = 0):
         super().__init__(message)
         self.code = code
 
 
-# A model answering with one of these is making a statement about ITSELF and
-# this key — it's retired, or the key has no quota on it. Another model in the
-# chain may well answer. Anything else is about the request, and repeating it
-# against a different model would just fail three times instead of once.
-MODEL_FATAL = (404, 429)
+# A model answering with one of these is making a statement about ITSELF —
+# it's retired (404), this key has no quota on it (429), or it is overloaded
+# right now (5xx: "This model is currently experiencing high demand"). Google
+# sheds load per model, so another model in the chain may well answer. Anything
+# else is about the request, and repeating it against a different model would
+# just fail three times instead of once.
+OVERLOADED = (500, 502, 503, 504)
+MODEL_FATAL = (404, 429) + OVERLOADED
 
 
 def models_to_try(model: str) -> tuple[str, ...]:
@@ -222,10 +226,11 @@ def _post(api_key: str, model: str, body: dict, timeout: int,
           retries: bool) -> dict:
     """POST one generateContent request; return the parsed envelope.
 
-    Walks `models_to_try()` and returns the first model's answer. A 404 or 429
-    from a model that isn't the last one costs no backoff at all — waiting 17
-    seconds on a model this key has no quota for, when the next model in the
-    chain would answer at once, is the failure this is here to avoid.
+    Walks `models_to_try()` and returns the first model's answer. A model that
+    isn't the last one gets no backoff on a 404 or 429 and one short retry on a
+    5xx — waiting 17 seconds on a model that is out of quota or overloaded,
+    when the next model in the chain would answer at once, is the failure this
+    is here to avoid.
     """
     global _WORKING_MODEL
     models = models_to_try(model)
@@ -235,7 +240,7 @@ def _post(api_key: str, model: str, body: dict, timeout: int,
         more = i < len(models) - 1
         try:
             payload = _post_one(api_key, name, body, timeout,
-                                retries=retries, quota_is_fatal=more)
+                                retries=retries, leaving=more)
         except GeminiError as e:
             if more and e.code in MODEL_FATAL:
                 last = e
@@ -248,8 +253,12 @@ def _post(api_key: str, model: str, body: dict, timeout: int,
 
 
 def _post_one(api_key: str, model: str, body: dict, timeout: int, *,
-              retries: bool, quota_is_fatal: bool) -> dict:
+              retries: bool, leaving: bool) -> dict:
     """One model's turn: POST, with backoff on the codes worth waiting out.
+
+    `leaving` means another model is next in line. Then a 429 is not waited
+    out at all and a 5xx only once, briefly: the full 17-second backoff
+    belongs to the last model, whose failure is the user's.
 
     The key goes in the header, never the URL — an AQ. key is only accepted
     there, and a URL is what a traceback prints.
@@ -267,9 +276,10 @@ def _post_one(api_key: str, model: str, body: dict, timeout: int, *,
                                         context=ssl_context()) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
-            spent = attempt >= len(backoff)
-            if (e.code not in RETRY_CODES or spent
-                    or (e.code == 429 and quota_is_fatal)):
+            waits = len(backoff)
+            if leaving:
+                waits = 0 if e.code == 429 else min(1, waits)
+            if e.code not in RETRY_CODES or attempt >= waits:
                 raise _http_error(e, model, api_key) from e
             time.sleep(backoff[attempt])
 
@@ -316,6 +326,15 @@ def _http_error(e: urllib.error.HTTPError, model: str = "",
             "these models: add billing to the Google project, or set "
             "GEMINI_MODEL in tools/captions-de/.env to a model it can use.",
             429)
+    # Overloaded. The chain absorbs a spike on one model, so reaching the user
+    # means every model it asked was turned away — or a pin was.
+    if e.code in OVERLOADED:
+        # Short enough for the Animator's status line, which shows 160
+        # characters after its own "Gemini failed — ".
+        return GeminiError(
+            "Google's servers are overloaded right now (%d on every model "
+            "tried). It usually passes in a few minutes — try again then."
+            % e.code, e.code)
     # A retired model. The chain should absorb this, so reaching the user means
     # every model in it was refused — or GEMINI_MODEL pins a dead one.
     if e.code == 404 and ("no longer available" in detail or "not found" in detail):
