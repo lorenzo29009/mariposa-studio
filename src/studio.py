@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import (Qt, QSize, QPropertyAnimation, QEasingCurve, QRect, QParallelAnimationGroup)
+from PySide6.QtCore import (
+    Qt, QSize, QPropertyAnimation, QEasingCurve, QRect, QParallelAnimationGroup,
+    QEvent, QObject, QTimer,
+)
 from PySide6.QtGui import (QPalette, QColor, QShortcut, QKeySequence, QIcon)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QStackedWidget,
@@ -27,12 +30,15 @@ from design import (
     CANVAS, CARD_RAISED, TXT_HI, WINE, WINE_FG, load_fonts,
 )
 
+import jobs
+import progress
 from stylesheet import build_stylesheet
 from core import (
-    APP_DIR, EXPORTS_DIR, IS_WINDOWS, APP_USER_MODEL_ID,
+    APP_DIR, EXPORTS_DIR, IS_MAC, IS_WINDOWS, APP_USER_MODEL_ID,
     ensure_windows_shortcut, open_folder,
     FLOW_CROPPER_DIR, CAPTIONS_DIR, EXTRACT_DIR, CAMERA_PROMPT_DIR,
 )
+from widgets import ask_confirm
 from flow_cropper_page import FlowCropperPage
 from captions_page import CaptionsPage
 from extract_frame_page import ExtractFramePage
@@ -70,10 +76,32 @@ def _window_size() -> QSize:
                  min(WINDOW_H, max(480, avail.height() - _MARGIN_H)))
 
 
+class _QuitGuard(QObject):
+    """The application's event filter, which acts on exactly one event: a
+    request to quit (⌘Q, the Dock's Quit, the app menu, a logout).
+
+    An application filter sees every event in the app, so the test for the one
+    it wants comes first and everything else costs a comparison."""
+
+    def __init__(self, win: "MainWindow"):
+        super().__init__(win)
+        self._win = win
+
+    def eventFilter(self, _obj, event):
+        if event.type() == QEvent.Type.Quit:
+            return self._win._quit_requested(event)
+        return False
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mariposa Studio")
+        # How `jobs` and `core` find the window without importing the shell.
+        self.setObjectName("MainWindow")
+        #: Hidden by a close while a job ran (macOS); a Dock click undoes it.
+        self._in_background = False
+        self._asking_to_quit = False
         # Larger and still fixed, as asked. Captions' log column, Clip Cutter's
         # three buckets and Script Animator's script-plus-storyboard all want
         # two columns, and 980 could not give them one.
@@ -89,6 +117,9 @@ class MainWindow(QMainWindow):
         # Update banner sits above the stack; hidden until a newer release is found.
         self.update_banner = UpdateBanner(self.central)
         root.addWidget(self.update_banner)
+        # An update half-copied is a broken install: neither a close nor an
+        # automatic quit may land while one is being applied.
+        jobs.register(self.update_banner.is_busy)
 
         self.stack = QStackedWidget()
 
@@ -149,6 +180,91 @@ class MainWindow(QMainWindow):
         for i in range(1, len(specs) + 1):
             QShortcut(QKeySequence(f"Ctrl+{i}"), self, activated=lambda idx=i: self._open_app(idx))
             QShortcut(QKeySequence(f"Meta+{i}"), self, activated=lambda idx=i: self._open_app(idx))
+
+        # Leaving while something runs: a quit is asked about, a close is not
+        # a quit, and the Dock brings a hidden window back.
+        app = QApplication.instance()
+        self._quit_guard = _QuitGuard(self)
+        app.installEventFilter(self._quit_guard)
+        if IS_MAC:
+            app.applicationStateChanged.connect(self._on_app_state)
+
+    # ---- leaving, and coming back -------------------------------------------
+    def closeEvent(self, event):
+        """Closing the window is not quitting while a job runs.
+
+        The job is a child process of a page in this window, so letting the
+        close through killed it — the one thing the user did not ask for. The
+        window steps aside instead: hidden on macOS, where the app lives on in
+        the Dock and a click there brings it back; minimised on Windows and
+        Linux, where the taskbar button is the way back. An idle close still
+        quits, as it always has, and so does `jobs.quit_now()`."""
+        if jobs.quitting() or not jobs.busy():
+            super().closeEvent(event)
+            return
+        event.ignore()
+        if IS_MAC:
+            self._in_background = True
+            # Nothing visible must not mean "quit" while the job runs.
+            QApplication.instance().setQuitOnLastWindowClosed(False)
+            self.hide()
+        elif self.isMinimized():
+            # Closed again from the taskbar: that is someone who wants out.
+            # There is no menu bar to quit from here, so ask.
+            QTimer.singleShot(0, self._ask_to_quit)
+        else:
+            self.showMinimized()
+
+    def bring_back(self):
+        """Show the window again — from the Dock, a notification, a question."""
+        if self._in_background:
+            self._in_background = False
+            QApplication.instance().setQuitOnLastWindowClosed(True)
+        if self.isMinimized():
+            self.showNormal()
+        elif not self.isVisible():
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _on_app_state(self, state):
+        # Qt reports every Dock click as "active", even when the app already
+        # was, which is what makes the Dock the way back to a hidden window.
+        if (state == Qt.ApplicationState.ApplicationActive
+                and self._in_background and not self.isVisible()):
+            self.bring_back()
+
+    def _quit_requested(self, event) -> bool:
+        """A quit arrived. True swallows it.
+
+        Our own `jobs.quit_now()` and an idle app go straight through. While
+        something runs, the quit is cancelled (`ignore()` is what tells macOS
+        so) and the question is asked on the next turn of the loop — not from
+        inside the platform's quit callback, and never twice at once. During
+        an update nothing is asked: it restarts the app when it is done."""
+        if jobs.quitting() or not jobs.busy():
+            return False
+        event.ignore()
+        if not self.update_banner.is_busy():
+            QTimer.singleShot(0, self._ask_to_quit)
+        return True
+
+    def _ask_to_quit(self):
+        if self._asking_to_quit or jobs.quitting():
+            return
+        if not jobs.busy():
+            jobs.quit_now()             # it finished while the question waited
+            return
+        self._asking_to_quit = True
+        try:
+            self.bring_back()           # a modal needs a window to sit on
+            leave = ask_confirm(self, "Stop the running job and quit?",
+                                ok_label="Stop and quit",
+                                cancel_label="Keep it running")
+        finally:
+            self._asking_to_quit = False
+        if leave:
+            jobs.quit_now()
 
     # ---- navigation with OS-style zoom transitions ----
     def _transition(self, to_idx: int, scale: float):
@@ -269,6 +385,9 @@ def main():
     import diagnostics
     diagnostics.start_log()
     diagnostics.install_hooks(_crash_dialog)
+    # What each kind of work takes on this machine, learned run by run, lives
+    # in the exports folder the user chose — not wherever the app happens to be.
+    progress.configure(EXPORTS_DIR / ".timings.json")
     _apply_app_identity(app)
     load_fonts()
     app.setStyleSheet(build_stylesheet())

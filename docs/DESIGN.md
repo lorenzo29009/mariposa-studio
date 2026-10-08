@@ -178,9 +178,10 @@ greeting, no clock, no dashboard, no ordering that implies a sequence.
 
 ### Runner states (the only four)
 - **Waiting** — a sage-at-rest dot, three lines of environment, "ready".
-- **Running** — a wine dot, a **determinate** bar wherever the script counts
-  (`progress_from_line()`), elapsed + an estimate averaged from the units
-  already finished, `Stop`, and the live log.
+- **Running** — a wine dot, a bar that **keeps moving** along the route the
+  tool reported (`docs/PROGRESS.md`) and never runs backwards, elapsed + a
+  countdown learned from this machine's past runs ("about 3 min left"),
+  `Stop`, and the live log.
 - **Done** — a sage dot and a `ResultCard`: what it made, where, two verbs.
 - **Stopped** — a red dot and a `FailureCard`: a written cause from
   [`failures.py`](../src/failures.py) and, where we have one, a button that

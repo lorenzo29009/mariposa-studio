@@ -4,32 +4,33 @@ composes a Gemini prompt."""
 
 from __future__ import annotations
 
+import threading
 from typing import Callable, Optional
 
-from PySide6.QtCore import (
-    Qt, Signal, QTimer, QPropertyAnimation, QEasingCurve, QPoint, QObject,
-    QThread, Slot,
-)
+import shiboken6
+from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QLineEdit, QPlainTextEdit, QFrame, QSizePolicy, QScrollArea,
-    QGraphicsOpacityEffect, QToolButton, QButtonGroup,
+    QLineEdit, QFrame, QSizePolicy, QScrollArea, QToolButton, QButtonGroup,
 )
 
-from design import (
-    SHADOW_FLOAT, TXT_HI, TXT_META, WINE_FG, apply_shadow, svg_icon,
-)
+from design import WINE_FG, svg_icon
 
+import diagnostics
+import jobs
+import progress
 import session
 from core import (
     CAMERA_PROMPT_DIR, gemini_model_override, read_env_value,
 )
+from progress import Leg, Route
 from widgets import (
     AppBar,
 )
 import gemini
 from camera_widgets import (
-    CategorySection, FlowLayout, PromptCard, _clean_description,
+    CategorySection, FlowLayout, FuseSheet, PromptCard, Toast,
+    _clean_description,
 )
 
 # ---------------------------------------------------------------------------
@@ -58,31 +59,56 @@ def _load_camera_prompts() -> dict:
 
 CATEGORY_ORDER = ["angles", "shots", "composition", "movement", "lens", "special"]
 
-
+#: Seconds one merge takes on the reference machine: a 70–180 word answer with
+#: thinking off, measured at 1.5–4 s. `progress.history()` learns this
+#: machine's (and this connection's) factor from every clean merge.
+MERGE_PRIOR_S = 3.0
 
 
 # Background worker that talks to Gemini ------------------------------------
 # Transport (TLS, retries, error text) lives in `gemini` — one copy for the
-# whole app. This class is only the QThread wrapper around it.
+# whole app. This class only takes the call off the GUI thread.
 
-class GeminiWorker(QObject):
-    done = Signal(str)
-    failed = Signal(str)
+class GeminiWorker:
+    """One merge, on a daemon thread that never touches Qt.
+
+    Not a QThread: the call blocks in a socket for up to 45 s and cannot be
+    interrupted, and a QThread still running when Qt tears the page down
+    aborts the whole process ("QThread: Destroyed while thread is still
+    running") — quitting mid-merge took the app down with it. A daemon thread
+    is simply abandoned at exit, which is all a prompt nobody will read
+    deserves. And since nothing Qt lives on it, nothing Qt can be destroyed
+    under it: the page reads `outcome()` from the GUI thread instead of being
+    sent a signal across threads."""
 
     def __init__(self, api_key: str, prompt: str, model: str = ""):
-        super().__init__()
         self.api_key = api_key
         self.prompt = prompt
         self.model = model
+        self._answer: Optional[tuple[bool, str]] = None
+        self._thread = threading.Thread(target=self._run, name="camera-merge",
+                                        daemon=True)
 
-    @Slot()
-    def run(self):
+    def start(self) -> None:
+        self._thread.start()
+
+    def is_alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def outcome(self) -> Optional[tuple[bool, str]]:
+        """`(ok, text)` once the call has returned, else None."""
+        if self._answer is None and self._thread.ident is not None \
+                and not self._thread.is_alive():
+            return False, "The merge ended without an answer."
+        return self._answer
+
+    def _run(self) -> None:
         try:
-            self.done.emit(gemini.generate_text(
-                self.api_key, self.prompt,
-                model=self.model or gemini.DEFAULT_MODEL))
+            text = gemini.generate_text(self.api_key, self.prompt,
+                                        model=self.model or gemini.DEFAULT_MODEL)
+            self._answer = (True, text)
         except Exception as e:
-            self.failed.emit(str(e))
+            self._answer = (False, str(e) or type(e).__name__)
 
 
 class CameraPromptsPage(QWidget):
@@ -96,8 +122,14 @@ class CameraPromptsPage(QWidget):
         # into the single camera block you paste at the end of your AI prompt.
         # A list rather than a dict so the merged order is the rendered order.
         self.picks: list[dict] = []
-        self._thread: Optional[QThread] = None
         self._worker: Optional[GeminiWorker] = None
+        self._route: Optional[Route] = None
+        # The merge's answer is collected on the GUI thread (see GeminiWorker);
+        # this ticks only while one is in flight.
+        self._poll = QTimer(self)
+        self._poll.setInterval(50)
+        self._poll.timeout.connect(self._collect)
+        jobs.register(self._busy_check)
         self._scroll_spy_lock = False
 
         outer = QVBoxLayout(self)
@@ -228,55 +260,14 @@ class CameraPromptsPage(QWidget):
             wv.addWidget(section)
         wv.addStretch(1)
 
-        # ---- Sticky result bar at the bottom (only shown after a generation) ----
-        # The fused prompt arrives in a sheet, not a permanent strip: this
-        # tool's output is the clipboard, so the prompt is something you read
-        # once, copy, and dismiss. Nothing is written to disk.
-        self.sheet = QFrame(self)
-        self.sheet.setObjectName("FuseSheet")
-        self.sheet.setVisible(False)
-        sv = QVBoxLayout(self.sheet)
-        sv.setContentsMargins(24, 22, 24, 22)
-        sv.setSpacing(14)
-        sheet_head = QHBoxLayout(); sheet_head.setSpacing(10)
-        st = QLabel("One camera prompt")
-        st.setObjectName("ResultHead")
-        sheet_head.addWidget(st)
-        sheet_head.addStretch(1)
-        close = QToolButton()
-        close.setObjectName("ChipRemove")
-        close.setText("×")
-        close.setFixedSize(24, 24)
-        close.setCursor(Qt.PointingHandCursor)
-        close.clicked.connect(self._close_sheet)
-        sheet_head.addWidget(close)
-        sv.addLayout(sheet_head)
-        self.result = QPlainTextEdit()
-        self.result.setObjectName("ResultBox")
-        self.result.setReadOnly(True)
-        self.result.setMinimumHeight(190)
-        sv.addWidget(self.result, 1)
-        foot = QHBoxLayout(); foot.setSpacing(10)
-        self.result_note = QLabel("")
-        self.result_note.setObjectName("MetaFaint")
-        self.result_note.setWordWrap(True)
-        foot.addWidget(self.result_note, 1)
-        self.copy_btn = QPushButton("Copy")
-        self.copy_btn.setObjectName("PrimaryBtn")
-        self.copy_btn.setIcon(svg_icon("copy", WINE_FG, 14))
-        self.copy_btn.setCursor(Qt.PointingHandCursor)
-        self.copy_btn.setEnabled(False)
+        # ---- The fused prompt arrives in a sheet, not a permanent strip:
+        # this tool's output is the clipboard (see `FuseSheet`). ----
+        self.sheet = FuseSheet(self)
+        self.result = self.sheet.result
+        self.copy_btn = self.sheet.copy_btn
         self.copy_btn.clicked.connect(self._copy_result)
-        foot.addWidget(self.copy_btn)
-        sv.addLayout(foot)
-        apply_shadow(self.sheet, SHADOW_FLOAT)
 
-        # Toast
-        self.toast = QLabel(self)
-        self.toast.setObjectName("Toast")
-        self.toast.setAlignment(Qt.AlignCenter)
-        self.toast.hide()
-        self._toast_anim = None
+        self.toast = Toast(self)
 
         self._filter = "all"
         self._update_chips()
@@ -501,9 +492,12 @@ class CameraPromptsPage(QWidget):
 
     def _update_generate_btn(self):
         n = len(self.picks)
-        self.gen_btn.setEnabled(n > 0 and self._thread is None)
-        self.gen_btn.setText("Merge into one prompt" if n == 0
-                             else f"Merge {n} into one prompt")
+        self.gen_btn.setEnabled(n > 0 and self._worker is None)
+        if self._worker is not None:
+            self.gen_btn.setText("Merging…")
+        else:
+            self.gen_btn.setText("Merge into one prompt" if n == 0
+                                 else f"Merge {n} into one prompt")
         self.copy_all_btn.setVisible(n > 0)
         self.copy_all_btn.setText("Copy all" if n < 2 else f"Copy all {n}")
 
@@ -545,7 +539,7 @@ class CameraPromptsPage(QWidget):
         )
 
     def _on_generate(self):
-        if not self.picks or self._thread is not None:
+        if not self.picks or self._worker is not None:
             return
         key = read_env_value("GEMINI_API_KEY")
         if not key:
@@ -558,63 +552,95 @@ class CameraPromptsPage(QWidget):
 
         user_prompt = self._merge_prompt()
 
+        # The box stays empty until the paragraph lands in it; the moving bar
+        # and the countdown under it are what says the merge is under way.
         self._open_sheet()
-        self.result.setPlainText("Generating…")
+        self.result.clear()
+        self.result.setToolTip("")
         self.copy_btn.setEnabled(False)
-        self.gen_btn.setEnabled(False)
-        self.gen_btn.setText("Generating…")
 
-        thread = QThread(self)
-        worker = GeminiWorker(key, user_prompt, model=gemini_model_override())
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.done.connect(self._on_gemini_done)
-        worker.failed.connect(self._on_gemini_failed)
-        worker.done.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._on_thread_finished)
-        self._thread = thread
-        self._worker = worker
-        thread.start()
+        self._route = Route([Leg("call", kind="camera.gemini",
+                                 prior=MERGE_PRIOR_S, label="Merging")],
+                            history=progress.history())
+        self.sheet.begin_progress(self._route)
+        self._route.begin()
+        self._route.enter("call")
 
-    def _on_thread_finished(self):
-        self._thread = None
-        self._worker = None
+        self._worker = GeminiWorker(key, user_prompt, model=gemini_model_override())
         self._update_generate_btn()
+        self._worker.start()
+        self._poll.start()
 
-    @Slot(str)
+    def is_busy(self) -> bool:
+        """Is a merge in flight? Until its answer has been shown, yes."""
+        return self._worker is not None
+
+    def _busy_check(self) -> bool:
+        # Asked by `jobs` — possibly after Qt has deleted this page on quit, in
+        # which case nothing of ours can be running any more.
+        return shiboken6.isValid(self) and self.is_busy()
+
+    def _collect(self):
+        """The poll: hand a finished merge to the done/failed paths."""
+        if not shiboken6.isValid(self):
+            return
+        worker = self._worker
+        out = worker.outcome() if worker is not None else None
+        if worker is None:
+            self._poll.stop()
+        elif out is not None:
+            ok, text = out
+            (self._on_gemini_done if ok else self._on_gemini_failed)(text)
+
+    def _end_run(self, ok: bool) -> Optional[float]:
+        """The merge is over: settle the bar and free the button. A clean
+        answer also teaches the history how long a merge takes here. Returns
+        the seconds it took."""
+        self._poll.stop()
+        self._worker = None
+        route, self._route = self._route, None
+        self.sheet.end_progress(ok)
+        self._update_generate_btn()
+        if route is None:
+            return None
+        if ok:
+            route.finish()
+            try:
+                route.learn(progress.history())
+                progress.history().save()
+            except Exception as e:          # an estimate is never an error
+                diagnostics.note_log(f"timings not saved: {e}")
+        return route.elapsed()
+
     def _on_gemini_done(self, text: str):
+        seconds = self._end_run(True)
         session.note_gemini(self.title)
-        import settings_page as prefs
-        prefs.notify_if_enabled("Camera Prompts", "your prompt is ready")
         compact = " ".join(text.split())  # collapse internal newlines
         self._open_sheet()
         self.result.setPlainText(compact)
         self.result.setToolTip(compact)
         self.copy_btn.setEnabled(True)
-        self._show_toast("Ready · hit Copy to use it")
+        self._show_toast("Prompt ready")
+        # `jobs` decides whether this is worth a notification (not a 3 s merge
+        # with the app in front) and whether it is time to quit.
+        jobs.finished(self.title, True, summary="Your camera prompt is ready",
+                      seconds=seconds)
 
-    @Slot(str)
     def _on_gemini_failed(self, err: str):
-        import diagnostics
-        diagnostics.note_error(self.title, (err or "").splitlines()[0][:200], err)
+        seconds = self._end_run(False)
+        first = next((l for l in (err or "").splitlines() if l.strip()), "")
+        diagnostics.note_error(self.title, first[:200], err)
         self._open_sheet()
         self.result.setPlainText(f"✗ Gemini error: {err}")
         self.result.setToolTip(err)
         self.copy_btn.setEnabled(False)
         self._show_toast("Generation failed")
+        jobs.finished(self.title, False, summary=first[:120], seconds=seconds)
 
     # ---- the sheet ------------------------------------------------------
     def _open_sheet(self):
         """Centre the sheet over the gallery and show it."""
-        w = min(620, max(360, self.width() - 160))
-        h = min(420, max(280, self.height() - 200))
-        self.sheet.setFixedSize(w, h)
-        self.sheet.move((self.width() - w) // 2, (self.height() - h) // 2)
-        self.sheet.setVisible(True)
-        self.sheet.raise_()
+        self.sheet.place(self.width(), self.height())
 
     def _close_sheet(self):
         self.sheet.setVisible(False)
@@ -626,55 +652,22 @@ class CameraPromptsPage(QWidget):
         super().keyPressEvent(e)
 
     def _copy_result(self):
-        text = self.result.text().strip()
-        if text and not text.startswith("✗") and text != "Generating…":
+        # `toPlainText()`: a QPlainTextEdit has no `text()`, so this used to
+        # raise on every press and copy nothing.
+        text = self.result.toPlainText().strip()
+        if text and not text.startswith("✗"):
             QApplication.clipboard().setText(text)
             self._show_toast("Copied to clipboard")
 
     # ---- Toast -----------------------------------------------------------
 
+    def _toast_inset(self) -> int:
+        # Above the gathering bar when there is one, so the confirmation never
+        # covers the thing it is confirming.
+        return self.gather_bar.height() if self.gather_bar.isVisible() else 0
+
     def _reposition_toast(self):
-        self.toast.adjustSize()
-        x = (self.width() - self.toast.width()) // 2
-        # Sit above the gathering bar when there is one, so the confirmation
-        # never covers the thing it is confirming.
-        bar_h = self.gather_bar.height() if self.gather_bar.isVisible() else 0
-        y = self.height() - bar_h - self.toast.height() - 24
-        self.toast.move(max(10, x), max(10, y))
+        self.toast.place(self._toast_inset())
 
     def _show_toast(self, message: str):
-        self.toast.setText(message)
-        self._reposition_toast()
-        self.toast.show()
-        self.toast.raise_()
-        eff = self.toast.graphicsEffect()
-        if not isinstance(eff, QGraphicsOpacityEffect):
-            eff = QGraphicsOpacityEffect(self.toast)
-            self.toast.setGraphicsEffect(eff)
-        if self._toast_anim:
-            self._toast_anim.stop()
-        eff.setOpacity(0.0)
-        fade_in = QPropertyAnimation(eff, b"opacity", self)
-        fade_in.setDuration(160)
-        fade_in.setStartValue(0.0)
-        fade_in.setEndValue(1.0)
-        fade_in.setEasingCurve(QEasingCurve.OutCubic)
-        fade_in.start()
-        self._toast_anim = fade_in
-        QTimer.singleShot(1500, lambda: self._fade_toast_out())
-
-    def _fade_toast_out(self):
-        eff = self.toast.graphicsEffect()
-        if not isinstance(eff, QGraphicsOpacityEffect):
-            self.toast.hide()
-            return
-        anim = QPropertyAnimation(eff, b"opacity", self)
-        anim.setDuration(260)
-        anim.setStartValue(eff.opacity())
-        anim.setEndValue(0.0)
-        anim.setEasingCurve(QEasingCurve.InCubic)
-        anim.finished.connect(lambda: self.toast.hide())
-        anim.start()
-        self._toast_anim = anim
-
-
+        self.toast.flash(message, self._toast_inset())

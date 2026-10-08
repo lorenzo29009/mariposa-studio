@@ -13,12 +13,16 @@ details" that auto-opened on failure, which taught the operators that a visible
 log meant something had broken. Now it is a permanent cream column on the
 right — see `widgets_status.LogColumn`. Nothing is hidden and nothing pops.
 
-**Progress is determinate wherever the work is countable.** A barber pole on a
-five-minute job is indistinguishable from a hang. `progress_from_line()` reads
-the counted lines the scripts *already* print (`crop.py` emits `[3/12] …`) and
-switches the bar to a real range, with an estimate averaged from the units
-already finished. When nothing counts it stays indeterminate, and then the
-elapsed timer and the live log carry the honesty instead.
+**Progress is a route, not a counter.** A barber pole on a five-minute job is
+indistinguishable from a hang, and a bar that moves only when a whole unit
+finishes is barely better. Each run gets a `progress.Route`: the script prints
+its plan and its position as `@@progress {...}` lines (hidden from the log —
+see `docs/PROGRESS.md`), a page can add what only it knows (`plan_run()`,
+`plan_batch()`, `progress_events()`), and `ProgressLine` draws it — a bar that
+keeps moving and a countdown learned from this machine's past runs. A batch is
+one job: its clock and countdown carry on from item to item. The old `[n/m]`
+counter still works through `progress_from_line()` for a script that reports
+nothing better.
 
 A tool whose jobs take a second (Extract Frame) sets `SIDE = "none"` and gets
 `StatusStrip` — the same four meanings on one line — because a third of the
@@ -32,6 +36,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -48,8 +53,13 @@ from design import (
 from core import IS_WINDOWS, make_qprocess_env
 from widgets import Card, FormRow, AppBar, _panel
 from widgets_status import FailureCard, LogColumn, ResultCard, StatusStrip
+from progress import Route
+from progress_wire import LineReader
+from tool_progress import RunProgress
 import diagnostics
 import failures
+import jobs
+import progress
 import session
 
 
@@ -64,11 +74,13 @@ def _kill_tree(proc: QProcess) -> None:
     to replace, and `os.replace()` fails with a permission error the user has no
     way to read as "something I stopped is still running".
 
-    Only Windows gets the extra step, because only Windows has both the tool for
-    it (`taskkill /T`, which walks the parent chain) and the failure mode that
-    makes it necessary. On macOS the orphan finishes its encode, writes to a
-    scratch path nobody reads and exits — untidy, not broken — so the plain kill
-    stays, rather than reaching for a setsid the start path does not set up.
+    Windows walks the tree with `taskkill /T`. macOS and Linux used to keep
+    the plain kill — an orphaned encode finished into a scratch path, untidy
+    but harmless — until the scripts started reading their children through
+    pipes for progress: a Clip Cutter Stop then left two WhisperX processes
+    transcribing for minutes, still writing captions, still holding the CPU
+    the next run needed. So the descendants are found from `ps` (no setsid
+    needed at start) and stopped deepest-first, then the script itself.
 
     Best-effort by design: the tree kill is a courtesy, `proc.kill()` is the
     guarantee, and Stop must never raise."""
@@ -81,10 +93,52 @@ def _kill_tree(proc: QProcess) -> None:
                            creationflags=0x08000000)   # CREATE_NO_WINDOW
         except Exception:
             pass
+    elif pid > 0:
+        _kill_descendants(pid)
     proc.kill()
 
 
-class ToolPage(QWidget):
+def _descendants(pid: int, table: list[tuple[int, int]]) -> list[int]:
+    """Every process below `pid`, children before grandchildren, from a
+    `(pid, ppid)` table. Pure, so the walk is testable without processes."""
+    kids: dict[int, list[int]] = {}
+    for child, parent in table:
+        kids.setdefault(parent, []).append(child)
+    out, frontier, seen = [], [pid], {pid}
+    while frontier:
+        nxt = []
+        for p in frontier:
+            for c in kids.get(p, []):
+                if c not in seen:
+                    seen.add(c)
+                    out.append(c)
+                    nxt.append(c)
+        frontier = nxt
+    return out
+
+
+def _kill_descendants(pid: int) -> None:
+    try:
+        import os
+        import signal
+        import subprocess
+        res = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True,
+                             text=True, check=False, timeout=5)
+        table = []
+        for row in res.stdout.splitlines():
+            parts = row.split()
+            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                table.append((int(parts[0]), int(parts[1])))
+        for child in reversed(_descendants(pid, table)):
+            try:
+                os.kill(child, signal.SIGKILL)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+class ToolPage(RunProgress, QWidget):
     title: str = "Tool"
     subtitle: str = ""
     tool_key: str = "flow"
@@ -206,8 +260,17 @@ class ToolPage(QWidget):
         self.process: Optional[QProcess] = None
         self._log_buffer: list[str] = []
         self._units: tuple[int, int] = (0, 0)
+        self._reader: Optional[LineReader] = None
+        #: This run's route, and — for a job that is several runs — the outer
+        #: route whose current leg holds it.
+        self.route: Optional[Route] = None
+        self.batch_route: Optional[Route] = None
+        self._user_stopped = False
+        self._job_started: Optional[float] = None
+        self._result_text = ""
         self.set_env_lines(self.env_lines())
         self._set_status("idle")
+        jobs.register(self._busy_check)
 
     # ---- what goes on the right ---------------------------------------------
     def build_side(self) -> LogColumn:
@@ -264,6 +327,13 @@ class ToolPage(QWidget):
 
     def after_finished(self, code: int):
         """Hook so subclasses can react when a run finishes."""
+
+    def is_busy(self) -> bool:
+        """Is this page running something? Asked before a close quits the app."""
+        return self.process is not None
+
+    def _busy_check(self) -> bool:
+        return self._alive() and self.is_busy()
 
     def extra_action_buttons(self) -> list[QPushButton]:
         """Subclasses may return extra buttons placed under the form."""
@@ -380,9 +450,23 @@ class ToolPage(QWidget):
         self.extra_btn.setVisible(False)
         self._log_buffer = []
         self._units = (0, 0)
+        self._user_stopped = False
+        self._result_text = ""
+        self._job_started = time.monotonic()
         if self.log:
             self.log.clear_log()
         self.set_env_lines(self.env_lines())
+        target = self.log or self.strip
+        if target:
+            target.progress.stop()          # a new job always starts from zero
+        plan = []
+        try:
+            plan = list(self.plan_batch() or [])
+        except Exception as e:              # a plan is a nicety, never a blocker
+            diagnostics.note_log(f"batch plan failed: {e}")
+        self.batch_route = Route(plan, history=progress.history()) if plan else None
+        if self.batch_route:
+            self.batch_route.begin()
         self._start(program, args, cwd)
 
     def _alive(self) -> bool:
@@ -400,9 +484,15 @@ class ToolPage(QWidget):
         Every slot Qt can call after that point asks this first."""
         return shiboken6.isValid(self)
 
-    def _start(self, program: str, args: list[str], cwd: Optional[Path]):
+    def _start(self, program: str, args: list[str], cwd: Optional[Path],
+               continuing: bool = False):
+        """Start one run. `continuing` is a batch's next item: same job, so the
+        state sentence the page just set and the running clock are kept."""
         self._log(f"$ {program} {' '.join(shlex.quote(a) for a in args)}",
                   color=TXT_DISABLED)
+        if self._job_started is None:
+            self._job_started = time.monotonic()
+        self._reader = LineReader()
         proc = QProcess(self)
         proc.setProcessChannelMode(QProcess.MergedChannels)
         if cwd:
@@ -427,7 +517,9 @@ class ToolPage(QWidget):
             self.title,
             command=f"{program} {' '.join(shlex.quote(a) for a in args)}",
             cwd=str(cwd) if cwd else "", facts=facts, files=repro)
-        self._set_status("running")
+        if not continuing:
+            self._set_status("running")
+        self._new_route()
         self.run_btn.setEnabled(False)
         proc.start(program, args)
 
@@ -435,10 +527,11 @@ class ToolPage(QWidget):
     def progress_from_line(self, raw_line: str) -> Optional[tuple[int, int]]:
         """`(done, total)` if this line counts something, else None.
 
-        The default reads the `[n/m]` prefix `crop.py` already prints, which is
-        why determinate progress needed no change to any script. Subclasses
-        override where their script counts differently."""
-        m = re.search(r'\[(\d+)\s*/\s*(\d+)\]', raw_line)
+        The fallback for a script that prints no `@@progress` lines: a line
+        that STARTS with `[n/m]` is about item n, so n-1 are finished.
+        Anchored, so a file called `take[2/3].mp4` in a message is not a
+        count. Subclasses override where their script counts differently."""
+        m = re.match(r'^\s*\[(\d+)\s*/\s*(\d+)\]', raw_line)
         if m:
             done, total = int(m.group(1)), int(m.group(2))
             # A line about item n means n-1 are finished; the last line of the
@@ -470,19 +563,9 @@ class ToolPage(QWidget):
     def _on_output(self, proc: QProcess):
         if not self._alive():
             return
-        data = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="replace")
-        for line in data.splitlines():
-            self._log(line)
-            self.on_output_line(line)
-            units = self.progress_from_line(line)
-            if units:
-                self._units = units
-                target = self.log or self.strip
-                if target:
-                    target.set_units(*units)
-            msg = self._to_status_detail(line)
-            if msg is not None:
-                self._sentence(msg)
+        if self._reader is None:
+            self._reader = LineReader()
+        self._take_lines(self._reader.feed(bytes(proc.readAllStandardOutput())))
 
     def _log(self, line: str, *, color: Optional[str] = None):
         self._log_buffer.append(line)
@@ -507,19 +590,27 @@ class ToolPage(QWidget):
     def _on_finished(self, code: int):
         if not self._alive():
             return
+        if jobs.quitting():
+            return               # killed by our own exit: nothing to report
+        self._flush_output()
         diagnostics.note_job_finished(code)
-        if code == 0 and self.advance_batch():
+        ok = code == 0 and not self._user_stopped
+        if ok and self.route is not None:
+            self.route.finish()
+            if self.batch_route is not None:
+                cur = self.batch_route.current()
+                if cur is not None:
+                    self.batch_route.complete(cur.key)
+        if ok and self.advance_batch():
             cmd = self.build_command()
             if cmd:
                 program, args, cwd = cmd
-                self._start(program, args, cwd)
+                self._start(program, args, cwd, continuing=True)
                 return
+        if ok:
+            self._learn()
         target = self.log or self.strip
         if code == 0:
-            done, total = self._units
-            if total:
-                if target:
-                    target.set_units(total, total)
             self._log("✓ Done", color=DONE)
             self._set_status("done")
         else:
@@ -535,7 +626,7 @@ class ToolPage(QWidget):
         self._announce(code == 0)
 
     def _on_proc_error(self, _err):
-        if not self._alive():
+        if not self._alive() or jobs.quitting():
             return
         if self.process:
             self._log(f"✗ {self.process.errorString()}", color=STOP)
@@ -546,6 +637,7 @@ class ToolPage(QWidget):
 
     def _stop(self):
         if self.process:
+            self._user_stopped = True
             _kill_tree(self.process)
             self._log("• Stopped by you", color=STOP)
             self._sentence("Stopped")
@@ -571,6 +663,7 @@ class ToolPage(QWidget):
                     actions: list[tuple[str, Callable[[], None], bool]] | None = None):
         """The done state. Records the artefact so ⌘K can reach it."""
         target = self.log or self.strip
+        self._result_text = head or path
         if target:
             target.show_card(ResultCard(head, path=path, note=note, actions=actions))
 
@@ -609,30 +702,15 @@ class ToolPage(QWidget):
 
     # ---- leaving ------------------------------------------------------------
     def _announce(self, ok: bool):
-        """Honour the two Settings switches, both of which are about leaving.
-
-        The session is four minutes and some jobs are six, so a finished job
-        may have to reach someone who has walked away — and may be the reason
-        the app is still open at all."""
-        import settings_page as prefs
-        prefs.notify_if_enabled(
-            f"{self.title} — {'done' if ok else 'stopped'}",
-            (self.log or self.strip).title.text()
-            if (self.log or self.strip) else "")
-        if prefs.pref(prefs.KEY_AUTOQUIT, False) and not self._other_jobs_running():
-            # A moment's grace so the done state is actually seen.
-            from PySide6.QtCore import QTimer as _QTimer
-            _QTimer.singleShot(1800, self._quit_if_still_idle)
-
-    def _other_jobs_running(self) -> bool:
-        pages = getattr(self.window(), "pages", {}) or {}
-        return any(getattr(p, "process", None) is not None
-                   for p in pages.values() if p is not self)
-
-    def _quit_if_still_idle(self):
-        if self.process is None and not self._other_jobs_running():
-            from PySide6.QtWidgets import QApplication as _QApp
-            _QApp.quit()
+        """Hand the ending to `jobs`, which honours both Settings switches for
+        every tool in one place. The notification says what was made (the
+        result card's line), not just "Done"."""
+        seconds = (time.monotonic() - self._job_started) if self._job_started else None
+        self._job_started = None
+        target = self.log or self.strip
+        summary = self._result_text or (target.title.text() if target else "")
+        jobs.finished(self.title, ok, stopped=self._user_stopped,
+                      summary=summary, seconds=seconds)
 
     def can_fix(self, key: str) -> bool:
         """Whether this page can honour a fix key. Offering a button that does

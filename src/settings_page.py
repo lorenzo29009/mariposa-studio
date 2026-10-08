@@ -63,9 +63,11 @@ def notify_if_enabled(title: str, body: str = "") -> None:
     """Fire a finished-job notification, if the user asked for one.
 
     The single gate for the "Notify me when something finishes" switch. Every
-    tool that finishes something calls THIS — a tool that reaches for
-    `core.notify` directly would ignore the switch, and a tool that never calls
-    either is a switch the user watches do nothing.
+    job ends in `jobs.finished()`, which decides WHETHER this ending is news
+    (not after a Stop, not for a short job the user watched) and then calls
+    THIS — a tool that reaches for `core.notify` directly would ignore the
+    switch, and a tool that never reports its ending is a switch the user
+    watches do nothing.
     """
     if pref(KEY_NOTIFY, True):
         from core import notify

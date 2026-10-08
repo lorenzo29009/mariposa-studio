@@ -142,10 +142,15 @@ def _requirements_changed(src_root: Path) -> bool:
 def _pip_install() -> None:
     if not Path(VENV_PY).exists():
         return
+    # Windows: python.exe under pythonw.exe opens a console for the length of
+    # the install unless told not to — and a child with no console must be
+    # given pipes, or pip has no stdout to write to.
+    quiet = (dict(creationflags=0x08000000, stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT) if IS_WINDOWS else {})
     subprocess.run(
         [str(VENV_PY), "-m", "pip", "install", "--no-compile", "-r",
          str(APP_DIR / "requirements.txt")],
-        check=False,
+        check=False, **quiet,
     )
 
 
@@ -236,6 +241,10 @@ class UpdateBanner(QFrame):
         self.setVisible(False)
         self._info: dict | None = None
         self._apply: _ApplyThread | None = None
+        #: From "Update now" until the relaunch: files are being replaced, so
+        #: the window registers this with `jobs` and neither a close nor an
+        #: automatic quit may land in the middle of it.
+        self._updating = False
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(16, 8, 12, 8)
@@ -261,6 +270,9 @@ class UpdateBanner(QFrame):
         # the same tokens as everything else. updater.py still imports nothing
         # from design: it only sets the objectName.
 
+    def is_busy(self) -> bool:
+        return self._updating
+
     def present(self, info: dict):
         self._info = info
         self.label.setText(f"Mariposa Studio {info['version']} is available.")
@@ -269,6 +281,7 @@ class UpdateBanner(QFrame):
     def _start(self):
         if not self._info:
             return
+        self._updating = True
         self.update_btn.setEnabled(False)
         self.later_btn.setEnabled(False)
         dlg = QProgressDialog("Starting update…", "", 0, 0, self.window())
@@ -294,6 +307,7 @@ class UpdateBanner(QFrame):
         relaunch()
 
     def _finish_err(self, dlg, msg: str):
+        self._updating = False
         dlg.close()
         self.update_btn.setEnabled(True)
         self.later_btn.setEnabled(True)

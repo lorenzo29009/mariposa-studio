@@ -1,4 +1,4 @@
-"""Script Animator - the Gemini passes and the session log.
+"""Script Animator - the Gemini passes, and the worker that runs a build.
 
 No cut is decided here. Gemini is asked two things only, each local to one
 sentence or one clip; `script_packer` decides every boundary and every clip
@@ -7,17 +7,18 @@ length in between. See docs/ANIMATOR.md for why it is split that way.
 
 from __future__ import annotations
 
-import datetime as _dt
 import json as _json
+import time as _time
 
 from PySide6.QtCore import Signal, QObject, Slot
 
-from core import EXPORTS_DIR
 from script_packer import (
     LINK_INSEPARABLE, LINK_NEW_SECTION, apply_pronunciation,
     finalise_block, infer_link, pack_block, split_sentences,
 )
-from animator_common import ANIMATOR_LOG_FILE, LOG_VERSION
+from animator_plan import (
+    cut_prior, leg, plan as plan_build, review_prior, timing_prior,
+)
 import gemini
 
 
@@ -376,10 +377,23 @@ class ScenePipelineWorker(QObject):
     and a build the user can't run is worse than a build with one less opinion
     in it. Everything the model returns is a judgement about one sentence or one
     clip. Nothing it returns is a scene boundary or a clip length — those come
-    out of the packer."""
+    out of the packer.
+
+    It runs on a plain daemon thread, not a `QThread` (see `animator_build`):
+    the page connects every signal queued, and once `abandon()` is called — the
+    app is quitting — it says nothing more."""
     progress = Signal(str)
+    #: The build's route, in the wire format of docs/PROGRESS.md (plan / add /
+    #: enter / frac / skip) — the worker plans it, the page applies it.
+    route_event = Signal(dict)
+    #: What `gemini` is doing while the build waits on it — "attempt",
+    #: "backoff", "fallback", then "answer" when a call came back — with
+    #: `info["at"]` the monotonic time it happened.
+    call_event = Signal(str, dict)
     done = Signal(dict)
     failed = Signal(str)
+    #: Always the last thing it says, whatever happened.
+    ended = Signal()
 
     def __init__(self, api_key: str, blocks: list[dict], language: str,
                  model: str = "",
@@ -390,25 +404,54 @@ class ScenePipelineWorker(QObject):
         self.language = language
         self.model = model
         self.pronunciation = pronunciation or []
+        self._abandoned = False
+
+    # -- saying where it is -------------------------------------------------
+    def abandon(self) -> None:
+        """Say nothing more. The call in flight finishes, or times out, on its
+        own; nobody is listening for it."""
+        self._abandoned = True
+
+    def _send(self, signal, *args) -> None:
+        if self._abandoned:
+            return
+        try:
+            signal.emit(*args)
+        except RuntimeError:
+            pass                    # the C++ side is gone: the app is leaving
+
+    def _route(self, **event) -> None:
+        self._send(self.route_event, event)
+
+    def _on_call(self, kind: str, info: dict) -> None:
+        self._send(self.call_event, kind, dict(info, at=_time.monotonic()))
 
     # -- transport ----------------------------------------------------------
     def _call(self, prompt: str, schema: dict) -> dict:
-        """One schema-constrained Gemini call. Transport lives in `gemini`."""
-        return gemini.generate_json(self.api_key, prompt, schema,
-                                    model=self.model or gemini.DEFAULT_MODEL)
+        """One schema-constrained Gemini call. Transport lives in `gemini`;
+        its retries and fallbacks are forwarded, so the page can price them."""
+        data = gemini.generate_json(self.api_key, prompt, schema,
+                                    model=self.model or gemini.DEFAULT_MODEL,
+                                    on_event=self._on_call)
+        self._on_call("answer", {})
+        return data
 
 
     # -- the build ----------------------------------------------------------
     @Slot()
     def run(self):
         try:
-            self.progress.emit("Reading the copy and the beats…")
+            # The route first, so the page's bar is determinate from the start.
+            self._route(plan=plan_build(self.blocks, self.language), enter="read")
+            self._send(self.progress, "Reading the copy and the beats…")
             spoken = self._read()
 
             self._respell(spoken)
             self._time(spoken)
 
-            self.progress.emit("Cutting the clips…")
+            sentences = self._sentence_count(spoken)
+            self._route(plan=[leg("cut", cut_prior(sentences))], enter="cut")
+            self._send(self.progress, "Cutting the clips…")
             packed = self._pack(spoken)
 
             # One round only. Asked a second time, on a cut it has already
@@ -416,7 +459,9 @@ class ScenePipelineWorker(QObject):
             # that made a plain "can this open a shot?" flag useless. One pass
             # over a fresh cut is where the signal is.
             if packed["scenes"]:
-                self.progress.emit("Checking every clip stands on its own…")
+                self._route(plan=[leg("review", review_prior(len(packed["scenes"])))],
+                            enter="review")
+                self._send(self.progress, "Checking every clip stands on its own…")
                 try:
                     found = self._review(packed["scenes"])
                 except Exception as e:
@@ -427,12 +472,24 @@ class ScenePipelineWorker(QObject):
                         f"The final check didn't run ({str(e)[:80]}) — the clips "
                         f"are cut, but nothing re-read them.")
                 if found:
+                    self._route(add=[leg("repack", cut_prior(sentences))],
+                                enter="repack")
+                    self._send(self.progress, "Cutting the clips again…")
                     packed = self._pack(spoken, glue=found["seams"])
                     packed["notes"].extend(found["notes"])
+            else:
+                self._route(skip="review")
 
-            self.done.emit(packed)
+            self._send(self.done, packed)
         except Exception as e:
-            self.failed.emit(str(e))
+            self._send(self.failed, str(e))
+        finally:
+            self._send(self.ended)
+
+    @staticmethod
+    def _sentence_count(blocks: list[dict]) -> int:
+        return sum(len(split_sentences(b["raw"])) if b["dropped"]
+                   else len(b["sentences"]) for b in blocks)
 
     def _read(self) -> list[dict]:
         """Blocks with their spoken sentences, each graded and timed.
@@ -530,19 +587,25 @@ class ScenePipelineWorker(QObject):
         the build."""
         from speech_clock import available_engine, flush_cache, measure
 
-        if available_engine() is None:
-            return                              # nothing to warm; formula it is
         lines: list[str] = []
         for block in blocks:
             if block["dropped"]:
                 lines.extend(split_sentences(block["raw"]))
             else:
                 lines.extend(s["text"] for s in block["sentences"] if s.get("text"))
+        if available_engine() is None or not lines:
+            self._route(skip="timing")
+            return                              # nothing to warm; formula it is
         total = len(lines)
+        self._route(plan=[leg("timing", timing_prior(total))], enter="timing")
+        self._send(self.progress, "Timing the lines…")
         for i, line in enumerate(lines, 1):
-            if i == 1 or i % 5 == 0 or i == total:
-                self.progress.emit(f"Timing the lines… {i}/{total}")
             measure(line, self.language)
+            # Counted AFTER the line is measured: "13/13" means done, not "the
+            # last one has started".
+            self._route(frac=i / total)
+            if i % 5 == 0 or i == total:
+                self._send(self.progress, f"Timing the lines… {i}/{total}")
         flush_cache()
 
     def _pack(self, blocks: list[dict], glue: "set[tuple[str, int]] | None" = None
@@ -556,7 +619,7 @@ class ScenePipelineWorker(QObject):
         glue = glue or set()
         scenes: list[dict] = []
         notes: list[str] = []
-        for block in blocks:
+        for nth, block in enumerate(blocks, 1):
             bid = block["id"]
             if block["dropped"]:
                 block_scenes = pack_block(bid, block["raw"], self.language,
@@ -565,6 +628,7 @@ class ScenePipelineWorker(QObject):
                              f"locally from the raw copy. Check the numbers and "
                              f"abbreviations by hand.")
                 scenes.extend(block_scenes)
+                self._route(frac=nth / len(blocks))
                 continue
             sentences = [dict(s) for s in block["sentences"]]
             for i, sentence in enumerate(sentences):
@@ -576,6 +640,7 @@ class ScenePipelineWorker(QObject):
                 notes.append(f"{bid}: typo fixed — {fix}")
             notes.extend(block_notes)
             scenes.extend(block_scenes)
+            self._route(frac=nth / len(blocks))
         return {"scenes": scenes, "notes": notes,
                 "fixes": {b["id"]: b["fixes"] for b in blocks}}
 
@@ -622,32 +687,3 @@ class ScenePipelineWorker(QObject):
                          f"{'…' if len(opening) > 44 else ''}” doesn't open a clip "
                          f"on its own — kept with the line before it.")
         return {"seams": seams, "notes": notes} if seams else None
-
-
-# ─── Session log ─────────────────────────────────────────────────────────────
-
-def log_save(payload: dict) -> None:
-    try:
-        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        payload = dict(payload)
-        payload["v"] = LOG_VERSION
-        payload["timestamp"] = _dt.datetime.now().isoformat(timespec="seconds")
-        ANIMATOR_LOG_FILE.write_text(
-            _json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    except Exception:
-        pass
-
-
-def log_load() -> "dict | None":
-    """The last session — only the current schema; a log written by the old
-    single-textarea workflow has no blocks to restore into."""
-    try:
-        if not ANIMATOR_LOG_FILE.exists():
-            return None
-        data = _json.loads(ANIMATOR_LOG_FILE.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and data.get("v") == LOG_VERSION and data.get("blocks"):
-            return data
-    except Exception:
-        pass
-    return None

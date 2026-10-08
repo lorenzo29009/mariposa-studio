@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
-"""Script Animator — the constants and the one Qt helper its modules share.
+"""Script Animator — the constants, the session log and the one Qt helper its
+modules share.
 
 Bottom of the Animator's dependency graph, so nothing here may import the
 others:
 
-    animator_common
-      ↑ animator_pipeline   (the prompts, the worker thread, the session log)
+    animator_common · animator_plan (the build's legs and priors; no Qt)
+      ↑ animator_pipeline   (the prompts, the worker)
       ↑ animator_widgets    (BlockRow, FillMeter, SceneCard)
       ↑ animator_panel      (AnimatorFloatPanel)
-        ↑ animator_page     (AnimatorPage — the two stages)
+        ↑ animator_scenes   (stage two, a mixin)
+        ↑ animator_build    (the build and its footer, a mixin)
+          ↑ animator_page   (AnimatorPage — the two stages)
 """
 
 from __future__ import annotations
 
+import datetime as _dt
+import json as _json
+
 from PySide6.QtWidgets import QScrollArea
 
-from core import APP_DIR
+from core import APP_DIR, EXPORTS_DIR
 
 ANIMATOR_LOG_FILE = APP_DIR / "exports" / "animator_log.json"
 # 3: scenes carry the sentences they were built from, so a restored session can
@@ -81,3 +87,32 @@ def fit_scroll_content(scroll: QScrollArea) -> None:
         visible += 1
     total += max(0, visible - 1) * lay.spacing()
     holder.setMinimumHeight(total)
+
+
+# ─── Session log ─────────────────────────────────────────────────────────────
+
+def log_save(payload: dict) -> None:
+    try:
+        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        payload = dict(payload)
+        payload["v"] = LOG_VERSION
+        payload["timestamp"] = _dt.datetime.now().isoformat(timespec="seconds")
+        ANIMATOR_LOG_FILE.write_text(
+            _json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def log_load() -> "dict | None":
+    """The last session — only the current schema; a log written by the old
+    single-textarea workflow has no blocks to restore into."""
+    try:
+        if not ANIMATOR_LOG_FILE.exists():
+            return None
+        data = _json.loads(ANIMATOR_LOG_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("v") == LOG_VERSION and data.get("blocks"):
+            return data
+    except Exception:
+        pass
+    return None

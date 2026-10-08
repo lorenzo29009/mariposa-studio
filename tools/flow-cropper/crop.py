@@ -37,6 +37,8 @@ Usage:
     crop.py [--dry-run] --creative FOLDER ID AD_FORMAT AVATAR ANGLE CREATOR AWARENESS PRODUCT
     crop.py [--dry-run] --simple FOLDER ID FORMAT
     crop.py --undo FOLDER          (CREATOR may be an empty string)
+
+    --progress   also print `@@progress {json}` lines (the app's progress bar)
 """
 
 import json
@@ -116,8 +118,10 @@ def safe_print(*args, **kwargs):
 _RENAME_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.5, 2.0, 3.0, 3.0)  # ~11s total
 
 
-def rename_with_retry(src: Path, dst: Path):
+def rename_with_retry(src: Path, dst: Path, replace: bool = False):
     """Rename src → dst, retrying transient Windows sharing violations.
+    `replace` lets it land on an existing dst (os.replace), as a finished
+    `.part` does.
 
     On the final failure raises a RuntimeError that names the likely culprit and
     how to clear it — far more useful than a raw WinError 32 traceback."""
@@ -126,7 +130,10 @@ def rename_with_retry(src: Path, dst: Path):
         if delay:
             time.sleep(delay)
         try:
-            src.rename(dst)
+            if replace:
+                os.replace(src, dst)
+            else:
+                src.rename(dst)
             return
         except PermissionError as e:
             # A live handle on the file (Windows) — worth waiting out. Anywhere
@@ -189,11 +196,16 @@ def detect_creative_id(folder_name: str):
 VF_CROP = "crop=iw:iw*5/4:0:(ih-iw*5/4)/2"
 
 
+#: Every ffmpeg this script spawns: no console window flashing up on Windows
+#: (CREATE_NO_WINDOW), nothing elsewhere.
+_NO_WINDOW = {"creationflags": 0x08000000} if IS_WINDOWS else {}
+
+
 def _list_encoders(ffmpeg: str) -> set:
     """The encoder names ffmpeg was compiled with (compiled-in ≠ usable)."""
     try:
         r = subprocess.run([ffmpeg, "-hide_banner", "-encoders"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, **_NO_WINDOW)
         return set(re.findall(r"^\s*[A-Z.]{6}\s+(\S+)", r.stdout, re.M))
     except Exception:
         return set()
@@ -209,7 +221,7 @@ def _encoder_opens(ffmpeg: str, enc: str) -> bool:
         args += ["-b:v", "1M"]
     args += ["-f", "null", "-"]
     try:
-        return subprocess.run(args, capture_output=True).returncode == 0
+        return subprocess.run(args, capture_output=True, **_NO_WINDOW).returncode == 0
     except Exception:
         return False
 
@@ -229,20 +241,76 @@ def select_encoder(ffmpeg: str) -> str:
     return "libx264"
 
 
-def _source_bitrate_kbps(ffmpeg: str, src: Path):
-    """Source's overall bitrate from ffmpeg's own probe output — no ffprobe
-    needed (it isn't always installed alongside ffmpeg). kbps, or None."""
+class Probe:
+    """What ffmpeg's own header says about a clip — no ffprobe needed (it
+    isn't always installed alongside ffmpeg, and on a Mac the two can come from
+    different installs). Every field may be None: a probe that can't read
+    something says so rather than guessing."""
+    __slots__ = ("duration", "kbps", "pixel_rate")
+
+    def __init__(self, duration=None, kbps=None, pixel_rate=None):
+        self.duration = duration        # seconds
+        self.kbps = kbps                # overall bitrate
+        self.pixel_rate = pixel_rate    # width × height × fps of the video
+
+
+def probe(ffmpeg: str, src: Path) -> Probe:
+    """One `ffmpeg -hide_banner -i` per clip: its length (for the progress
+    plan) and its bitrate (for the hardware encoder) from the same call."""
     try:
         r = subprocess.run([ffmpeg, "-hide_banner", "-i", str(src)],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", **_NO_WINDOW)
     except Exception:
-        return None
-    m = re.search(r"bitrate:\s*(\d+)\s*kb/s", r.stderr)
-    return int(m.group(1)) if m else None
+        return Probe()
+    text = r.stderr or ""
+    out = Probe()
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+    if m:
+        secs = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+        out.duration = secs if secs > 0 else None
+    m = re.search(r"bitrate:\s*(\d+)\s*kb/s", text)
+    if m:
+        out.kbps = int(m.group(1))
+    video = next((l for l in text.splitlines() if "Video:" in l), "")
+    size = re.search(r"\b(\d{2,5})x(\d{2,5})\b", video)
+    fps = re.search(r"(\d+(?:\.\d+)?)\s*fps", video)
+    if size:
+        rate = float(fps.group(1)) if fps else 30.0
+        out.pixel_rate = int(size.group(1)) * int(size.group(2)) * (rate or 30.0)
+    return out
 
 
-def _encode_args(ffmpeg: str, src: Path, dst: Path, encoder: str) -> list:
-    base = [ffmpeg, "-y", "-i", str(src), "-vf", VF_CROP]
+def _part(dst: Path) -> Path:
+    """Where an encode is written until it is whole.
+
+    A 4x5 that exists counts as done — a re-run skips it — so an encode must
+    never be visible under its final name half-written. A Stop kills ffmpeg
+    mid-file (on a Mac it dies of a broken pipe the moment the script is gone),
+    and before this a truncated clip was skipped as "already exists" forever.
+    The suffix keeps it out of every `*.mp4` listing, here and in the app."""
+    return dst.with_name(dst.name + ".part")
+
+
+def _discard(path: Path):
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _encode_args(ffmpeg: str, src: Path, dst: Path, encoder: str, *,
+                 kbps=None, live: bool = False) -> list:
+    """`dst` is the `.part` file, hence the explicit `-f mp4`. `live` asks for
+    ffmpeg's machine-readable progress on stdout and nothing but errors on
+    stderr."""
+    base = [ffmpeg]
+    if live:
+        # No -stats_period: it only exists from ffmpeg 4.4 and the default
+        # (one block every 0.5 s) is already the rate the bar wants.
+        base += ["-hide_banner", "-nostats", "-loglevel", "error",
+                 "-progress", "pipe:1"]
+    base += ["-y", "-i", str(src), "-vf", VF_CROP]
     if encoder == "libx264":
         # "faster" cuts a single clip from ~19.5s to ~11.7s vs the libx264
         # default ("medium"), visually equivalent (VMAF 94.7 vs 95.3), same size.
@@ -253,23 +321,182 @@ def _encode_args(ffmpeg: str, src: Path, dst: Path, encoder: str) -> list:
         # 4:5 crop drops ~30% of the pixels (so it needs fewer bits), which about
         # cancels the hardware encoder's lower efficiency vs x264. Clamped to a
         # sane range when the probe can't read a bitrate.
-        kbps = _source_bitrate_kbps(ffmpeg, src)
+        if kbps is None:
+            kbps = probe(ffmpeg, src).kbps
         target = kbps if kbps else 10000
         target = max(3500, min(target, 20000))
         venc = ["-c:v", encoder, "-b:v", f"{target}k"]
-    return base + venc + ["-c:a", "copy", str(dst)]
+    return base + venc + ["-c:a", "copy", "-f", "mp4", str(dst)]
 
 
-def crop_to_4x5(src: Path, dst: Path, ffmpeg: str, encoder: str = "libx264"):
-    result = subprocess.run(_encode_args(ffmpeg, src, dst, encoder),
-                            capture_output=True, text=True)
-    if result.returncode != 0 and encoder != "libx264":
-        # Hardware path failed on this clip — retry with the software encoder so
-        # the job still completes rather than aborting the whole run.
-        result = subprocess.run(_encode_args(ffmpeg, src, dst, "libx264"),
-                                capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"FFmpeg failed for {src.name}:\n{result.stderr[-600:]}")
+def _seconds(value: str):
+    """`out_time_us=8600000` / `out_time=00:00:08.600000` → seconds; None
+    for ffmpeg's early `N/A`."""
+    value = value.strip()
+    if not value or value.upper().startswith("N/A"):
+        return None
+    if ":" in value:
+        try:
+            h, m, s = value.split(":")
+            return int(h) * 3600 + int(m) * 60 + float(s)
+        except ValueError:
+            return None
+    try:
+        return int(value) / 1_000_000
+    except ValueError:
+        return None
+
+
+def _encode_live(args: list, on_seconds) -> tuple:
+    """Run one encode and report how far it is, block by block.
+
+    stderr is drained on its own thread: on Windows a pipe holds a few KB, and
+    an ffmpeg blocked writing an error nobody reads while we wait on stdout is
+    a deadlock. Returns (exit code, the tail of stderr)."""
+    proc = subprocess.Popen(args, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace",
+                            **_NO_WINDOW)
+    tail: list = []
+
+    def drain():
+        for line in proc.stderr:
+            tail.append(line)
+            del tail[:-40]
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    us = at = None
+    for line in proc.stdout:
+        key, _, value = line.strip().partition("=")
+        if key == "out_time_us":
+            us = _seconds(value)
+        elif key == "out_time":
+            at = _seconds(value)
+        elif key == "progress":
+            done = us if us is not None else at
+            if done is not None:
+                on_seconds(done)
+            us = at = None
+    code = proc.wait()
+    reader.join(timeout=5)
+    return code, "".join(tail)
+
+
+def _encode(ffmpeg: str, src: Path, dst: Path, encoder: str, *, kbps=None,
+            on_seconds=None) -> tuple:
+    """One ffmpeg run → (exit code, stderr). Without a progress callback this is
+    the plain captured run it has always been."""
+    if on_seconds is None:
+        r = subprocess.run(_encode_args(ffmpeg, src, dst, encoder, kbps=kbps),
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", **_NO_WINDOW)
+        return r.returncode, r.stderr or ""
+    return _encode_live(_encode_args(ffmpeg, src, dst, encoder, kbps=kbps,
+                                     live=True), on_seconds)
+
+
+def crop_to_4x5(src: Path, dst: Path, ffmpeg: str, encoder: str = "libx264", *,
+                kbps=None, on_seconds=None, on_fallback=None):
+    """Reframe one clip into `dst`, by way of `dst.part`.
+
+    When the hardware encoder fails on a clip it is retried in software, and
+    `on_fallback(src)` is told first — that is the run's cue to stop trying the
+    hardware path at all."""
+    part = _part(dst)
+    code, err = _encode(ffmpeg, src, part, encoder, kbps=kbps, on_seconds=on_seconds)
+    if code != 0 and encoder != "libx264":
+        _discard(part)
+        if on_fallback is not None:
+            on_fallback(src)
+        else:
+            safe_print(f"    hardware encoder failed on {src.name} — "
+                       f"re-encoding in software")
+        code, err = _encode(ffmpeg, src, part, "libx264", on_seconds=on_seconds)
+    if code != 0:
+        _discard(part)
+        raise RuntimeError(f"FFmpeg failed for {src.name}:\n{err[-600:]}")
+    rename_with_retry(part, dst, replace=True)
+
+
+# ── Progress (only with --progress) ───────────────────────────────────────────
+# The app draws a bar from `@@progress {json}` lines — the contract is the
+# app's docs/PROGRESS.md. A run plans every clip it will reframe before it
+# touches anything, each priced from the clip's length, then reports ffmpeg's
+# own position inside each one. Silent unless asked: the same script runs
+# inside Clip Cutter and the caption-ugc skill, whose logs keep only a tail.
+
+#: × realtime for a 1080x1920 30 fps source. The Mac numbers are measured on the
+#: reference machine (Apple M4): VideoToolbox ~9x, libx264 -preset faster ~6.5x.
+#: Windows has no measurement yet: NVENC/QSV/AMF ~6x and libx264 on a laptop
+#: ~2x are guesses, and the app's timing history corrects them after one run.
+ENCODE_SPEED = {"hw": 6.0, "sw": 2.0} if IS_WINDOWS else {"hw": 9.0, "sw": 6.5}
+#: Per clip, whatever its length: the spawn, the encoder session, the first block.
+ENCODE_SETUP_S = 0.25
+REF_PIXEL_RATE = 1080 * 1920 * 30
+#: How the cost follows the source's pixel rate, measured on the M4 against
+#: 720p, 1080p60 and 4K sources: about linear for libx264, well under for
+#: VideoToolbox (4K costs it 2.3x, not 4x).
+PIXEL_EXPONENT = {"hw": 0.7, "sw": 1.0}
+
+
+def encode_prior(duration, pixel_rate, kind: str):
+    """Seconds one reframe should take on the reference machine, or None."""
+    if not duration:
+        return None
+    scale = 1.0
+    if pixel_rate:
+        scale = (pixel_rate / REF_PIXEL_RATE) ** PIXEL_EXPONENT[kind]
+        scale = max(0.25, min(scale, 8.0))
+    return round(duration / ENCODE_SPEED[kind] * scale + ENCODE_SETUP_S, 2)
+
+
+class Reporter:
+    """Writes the progress lines, one write each, under the print lock."""
+
+    #: At most this often per leg — ffmpeg's blocks come every 0.5 s anyway.
+    MIN_GAP_S = 0.25
+
+    def __init__(self, on: bool = False):
+        self.on = on
+        self._sent: dict = {}          # key -> (when, frac)
+
+    def emit(self, event: dict):
+        if not self.on:
+            return
+        line = "@@progress " + json.dumps(event, ensure_ascii=False,
+                                          separators=(",", ":"))
+        with _PRINT_LOCK:
+            sys.stdout.write(line + "\n")
+            sys.stdout.flush()
+
+    def enter(self, key):
+        if key:
+            self._sent.pop(key, None)
+            self.emit({"enter": key})
+
+    def done(self, key):
+        if key:
+            self.emit({"done": key})
+
+    def skip(self, key):
+        if key:
+            self.emit({"skip": key})
+
+    def restart(self, key):
+        """The leg starts over (a software retry): its fractions begin at 0."""
+        self._sent.pop(key, None)
+
+    def frac(self, key, value: float):
+        if not key:
+            return
+        value = max(0.0, min(1.0, value))
+        now = time.monotonic()
+        when, last = self._sent.get(key, (None, -1.0))
+        if value <= last or (when is not None and now - when < self.MIN_GAP_S):
+            return
+        self._sent[key] = (now, value)
+        self.emit({"frac": round(value, 4), "key": key})
 
 
 # ── Naming ────────────────────────────────────────────────────────────────────
@@ -349,95 +576,253 @@ def _build_index_pattern(name_for, cta: str) -> "re.Pattern[str]":
     return re.compile("^" + pat + "$")
 
 
-def process_folder(nine16: Path, four5: Path, name_for, ffmpeg: str,
-                   cta: str = "", workers: int = 1, dry_run: bool = False,
-                   actions: list = None, on_action=None,
-                   encoder: str = "libx264"):
-    """Rename + reframe one unit. `nine16` and `four5` come from `plan_units`,
-    already resolved — nothing here guesses a folder name or its spelling."""
-    files = _videos(nine16)
-    if not files:
-        print(f"{cta + ': ' if cta else ''}No clips in {nine16.name}/ — skipping.")
-        return
-    prefix = f"{cta}: " if cta else ""
-    indent = "  " if cta else ""
-    if not dry_run:
-        four5.mkdir(exist_ok=True)
+class Clip:
+    """One clip of a unit as the run will find it: the index and name it will
+    carry, where its 4x5 goes, and whether that exists already."""
+    __slots__ = ("pos", "index", "name", "now", "n9", "p9", "p4", "exists",
+                 "number", "key", "probe", "kind")
 
+    def __init__(self, pos, index, name, now, n9, p9, p4, exists):
+        self.pos, self.index, self.name, self.now = pos, index, name, now
+        self.n9, self.p9, self.p4, self.exists = n9, p9, p4, exists
+        self.number = 0        # 1..N across the whole run, when it is reframed
+        self.key = None        # its progress leg, "encode#<number>"
+        self.probe = None
+        self.kind = "hw"
+
+
+class UnitPlan:
+    """One unit — the simple folder, or one CTA folder — planned before
+    anything moves. `nine16` is where its clips will be once loose ones are
+    filed; `moves` is how many of them that is."""
+
+    def __init__(self, unit, src, cta, nine16, four5, clips, kept, assigned, moves):
+        self.unit, self.src, self.cta = unit, src, cta
+        self.nine16, self.four5, self.clips = nine16, four5, clips
+        self.kept, self.assigned, self.moves = kept, assigned, moves
+        self.files_key = None  # its rename/filing leg, when it has any
+
+    @property
+    def renames(self) -> int:
+        return sum(1 for c in self.clips if c.name != c.n9)
+
+
+def _adopt_dest(unit: Path) -> Path:
+    """The 9x16/ that loose clips of `unit` are filed into."""
+    return _named_dir(unit, NINE16_NAMES) or (unit / CANON_NINE16)
+
+
+def plan_unit(unit: Path, src: Path, cta: str, name_for,
+              dry_run: bool = False) -> UnitPlan:
+    """Which index, name and 4x5 every clip of a unit gets — read off the disk,
+    nothing moved. A run plans all its units before it touches any of them, so
+    the whole job is known up front (and `adopt_loose` moving files later
+    changes where the clips are, never which ones they are)."""
+    nine16 = _adopt_dest(unit) if (src == unit and not dry_run) else src
+    here = {f.name for f in _videos(src)}
+    names = set(here)
+    moves = 0
+    if nine16 != src:
+        filed = {f.name for f in _videos(nine16)}
+        moves = len(here - filed)
+        names |= filed
+    four5 = _out_dir(unit)
     pattern = _build_index_pattern(name_for, cta)
 
-    keep: list[tuple[int, Path]] = []
-    new_files: list[Path] = []
-    for f in files:
-        m = pattern.match(f.name)
+    keep: list = []
+    new_files: list = []
+    for name in sorted(names, key=lambda n: _natural_key(Path(n))):
+        m = pattern.match(name)
         if m:
-            keep.append((int(m.group(1)), f))
+            keep.append((int(m.group(1)), name))
         else:
-            new_files.append(f)
+            new_files.append(name)
 
     # Assign new (not-yet-renamed) files to the LOWEST free indices first, so
     # gaps left by already-renamed files get filled instead of new files being
     # appended past the highest index. E.g. with H1/H3/H4 already named (indices
     # 1,3,4) and H2/H5 still to do, H2→2 (fills the gap) and H5→5 — not 5 and 6.
     used = {idx for idx, _ in keep}
-    new_files.sort(key=_natural_key)
     next_i = 1
-    assigned: list[tuple[int, Path]] = []
-    for f in new_files:
+    assigned: list = []
+    for name in new_files:
         while next_i in used:
             next_i += 1
-        assigned.append((next_i, f))
+        assigned.append((next_i, name))
         used.add(next_i)
         next_i += 1
 
-    all_jobs = sorted(keep + assigned, key=lambda x: x[0])
-    total = len(all_jobs)
+    clips = []
+    for pos, (i, name) in enumerate(sorted(keep + assigned, key=lambda x: x[0]), 1):
+        n9 = name_for("9x16", i, cta)
+        p4 = four5 / name_for("4x5", i, cta)
+        now = (src if name in here else nine16) / name
+        clips.append(Clip(pos, i, name, now, n9, nine16 / n9, p4, p4.exists()))
+    return UnitPlan(unit, src, cta, nine16, four5, clips, len(keep),
+                    len(assigned), moves)
+
+
+class RunState:
+    """What every unit of a run shares: the plan the progress bar is drawn
+    from, its reporter, and the encoder — which falls back to software once,
+    for good, so a broken hardware path costs one clip twice, not every clip."""
+
+    def __init__(self, plans: list, encoder: str, reporter: "Reporter",
+                 dry_run: bool = False):
+        self.plans = plans
+        self.encoder = encoder
+        self.reporter = reporter
+        self._lock = threading.Lock()
+        kind = "sw" if encoder == "libx264" else "hw"
+        self.todo = [] if dry_run else [c for p in plans for c in p.clips
+                                        if not c.exists]
+        for n, c in enumerate(self.todo, 1):
+            c.number, c.key, c.kind = n, f"encode#{n}", kind
+        for u, p in enumerate(plans, 1):
+            if not dry_run and (p.moves or p.renames):
+                p.files_key = f"files#{u}"
+
+    def probe_all(self, ffmpeg: str):
+        """Every clip to reframe, probed once, in parallel — its length prices
+        its leg, its bitrate feeds the hardware encoder."""
+        if not self.todo:
+            return
+        with ThreadPoolExecutor(max_workers=min(8, len(self.todo))) as ex:
+            for c, pr in zip(self.todo, ex.map(lambda c: probe(ffmpeg, c.now),
+                                               self.todo)):
+                c.probe = pr
+
+    def legs(self) -> list:
+        """The whole run in the order it happens: per unit, its renames, then
+        its reframes. A clip whose length could not be read is priced as the
+        average clip."""
+        lengths = [c.probe.duration for c in self.todo
+                   if c.probe and c.probe.duration]
+        mean = sum(lengths) / len(lengths) if lengths else None
+        total = len(self.todo)
+        out = []
+        for p in self.plans:
+            if p.files_key:
+                out.append({"key": p.files_key, "kind": "flow.files",
+                            "prior": round(0.01 + 0.005 * (p.moves + p.renames), 3),
+                            "label": "Filing and renaming" if p.moves else "Renaming"})
+            for c in p.clips:
+                if not c.key:
+                    continue
+                pr = c.probe or Probe()
+                leg = {"key": c.key, "kind": f"flow.encode.{c.kind}",
+                       "label": f"Reframing clip {c.number} of {total}"}
+                prior = encode_prior(pr.duration or mean, pr.pixel_rate, c.kind)
+                if prior is not None:
+                    leg["prior"] = prior
+                out.append(leg)
+        return out
+
+    def announce(self):
+        self.reporter.emit({"plan": self.legs()})
+
+    def to_software(self, clip: Clip, indent: str):
+        """The hardware encoder failed on `clip`: say so, and use libx264 for
+        it and for every clip after it."""
+        with self._lock:
+            if self.encoder != "libx264":
+                self.encoder = "libx264"
+                safe_print(f"{indent}  hardware encoder failed — re-encoding in "
+                           f"software (libx264) from here on")
+            changed = False
+            after = False
+            for c in self.todo:
+                after = after or c is clip
+                if after and c.kind != "sw":
+                    c.kind, changed = "sw", True
+            if changed:
+                self.announce()
+            self.reporter.restart(clip.key)
+
+
+def process_unit(plan: UnitPlan, ffmpeg: str, state: RunState, workers: int = 1,
+                 dry_run: bool = False, actions: list = None, on_action=None):
+    """Rename + reframe one unit, as `plan_unit` planned it. Its folders come
+    from `plan_units`, already resolved — nothing here guesses a folder name or
+    its spelling."""
+    cta, nine16, four5 = plan.cta, plan.nine16, plan.four5
+    if not plan.clips:
+        print(f"{cta + ': ' if cta else ''}No clips in {nine16.name}/ — skipping.")
+        return
+    prefix = f"{cta}: " if cta else ""
+    indent = "  " if cta else ""
+    if not dry_run:
+        four5.mkdir(exist_ok=True)
+    rep = state.reporter
+
+    total = len(plan.clips)
     tag = "PREVIEW · " if dry_run else ""
     print(f"{prefix}{tag}Found {total} video(s)  "
-          f"({len(keep)} already named, {len(assigned)} to rename)")
+          f"({plan.kept} already named, {plan.assigned} to rename)")
 
     jobs = []
-    for pos, (i, vid) in enumerate(all_jobs, 1):
-        n9 = name_for("9x16", i, cta)
-        n4 = name_for("4x5", i, cta)
-        p9 = nine16 / n9
-        p4 = four5 / n4
-        if vid.name != n9:
+    for c in plan.clips:
+        vid = nine16 / c.name
+        if c.name != c.n9:
             if dry_run:
-                print(f"{indent}[{pos}/{total}] would rename {vid.name} → {n9}")
+                print(f"{indent}[{c.pos}/{total}] would rename {c.name} → {c.n9}")
             else:
-                print(f"{indent}[{pos}/{total}] rename {vid.name} → {n9}")
-                rename_with_retry(vid, p9)
+                print(f"{indent}[{c.pos}/{total}] rename {c.name} → {c.n9}")
+                rename_with_retry(vid, c.p9)
                 if actions is not None:
                     actions.append({
                         "type": "rename",
                         "dir": str(nine16),
-                        "from": vid.name,
-                        "to": n9,
+                        "from": c.name,
+                        "to": c.n9,
                     })
                     if on_action:
                         on_action()
-        if p4.exists():
-            print(f"{indent}[{pos}/{total}] 4x5 already exists — skipping")
+        if c.p4.exists():
+            print(f"{indent}[{c.pos}/{total}] 4x5 already exists — skipping")
+            if not dry_run:
+                _discard(_part(c.p4))  # a killed run's leftover, never needed now
+            rep.skip(c.key)            # planned, but it appeared since
             continue
-        jobs.append((pos, i, p9, p4))
+        jobs.append(c)
 
     if not jobs:
         print(f"{indent}Nothing to crop — all 4x5 files already exist.")
         return
 
-    def worker(job):
-        pos, _i, p9, p4 = job
+    # One leg at a time: parallel encodes would be several "current" legs on
+    # one route, so they report only when each one is done.
+    live = rep.on and workers <= 1
+
+    def worker(c: Clip):
         if dry_run:
-            safe_print(f"{indent}[{pos}/{total}] would crop {p9.name} → {p4.name}")
+            safe_print(f"{indent}[{c.pos}/{total}] would crop {c.p9.name} → {c.p4.name}")
             return
-        safe_print(f"{indent}[{pos}/{total}] cropping {p9.name} ...")
-        crop_to_4x5(p9, p4, ffmpeg, encoder)
-        safe_print(f"{indent}[{pos}/{total}] ✓ {p4.name}")
+        safe_print(f"{indent}[{c.pos}/{total}] cropping {c.p9.name} ...")
+        if live:
+            rep.enter(c.key)
+        # Logged before the encode starts, as the .part it is writing: a Stop
+        # mid-clip leaves that file behind, and undo then knows to take it.
+        made = None
         if actions is not None:
-            actions.append({"type": "create", "path": str(p4)})
+            made = {"type": "create", "path": str(_part(c.p4))}
+            actions.append(made)
             if on_action:
                 on_action()
+        dur = c.probe.duration if c.probe else None
+        on_seconds = None
+        if live and c.key and dur:
+            on_seconds = lambda s, k=c.key, d=dur: rep.frac(k, s / d)
+        crop_to_4x5(c.p9, c.p4, ffmpeg, state.encoder,
+                    kbps=(c.probe.kbps or 0) if c.probe else None,
+                    on_seconds=on_seconds,
+                    on_fallback=lambda _src, c=c: state.to_software(c, indent))
+        if made is not None:
+            made["path"] = str(c.p4)
+            if on_action:
+                on_action()
+        safe_print(f"{indent}[{c.pos}/{total}] ✓ {c.p4.name}")
+        rep.done(c.key)
 
     if dry_run or workers <= 1 or len(jobs) == 1:
         for job in jobs:
@@ -592,7 +977,7 @@ def adopt_loose(unit: Path, src: Path, *, dry_run: bool = False,
     logged, so undo puts them back."""
     if src != unit:
         return src
-    dest = _named_dir(unit, NINE16_NAMES) or (unit / CANON_NINE16)
+    dest = _adopt_dest(unit)
     loose = sorted(_videos(unit), key=_natural_key)
     if dry_run:
         print(f"  would file {len(loose)} loose clip(s) under {dest.name}/")
@@ -637,7 +1022,7 @@ def _save_log(folder: Path, data: dict):
 
 def run(folder: Path, fields: dict, ffmpeg: str,
         workers: int = DEFAULT_WORKERS, dry_run: bool = False,
-        actions: list = None, on_action=None) -> list:
+        actions: list = None, on_action=None, progress: bool = False) -> list:
     if actions is None:
         actions = []
     if fields.get("mode") == "simple":
@@ -657,22 +1042,35 @@ def run(folder: Path, fields: dict, ffmpeg: str,
         raise NothingToDo(nothing_found(folder))
     labels = [c for _, _, c in units if c]
     structure = f"cta ({', '.join(labels)})" if labels else "simple"
+    # Every unit is planned before any of them is touched: the progress plan
+    # needs the whole run, and filing loose clips moves them.
+    plans = [plan_unit(unit, src, cta, name_for, dry_run=dry_run)
+             for unit, src, cta in units]
     # Pick the encoder once per run (the probe is cheap; doing it per clip isn't).
     # Skip the probe on a dry run — nothing gets encoded.
     encoder = "libx264" if dry_run else select_encoder(ffmpeg)
     kind = "software" if encoder == "libx264" else "hardware"
+    state = RunState(plans, encoder, Reporter(progress and not dry_run),
+                     dry_run=dry_run)
     print(f"Structure: {structure}")
     print(f"Workers  : {workers}")
     print(f"Encoder  : {encoder} ({kind})")
     if dry_run:
         print("Mode     : DRY RUN (no files will be changed)")
+    if state.reporter.on:
+        state.probe_all(ffmpeg)
+        state.announce()
     print()
-    for unit, src, cta in units:
-        nine16 = adopt_loose(unit, src, dry_run=dry_run, actions=actions,
-                             on_action=on_action)
-        process_folder(nine16, _out_dir(unit), name_for, ffmpeg, cta=cta,
-                       workers=workers, dry_run=dry_run, actions=actions,
-                       on_action=on_action, encoder=encoder)
+    for plan in plans:
+        state.reporter.enter(plan.files_key)
+        nine16 = adopt_loose(plan.unit, plan.src, dry_run=dry_run,
+                             actions=actions, on_action=on_action)
+        if nine16 != plan.nine16:
+            # The disk changed under the plan. The files are what they are:
+            # plan this unit again where they are now, and let its progress go.
+            plan = plan_unit(plan.unit, nine16, plan.cta, name_for, dry_run=dry_run)
+        process_unit(plan, ffmpeg, state, workers=workers, dry_run=dry_run,
+                     actions=actions, on_action=on_action)
     return actions
 
 
@@ -905,7 +1303,8 @@ def interactive(workers: int = DEFAULT_WORKERS):
 
 
 def run_with(folder: Path, fields: dict,
-             workers: int = DEFAULT_WORKERS, dry_run: bool = False):
+             workers: int = DEFAULT_WORKERS, dry_run: bool = False,
+             progress: bool = False):
     if not folder.is_dir():
         print(f"Folder not found: {folder}")
         sys.exit(1)
@@ -965,13 +1364,14 @@ def run_with(folder: Path, fields: dict,
     try:
         try:
             run(folder, fields, ffmpeg, workers=workers,
-                dry_run=dry_run, actions=actions, on_action=flush)
+                dry_run=dry_run, actions=actions, on_action=flush,
+                progress=progress)
         except NothingToDo as e:
             # Not a bug a maintainer can fix — a folder that isn't ready. One
             # sentence, no traceback.
             print(e)
             sys.exit(1)
-        print("\n✓ All done!" if not dry_run else "\n✓ Preview done — no files changed.")
+        print("\n✓ All done." if not dry_run else "\n✓ Preview done — no files changed.")
     finally:
         flush()
         if not dry_run and actions:
@@ -996,6 +1396,13 @@ def main():
         args.remove("--dry-run")
         dry_run = True
 
+    # --progress: `@@progress {json}` lines for the app's progress bar. Off by
+    # default — other pipelines run this script and keep only a log tail.
+    progress = False
+    if "--progress" in args:
+        args.remove("--progress")
+        progress = True
+
     # --undo FOLDER — reverse the last logged run for that campaign folder.
     if args and args[0] == "--undo":
         if len(args) < 2:
@@ -1014,7 +1421,7 @@ def main():
             "format": args[3].strip(),
         }
         run_with(Path(args[1]).expanduser().resolve(), fields,
-                 workers=workers, dry_run=dry_run)
+                 workers=workers, dry_run=dry_run, progress=progress)
         return
 
     if args and args[0] == "--creative":
@@ -1033,7 +1440,7 @@ def main():
             "product": args[8].strip() or DEFAULT_PRODUCT,
         }
         run_with(Path(args[1]).expanduser().resolve(), fields,
-                 workers=workers, dry_run=dry_run)
+                 workers=workers, dry_run=dry_run, progress=progress)
         return
 
     if args:

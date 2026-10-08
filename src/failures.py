@@ -131,7 +131,9 @@ _TABLE: list[tuple[re.Pattern[str], Failure]] = [
          fix="open_settings",
          fix_label="Open Settings")),
 
-    (re.compile(r"429|rate limit|RESOURCE_EXHAUSTED|quota", re.I),
+    # A bare "429" only as a number of its own: a WhisperX timestamp such as
+    # "[12.429 --> 13.0]" in the log is not Google refusing the key.
+    (re.compile(r"(?<![\d.:])429(?![\d.])|rate limit|RESOURCE_EXHAUSTED|quota", re.I),
      Failure(
          key="rate_limit",
          title="Google is rate-limiting the key",

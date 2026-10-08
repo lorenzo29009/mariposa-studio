@@ -12,10 +12,10 @@ So this module inverts it:
 
   * `LogColumn` — the log is a permanent, cream, quiet column. Three lines of
     environment at the top, the live output under it, "Copy log" in the foot.
-  * `ProgressLine` — determinate wherever the work is countable, with elapsed
-    and an estimate averaged from the units already finished. Never a model.
-    When nothing counts it stays indeterminate and the elapsed timer and the
-    live log carry the honesty instead.
+  * `ProgressLine` — a bar that keeps moving along the route the tool
+    reported (`progress.py`), with elapsed time and a countdown learned from
+    this machine's past runs. When a tool reports nothing it stays
+    indeterminate and the elapsed timer and the live log carry the honesty.
   * `ResultCard` — finishing is an event, not a colour change: the count, the
     path, and the two verbs.
   * `FailureCard` — a written cause and, where we have one, a real fix.
@@ -27,6 +27,7 @@ about how long you'll be waiting.
 """
 from __future__ import annotations
 
+import math
 import time
 from typing import Callable, Optional
 
@@ -40,6 +41,7 @@ from design import (
     DONE, DONE_SOFT, R_FULL, SHADOW_REST, STOP, TXT_DISABLED, WAIT, WINE,
     apply_shadow, svg_icon,
 )
+from progress import Countdown, Route, history as progress_history
 from widgets import ConsoleView
 
 # The four state meanings, and the only four colours a runner ever shows.
@@ -111,12 +113,23 @@ def _row(*widgets, spacing: int = 10, margins=(0, 0, 0, 0)) -> QWidget:
 
 
 class ProgressLine(QWidget):
-    """A determinate bar plus "1 min 34 s elapsed · about 3 min left".
+    """A bar that keeps moving, plus "1 min 34 s elapsed · about 3 min left".
 
-    The estimate is the mean of the units already finished, extrapolated —
-    arithmetic on what has actually happened, not a prediction. Until at least
-    one unit is done there is no estimate, and it says nothing rather than
-    guessing."""
+    It draws a `progress.Route` — the plan the tool reported, learned against
+    this machine's history — and never decides anything itself:
+
+      * the bar eases toward the route's position twenty times a second and
+        never moves backwards, so a finished stage glides forward instead of
+        jumping and a re-plan never visibly undoes work;
+      * the time left is a `progress.Countdown`: it ticks down by itself and
+        eases toward each fresh estimate, so it neither freezes nor leaps.
+
+    Until a route exists — a tool that reports nothing — the bar stays
+    indeterminate and only the elapsed time speaks."""
+
+    FRAME_MS = 50
+    #: How quickly the drawn bar catches up with the route (seconds).
+    EASE_S = 0.35
 
     def __init__(self):
         super().__init__()
@@ -135,68 +148,111 @@ class ProgressLine(QWidget):
         self.left.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         v.addWidget(_row(self.elapsed, None, self.left))
 
+        self._route: Optional[Route] = None
+        self._countdown = Countdown()
         self._started = 0.0
-        self._done = 0
-        self._total = 0
-        self._eta = 0.0                  # absolute monotonic time we expect to finish
+        self._running = False
+        self._target = 0.0
+        self._shown = 0.0
+        self._last_frame = 0.0
+        self._last_text = -1.0
         self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
+        self._timer.setInterval(self.FRAME_MS)
+        self._timer.timeout.connect(self._frame)
 
     # ---- lifecycle ----
     def start(self):
+        """A new job: a fresh clock, an empty bar, no route yet."""
+        self._route = None
+        self._countdown.reset()
         self._started = time.monotonic()
-        self._done = 0
-        self._total = 0
-        self._eta = 0.0
-        self.bar.setRange(0, 0)          # indeterminate until something counts
-        self._timer.start(1000)
-        self._tick()
+        self._last_frame = self._started
+        self._last_text = -1.0
+        self._target = self._shown = 0.0
+        self._running = True
+        self.bar.setRange(0, 0)          # indeterminate until a route exists
+        self.left.setText("")
+        self._timer.start()
+        self._frame()
+
+    def is_running(self) -> bool:
+        return self._running
+
+    def started_at(self) -> Optional[float]:
+        """When this job's clock started (monotonic), or None before one."""
+        return self._started or None
+
+    def resume(self, started: float):
+        """Carry on a job's clock after a restart in the middle of it — a
+        retry inside a folder is still the same job. The bar is left alone:
+        it eases up to wherever the route really is."""
+        if started:
+            self._started = started
+            self._last_text = -1.0
+            self._frame()
 
     def stop(self):
         self._timer.stop()
+        self._running = False
+
+    def track(self, route: Optional[Route]):
+        """Draw this route from now on (a batch swaps in its outer route)."""
+        self._route = route
+        if route is not None and self.bar.maximum() == 0:
+            self.bar.setRange(0, 1000)
+            self.bar.setValue(int(self._shown * 1000))
+        self._frame()
+
+    def route(self) -> Optional[Route]:
+        return self._route
 
     def set_units(self, done: int, total: int):
-        """A counted line arrived: switch to a real range and re-anchor the
-        estimate off what has actually finished."""
+        """The legacy counter, kept for callers that only know `[n/m]`."""
         if total <= 0:
             return
-        self._done, self._total = done, total
-        self.bar.setRange(0, total)
-        self.bar.setValue(min(done, total))
-        # Anchor an absolute finish time from the mean pace so far. Between
-        # units the "left" line then counts *down* toward this instant, instead
-        # of climbing as elapsed grows against a done count that hasn't moved.
-        if done > 0 and self._started:
-            per = (time.monotonic() - self._started) / done
-            self._eta = self._started + per * total
-        self._tick()
+        if self._route is None:
+            self.track(Route(history=progress_history()))
+        self._route.units(done, total)
+        self._frame()
 
     def finish(self, ok: bool = True):
-        self._timer.stop()
-        if self._total:
-            self.bar.setRange(0, self._total)
-            self.bar.setValue(self._total if ok else self._done)
-        else:
-            self.bar.setRange(0, 1)
-            self.bar.setValue(1 if ok else 0)
-        self._tick(final=True)
+        self.stop()
+        if ok:
+            self._target = self._shown = 1.0
+        self.bar.setRange(0, 1000)
+        self.bar.setValue(int(self._shown * 1000))
+        self._text(time.monotonic(), final=True)
 
-    # ---- the two sentences ----
-    def _tick(self, final: bool = False):
+    # ---- drawing ----
+    def _frame(self):
         now = time.monotonic()
+        dt = max(0.0, now - self._last_frame)
+        self._last_frame = now
+        if self._route is not None:
+            try:
+                target = self._route.position(now)
+            except Exception:            # a drawing tick must never raise
+                target = self._target
+            self._target = max(self._target, min(1.0, target))
+            self._shown += (self._target - self._shown) * (1 - math.exp(-dt / self.EASE_S))
+            if self.bar.maximum() == 0:
+                self.bar.setRange(0, 1000)
+            self.bar.setValue(int(round(self._shown * 1000)))
+        if now - self._last_text >= 0.25:
+            self._text(now)
+
+    def _text(self, now: float, final: bool = False):
+        self._last_text = now
         secs = int(now - self._started) if self._started else 0
         self.elapsed.setText(f"{human_duration(secs)} elapsed")
-        if (final or not self._total or self._done <= 0
-                or self._done >= self._total or not self._eta):
+        if final or self._route is None:
             self.left.setText("")
             return
-        remaining = int(self._eta - now)
-        if remaining <= 0:
-            # This unit is running longer than the ones before it. The countdown
-            # has run out, so say so plainly rather than tick back up.
-            self.left.setText("almost done")
-            return
-        self.left.setText(f"about {human_duration(remaining, approx=True)} left")
+        try:
+            raw = self._route.remaining(now)
+        except Exception:
+            raw = None
+        self.left.setText(self._countdown.update(raw, now))
 
 
 def human_duration(secs: int, approx: bool = False) -> str:
@@ -402,7 +458,10 @@ class LogColumn(QFrame):
         # a job is actually going, so it appears and leaves with one.
         self.note.setText(self._note_text if running else "")
         if running:
-            self.progress.start()
+            # A batch's next item is still the same job: its clock, its bar
+            # and its countdown carry on rather than starting again from zero.
+            if not self.progress.is_running():
+                self.progress.start()
         else:
             self.progress.stop()
 
@@ -416,6 +475,9 @@ class LogColumn(QFrame):
 
     def set_units(self, done: int, total: int):
         self.progress.set_units(done, total)
+
+    def track(self, route):
+        self.progress.track(route)
 
     def finish_progress(self, ok: bool):
         self.progress.finish(ok)
@@ -484,12 +546,12 @@ class StatusStrip(QFrame):
         top.addWidget(self.stop_btn)
         holder = QWidget(); holder.setObjectName("TransparentPanel"); holder.setLayout(top)
         v.addWidget(holder)
-        self.bar = QProgressBar()
-        self.bar.setObjectName("StatusProgress")
-        self.bar.setTextVisible(False)
-        self.bar.setRange(0, 0)
-        self.bar.setVisible(False)
-        v.addWidget(self.bar)
+        # The same moving bar and countdown as the log column — a short job
+        # still deserves to know how short.
+        self.progress = ProgressLine()
+        self.progress.setVisible(False)
+        self.bar = self.progress.bar
+        v.addWidget(self.progress)
 
         # The card slot — a finished job still gets its count, path and verbs.
         self._slot = QVBoxLayout()
@@ -518,18 +580,23 @@ class StatusStrip(QFrame):
         self.title.setText(sentence)
         running = state == "running"
         self.stop_btn.setVisible(running)
-        self.bar.setVisible(running)
+        self.progress.setVisible(running)
         self.console.setVisible(state in ("running", "error"))
         if running:
-            self.bar.setRange(0, 0)
+            if not self.progress.is_running():
+                self.progress.start()
+        else:
+            self.progress.stop()
 
     def set_units(self, done: int, total: int):
-        if total > 0:
-            self.bar.setRange(0, total)
-            self.bar.setValue(min(done, total))
+        self.progress.set_units(done, total)
+
+    def track(self, route):
+        self.progress.track(route)
 
     def finish_progress(self, ok: bool):
-        self.bar.setVisible(False)
+        self.progress.finish(ok)
+        self.progress.setVisible(False)
 
     def set_detail(self, text: str):
         self.detail.setText(text)

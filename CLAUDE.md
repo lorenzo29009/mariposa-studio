@@ -11,6 +11,7 @@ This file is loaded into every session, so it stays short. The depth lives in
 | Working on | Read first |
 |---|---|
 | Script Animator, packer, speech clock | `docs/ANIMATOR.md` |
+| Progress bars, time left, `@@progress` lines, notify / quit-when-done | `docs/PROGRESS.md` |
 | Finding a symbol / which file holds what | `docs/INDEX.md` (generated) |
 | Look, tokens, QSS, spacing | `docs/DESIGN.md` |
 | Logos, colours, voice | `docs/BRAND.md` |
@@ -84,31 +85,38 @@ design ← stylesheet
 design ← core ← widgets ← {tool_page ← *_page, camera_page, launcher} ← studio
 gemini  ← {camera_page, animator_pipeline}          (no Qt, no app imports)
 speech_clock ← script_text ← script_packer ← animator_*   (no Qt, no network)
+progress ← progress_wire ← tool_progress ← tool_page      (progress*: no Qt)
+progress ← widgets_status          jobs ← every page that runs a job, studio
 ```
 
 | Module | Contains |
 |---|---|
-| `core.py` | Paths (`APP_DIR`, `TOOLS_DIR`, `VENV_PY`, `WHISPERX_PY`, `ENV_PATH`), `.env` read/write, platform/icon helpers, `IS_MAC/IS_WINDOWS/IS_LINUX`, `make_nonactivating_panel()`. Has `__all__`. |
+| `core.py` | Paths (`APP_DIR`, `TOOLS_DIR`, `VENV_PY`, `WHISPERX_PY`, `ENV_PATH`), `.env` read/write (never raises: BOM, UTF-16, cp1252), platform/icon helpers, `IS_MAC/IS_WINDOWS/IS_LINUX`, `make_nonactivating_panel()`, `notify()` — **osascript on macOS** (Qt's tray message goes nowhere for an unbundled python), the tray elsewhere. Has `__all__`. |
 | `design.py` | The **"Atelier"** tokens: miavola's cream + wine, type (Cabinet Grotesk / Satoshi), spacing, radii, shadows, `svg_icon()` (Lucide), `TOOL_ICONS`. `BRAND_DIR` → `../brand`. **Read the radius + styled-background traps in `docs/DESIGN.md` before adding a chip or a painted surface.** |
 | `stylesheet.py` | `build_stylesheet()` → the app-wide QSS, keyed by objectName. Applied once in `studio.main()`. |
 | `widgets.py` | Reusable widgets: `Card`, `RaisedCard`, `FormRow`, `SettingRow`, `DropZone` (hero *or* collapsed row), `Segmented`, `Field`, `ChipGroup`, `Switch`, `ConsoleView`, `AppBar`, `Select`, and `AskDialog`/`ask_text()`/`ask_confirm()` — the app's own modal, which is how a question gets asked (never `QInputDialog`/`QMessageBox`). Has `__all__`. |
-| `widgets_status.py` | The job runner's honest surfaces: `LogColumn` (the log in daylight), `ProgressLine` (determinate + elapsed + estimate), `ResultCard`, `FailureCard`, `DryRunCard`, `StatusStrip`. |
+| `widgets_status.py` | The job runner's honest surfaces: `LogColumn` (the log in daylight), `ProgressLine` (draws a `progress.Route`: a bar that keeps moving + elapsed + a smoothed countdown), `ResultCard`, `FailureCard`, `DryRunCard`, `StatusStrip` (carries a `ProgressLine` too). |
+| `progress.py` | Where a job is and how long it has left: `Leg`, `Route` (position, time left, per-kind pace), `History` (`<exports>/.timings.json`, learned per machine), `Countdown`, `phrase_left`. No Qt — `scripts/test_progress.py`. |
+| `progress_wire.py` | `LineReader` (pipe chunks → whole lines; split UTF-8, CRLF, tqdm `\r`) and the `@@progress {json}` format: `parse`/`emit`/`apply`. No Qt. |
+| `tool_progress.py` | `RunProgress`, the `ToolPage` mixin: `plan_run()`/`plan_batch()`/`progress_events()`/`on_progress()`, progress lines kept out of the log, a batch nested as one route, learning after a clean run. |
+| `jobs.py` | What is running (`register()`/`busy()`) and what happens when any job ends (`finished()`): the ONE place both Settings switches are honoured; `quit_now()` is the only way the app quits on its own. |
 | `diagnostics.py` | The error report: `redact()` (secrets out of EVERY string — the key travels in URLs and tracebacks), `report()`/`save_report()`, `start_log()` (tees stdout/stderr per launch — **on Windows `pythonw.exe` has no console, so this is the only place a traceback survives**) and `install_hooks()`. Buildable from a crash handler, so it imports no page. |
 | `failures.py` | A matched-pattern table turning a stack trace into a sentence and one real fix. No Qt — `scripts/test_failures.py` covers it. |
 | `session.py` | What this launch made, in memory only: feeds ⌘K's "From this session" and the done-state cards. No Qt. |
-| `tool_page.py` | `ToolPage` — the job-runner base: form on the left, the permanent log column on the right, determinate progress from the counted lines the scripts already print, `advance_batch()` for a job that is several runs. |
+| `tool_page.py` | `ToolPage` — the job-runner base: form on the left, the permanent log column on the right, the run/stop lifecycle (Stop kills the whole process tree), `advance_batch()` for a job that is several runs (one clock, one bar). Progress plumbing is in `tool_progress`. |
 | `flow_cropper_page.py` · `captions_page.py` · `extract_frame_page.py` | One page per bundled tool, each a `ToolPage`. `whisperx_arch_ok()` lives with Captions. |
 | `caption_compare.py` | `ComparePanel` — the hidden, EXPERIMENTAL "Compare .srt" QA overlay, opened from the Captions page. |
 | `camera_page.py` · `camera_widgets.py` | Searchable shot/angle gallery that composes a Gemini prompt; the cards and `FlowLayout` are next door. |
-| `animator_*.py` (6 files) | The Script Animator — see `docs/ANIMATOR.md`. `animator_page` is stage one (writing, with spoken length live); `animator_scenes` is stage two (the block rail, the cards) as a mixin on it. |
+| `clip_cutter_page.py` · `clip_cutter_widgets.py` · `clip_cutter_progress.py` | Clip Cutter: the board, its chips, and its progress — two caption lanes priced by audio length (`CaptionLanes`, no Qt) feeding one route. |
+| `animator_*.py` (9 files) | The Script Animator — see `docs/ANIMATOR.md`. `animator_page` is stage one (writing, with spoken length live); `animator_scenes` is stage two (the block rail, the cards) and `animator_build` a build's footer progress, both mixins on it; `animator_plan` prices a build's legs (no Qt). |
 | `script_packer.py` | Every cut: the DP, `ceiling()`, hook collapsing, merge/split/pin, the `overruns()` invariant, prompt/markdown output. Deterministic. |
 | `script_text.py` | The language layer: syllables, sentence splitting, seams, pronunciation map, copy guards. |
 | `speech_clock.py` | How long a line takes to say, **measured** via an offline synthesiser. Must NOT import `core` (that would drag PySide6 into the offline tests). |
 | `gemini.py` | The one Gemini HTTPS transport: `generate_text()` / `generate_json()`, TLS context, retry/backoff, and `MODEL_CHAIN` — named models tried in order, because a pin dies on retirement (404) and a `…-latest` alias dies on free-tier quota (429). The key travels in the `x-goog-api-key` header, never the URL (AI Studio's `AQ.` keys, the only kind since May 2026, are not accepted there); `clean_key()` is how every key field saves a paste. No Qt. |
 | `launcher.py` | Home (`LauncherPage`, `AppIcon`, `APP_TAGLINES`/`APP_DESCS`) and the ⌘K overlay (`SpotlightOverlay`). |
-| `settings_page.py` | Settings: the key + whether it *works*, the exports folder (size, change, clean up), and two switches about leaving. `notify_if_enabled()` is the ONE gate for the notification switch — a tool that calls `core.notify` directly silently ignores the user. |
+| `settings_page.py` | Settings: the key + whether it *works*, the exports folder (size, change, clean up), and two switches about leaving. `notify_if_enabled()` is the ONE gate for the notification switch — a tool that calls `core.notify` directly silently ignores the user; a job that ends calls `jobs.finished()`, which calls it. |
 | `first_run.py` | The one-time setup screen: the key, and the real state of ffmpeg / eSpeak / WhisperX. |
-| `studio.py` | Thin entrypoint: `MainWindow` (shell + nav) and `main()`. Tools are registered in the `specs` list in `MainWindow.__init__`. |
+| `studio.py` | Thin entrypoint: `MainWindow` (shell + nav) and `main()`. Tools are registered in the `specs` list in `MainWindow.__init__`. A close while `jobs.busy()` hides (macOS; the Dock brings it back) or minimises (Windows) instead of quitting; ⌘Q while busy asks first. |
 | `updater.py` | In-app auto-update (stdlib only). Repo coords in `REPO_OWNER`/`REPO_NAME`. |
 | `make_icon.py` | Build script: renders `AppIcon.icns` via `iconutil`. **macOS-only**. |
 
@@ -119,6 +127,10 @@ Imports between modules are **explicit** (`from core import (...)`, never `*`)
 
 ```bash
 QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/smoketest.py   # must print BOOT OK
+./venv/bin/python scripts/test_progress.py  # after progress/progress_wire — the estimator, countdown, pipe reader
+QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_progress_pages.py     # after extract_frame/camera progress
+QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_captions_progress.py  # after caption.py --progress / captions_page / compare
+QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_animator_progress.py  # after animator_build/plan/pipeline, gemini on_event
 ./venv/bin/python scripts/test_packer.py    # after script_packer/script_text
 ./venv/bin/python scripts/test_clock.py     # after speech_clock
 ./venv/bin/python scripts/test_failures.py  # after failures.py

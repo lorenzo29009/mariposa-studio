@@ -10,17 +10,21 @@ The tool cuts an ad script into fixed-length talking-head clips (4/6/8/10 s).
 ## The modules
 
 ```
-speech_clock ← script_text ← script_packer ← animator_pipeline ← animator_page
-                                                animator_widgets ↗
-                              animator_common ← (all of them)   animator_panel ↗
+speech_clock ← script_text ← script_packer ← animator_pipeline ← animator_build ← animator_page
+                     animator_plan ↗ (no Qt)     animator_widgets ↗  animator_runtime ↗
+                              animator_common ← (all of them)   animator_panel ← animator_scenes ↗
 ```
 
 | File | Holds |
 |---|---|
-| `animator_common.py` | Constants (`LOG_VERSION`, `MAX_HOOKS`, `DEFAULT_TAIL`, `LANG_CHOICES`) + `fit_scroll_content()`. Bottom of the graph; imports nothing from its siblings. |
-| `animator_pipeline.py` | The two Gemini prompts and their schemas, `ScenePipelineWorker` (the whole build off the UI thread), `log_save`/`log_load`. |
+| `animator_common.py` | Constants (`LOG_VERSION`, `MAX_HOOKS`, `DEFAULT_TAIL`, `LANG_CHOICES`), `fit_scroll_content()`, and the session log (`log_save`/`log_load`). Bottom of the graph; imports nothing from its siblings. |
+| `animator_plan.py` | What a build will take: its legs, their `kind`s and the priors (see "A build's progress"). No Qt. |
+| `animator_pipeline.py` | The two Gemini prompts and their schemas, and `ScenePipelineWorker` — the whole build off the UI thread, reporting its route as it goes. |
 | `animator_widgets.py` | `BlockRow` (stage 1), `FillMeter` + `SceneCard` (stage 2). |
 | `animator_panel.py` | `AnimatorFloatPanel`, the always-on-top step-through window. |
+| `animator_runtime.py` | `RuntimeColumn` (mixin): the spoken length while you write — the runtime column and the per-row chips. |
+| `animator_build.py` | `BuildRunner` (mixin): starting a build, its progress in the footer, the ending (`jobs.finished`), and quitting mid-build. |
+| `animator_scenes.py` | `ScenesStage` (mixin): stage two — the block rail, the cards, the corrections, the export. |
 | `animator_page.py` | `AnimatorPage` — the two stages and everything that wires them. |
 | `script_packer.py` | Every cut: the DP, `ceiling()`, the beat layer, hook collapsing, merge/split/pin, the `overruns()` invariant, prompt/markdown output. No Qt, no network. |
 | `script_text.py` | The language layer: syllables, sentence splitting, seams, the pronunciation maps, the copy guards. One table per concept, keyed by language — see "Languages" below. No Qt, no network. |
@@ -37,7 +41,8 @@ packed **on its own** and no scene may span two blocks. Labels are positional
 ## Two Gemini passes, neither of which decides a cut
 
 In `ScenePipelineWorker`, each a `response_schema`-constrained call, retried on
-429/503 by `gemini.generate_json()`:
+429/503 by `gemini.generate_json()` (which reports every attempt, wait and
+fallback to the page — see "A build's progress"):
 
 1. **`_read_prompt`** — copy → spoken sentences (`15 % → fünfzehn Prozent`,
    `T3 → T drei`), typo `fixes`, `[bracketed]` directions as `action`, an `en`
@@ -69,6 +74,58 @@ Hard-won details:
   sentence or one clip, where a straight pass is better (measured) and ~4×
   faster. Variable reasoning paths were the main reason two builds of one
   script came out different.
+
+## A build's progress — a route, not a sentence
+
+A build used to be one fixed sentence for half a minute: no bar, no time, and
+nothing at all during Gemini's backoff. It is now a route
+(`docs/PROGRESS.md`), planned by the worker and drawn in the stage-one footer
+by `animator_build`: the wine dot, the worker's sentence, and a `ProgressLine`
+(the bar, elapsed, time left). At rest the footer is what it was.
+
+| Leg | `kind` | Prior on the reference machine (`animator_plan`) |
+|---|---|---|
+| `read` | `animator.read` | 1.5 s + 0.0018 s × the characters of the answer |
+| `timing` | `animator.timing` | 0.023 s a line (an uncached eSpeak render) |
+| `cut` | `animator.cut` | 0.05 s + 0.01 s a sentence |
+| `review` | `animator.review` | 1.8 s + 0.05 s a clip |
+| `repack` | `animator.cut` | as the cut — added only when the review glued a seam |
+
+- **The read is the build** (three quarters of it and more). Its answer is the
+  copy in spoken form, again as the `en` gloss when the copy isn't English, and
+  ~80 characters of JSON per sentence — so a + b × chars, with the copy counted
+  twice for any language but English. It is **not streamed** (unverified live),
+  so the leg glides on time toward its prior, and `progress.History` learns this
+  machine and model from every clean build. The worker re-prices a leg once it
+  knows more: the lines the read returned, the clips the cut made.
+- **The worker speaks in two channels besides its sentence**:
+  `route_event(dict)` — wire-format events (plan / add / enter / frac / skip),
+  applied with `progress_wire.apply` on the GUI thread — and
+  `call_event(str, dict)`, which forwards `gemini`'s `on_event` (`attempt`,
+  `backoff`, `fallback`) and adds `answer` when a call came back.
+- **A retry is a whole call again.** On a backoff or a fallback the page
+  re-prices the leg in flight — what it has spent + the wait + one call — so
+  the countdown grows by what the wait adds instead of sitting on "a few
+  seconds left", and the sentence says "Gemini is busy — trying again in 5 s"
+  (ticking) or "Trying another model".
+- **What is learned is the API's speed, not its weather**: a Gemini leg is timed
+  from the attempt that answered; a call that never answered is not learned.
+- "Timing the lines… n/n" is counted after the line is measured, and the leg
+  moves on the real fraction. Mid-build, nothing writes the footer's status
+  (`_note_engine`, `_mark_stale` wait); an edit made during a build is said
+  when the scenes arrive.
+- **Leaving** goes through `jobs`: `jobs.finished("Script Animator", ok,
+  summary, seconds)` honours both Settings switches, and a busy check is
+  registered so a closing window — and auto-quit after another tool's job —
+  knows a build is running.
+- ⚠️ **The worker runs on a daemon `threading.Thread`, never a `QThread`.** The
+  read can block for 120 s and cannot be interrupted; a `QThread` still running
+  when the page is destroyed aborts the process ("QThread: Destroyed while
+  thread is still running"). On `aboutToQuit` the worker is `abandon()`ed —
+  it emits nothing more — and the thread is left behind at exit. Every signal
+  is connected `Qt.QueuedConnection`, and every slot checks the page still
+  exists. `scripts/test_animator_progress.py` quits mid-build in a child
+  process to prove the exit is clean.
 
 ## Clip length is MEASURED, not predicted
 
@@ -317,7 +374,8 @@ accent, never from more boxes:
   once filled), chromeless auto-growing copy, a trash button, and a hairline as
   the separator — no editor-inside-a-card-inside-a-card. "Add a hook" is a quiet
   text action in the same card, and it hides at the cap rather than greying out.
-  The footer holds the one primary action.
+  The footer holds the one primary action; while a build runs it holds the
+  build instead (dot, sentence, bar, elapsed, time left).
 - **The cards need an edge.** `CARD_RAISED` (white) on `CANVAS` (`#FFFCF9`) is a
   one per cent step: on its own it is not a card, and a page of blocks reads as
   one flat field — which is what made the tool hard to use. So `#AniCard` and

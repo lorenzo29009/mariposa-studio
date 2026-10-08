@@ -9,8 +9,9 @@ asks for:
                                   retry/backoff on 429/503 (Script Animator)
 
 This module has **no Qt and no app imports**, so it stays testable offline and
-importable from anywhere. Callers own their own threading (both current callers
-run it inside a `QObject` worker on a `QThread`).
+importable from anywhere. Callers own their own threading (both run it off the
+UI thread) and may pass `on_event` to hear what the transport is doing while
+they wait — see `OnEvent`.
 
 ⚠️ Why one module: the transport used to exist twice — once in `camera_page`
 with a hardened SSL context, once in `animator_page` with none. The two drifted,
@@ -28,6 +29,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from typing import Callable, Optional
 
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -59,6 +61,30 @@ _WORKING_MODEL: "str | None" = None
 # not surface as a failure.
 RETRY_CODES = (429, 500, 502, 503, 504)
 BACKOFF_S = (2, 5, 10)
+
+# What the transport is doing while the caller waits — the waits and fallbacks
+# above used to be invisible: the Animator's status sat on "Reading the copy…"
+# through 17 s of backoff, and its countdown said a few seconds were left.
+#
+#   on_event("attempt",  {"model": m, "n": 1})              a request goes out
+#   on_event("backoff",  {"model": m, "seconds": 5, "code": 503})
+#                                                           sleeping, then retry
+#   on_event("fallback", {"from": m, "to": m2, "code": 429}) next model in the chain
+#
+# `n` counts the requests to that model, from 1. A plain callable, so the caller
+# decides how to cross threads: it is called synchronously on the calling thread
+# (so it must return at once), and a listener that raises is ignored — it can't
+# break a call.
+OnEvent = Optional[Callable[[str, dict], None]]
+
+
+def _tell(on_event: OnEvent, kind: str, info: dict) -> None:
+    if on_event is None:
+        return
+    try:
+        on_event(kind, info)
+    except Exception:
+        pass
 
 
 # --- the key ---------------------------------------------------------------
@@ -223,7 +249,7 @@ def models_to_try(model: str) -> tuple[str, ...]:
 
 
 def _post(api_key: str, model: str, body: dict, timeout: int,
-          retries: bool) -> dict:
+          retries: bool, on_event: OnEvent = None) -> dict:
     """POST one generateContent request; return the parsed envelope.
 
     Walks `models_to_try()` and returns the first model's answer. A model that
@@ -240,10 +266,13 @@ def _post(api_key: str, model: str, body: dict, timeout: int,
         more = i < len(models) - 1
         try:
             payload = _post_one(api_key, name, body, timeout,
-                                retries=retries, leaving=more)
+                                retries=retries, leaving=more,
+                                on_event=on_event)
         except GeminiError as e:
             if more and e.code in MODEL_FATAL:
                 last = e
+                _tell(on_event, "fallback",
+                      {"from": name, "to": models[i + 1], "code": e.code})
                 continue
             raise
         _WORKING_MODEL = name
@@ -253,7 +282,7 @@ def _post(api_key: str, model: str, body: dict, timeout: int,
 
 
 def _post_one(api_key: str, model: str, body: dict, timeout: int, *,
-              retries: bool, leaving: bool) -> dict:
+              retries: bool, leaving: bool, on_event: OnEvent = None) -> dict:
     """One model's turn: POST, with backoff on the codes worth waiting out.
 
     `leaving` means another model is next in line. Then a 429 is not waited
@@ -268,6 +297,7 @@ def _post_one(api_key: str, model: str, body: dict, timeout: int, *,
     backoff = BACKOFF_S if retries else ()
 
     for attempt in range(len(backoff) + 1):
+        _tell(on_event, "attempt", {"model": model, "n": attempt + 1})
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json",
                                      "x-goog-api-key": api_key})
@@ -281,6 +311,9 @@ def _post_one(api_key: str, model: str, body: dict, timeout: int, *,
                 waits = 0 if e.code == 429 else min(1, waits)
             if e.code not in RETRY_CODES or attempt >= waits:
                 raise _http_error(e, model, api_key) from e
+            _tell(on_event, "backoff", {"model": model,
+                                        "seconds": backoff[attempt],
+                                        "code": e.code})
             time.sleep(backoff[attempt])
 
     raise GeminiError("No response from Gemini.")
@@ -360,7 +393,7 @@ def _answer_text(payload: dict) -> tuple[str, str]:
 
 def generate_text(api_key: str, prompt: str, *, model: str = DEFAULT_MODEL,
                   temperature: float = 0.6, max_output_tokens: int = 1500,
-                  timeout: int = 45) -> str:
+                  timeout: int = 45, on_event: OnEvent = None) -> str:
     """A free-form answer. Thinking is off — these prompts don't need it."""
     payload = _post(api_key, model, {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -369,7 +402,7 @@ def generate_text(api_key: str, prompt: str, *, model: str = DEFAULT_MODEL,
             "maxOutputTokens": max_output_tokens,
             "thinkingConfig": {"thinkingBudget": 0},
         },
-    }, timeout=timeout, retries=False)
+    }, timeout=timeout, retries=False, on_event=on_event)
 
     text, _ = _answer_text(payload)
     if not text:
@@ -380,7 +413,7 @@ def generate_text(api_key: str, prompt: str, *, model: str = DEFAULT_MODEL,
 def generate_json(api_key: str, prompt: str, schema: dict, *,
                   model: str = DEFAULT_MODEL, temperature: float = 0,
                   seed: int = 7, max_output_tokens: int = 48000,
-                  timeout: int = 120) -> dict:
+                  timeout: int = 120, on_event: OnEvent = None) -> dict:
     """A `response_schema`-constrained answer, decoded.
 
     ⚠️ temperature 0 + a fixed seed + thinking OFF: the user builds the same
@@ -397,7 +430,7 @@ def generate_json(api_key: str, prompt: str, schema: dict, *,
             "response_mime_type": "application/json",
             "response_schema": schema,
         },
-    }, timeout=timeout, retries=True)
+    }, timeout=timeout, retries=True, on_event=on_event)
 
     text, finish = _answer_text(payload)
     try:

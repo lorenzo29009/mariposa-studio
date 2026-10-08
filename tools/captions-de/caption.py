@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -462,10 +463,18 @@ def fmt_time(t: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+def _no_window() -> dict:
+    """CREATE_NO_WINDOW on Windows. Under the Studio this script has no console
+    of its own, so a console-mode child without the flag gets a black window.
+    Only for a spawn whose output is captured or piped — with no console and
+    no channel, the child would have nowhere to speak."""
+    return {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+
+
 def get_video_duration(video_path: Path) -> float:
     result = subprocess.run(
         ["ffmpeg", "-i", str(video_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, **_no_window(),
     )
     m = re.search(r"Duration:\s+(\d+):(\d+):(\d+\.\d+)", result.stderr)
     if not m:
@@ -488,8 +497,307 @@ def _is_apple_silicon() -> bool:
         return False
 
 
+# ─── Progress (--progress) ───────────────────────────────────────────────────
+# With --progress this script says where it is: one `@@progress {json}` line
+# per event on stdout — the Studio's wire format (docs/PROGRESS.md in the app).
+# Off by default, because the same script runs under the caption-ugc skill and
+# inside Clip Cutter's pipeline, whose logs keep only a tail.
+#
+# The route is planned the moment the clip's length is known, about 0.3 s in,
+# and every leg is priced on the reference machine — an Apple M4, 16 GB, CPU
+# int8. These are the measured numbers, not padded ones: the app learns each
+# machine's factor per `kind`, so a slow laptop is priced right from its second
+# run on, and padding here would only make the fast ones wrong.
+PROGRESS = False
+
+#: WhisperX start-up to its Silero line: the imports (4.7 s) and the model
+#: load. Measured 6.8–8.4 s for large-v3 and 6.1 s for medium, warm. Nothing
+#: on Windows is measured yet — CPU only, four threads, and Defender reading
+#: every torch DLL on first touch.
+PRIOR_LOAD = 8.0
+PRIOR_LOAD_WINDOWS = 30.0
+#: The decode is paid per 30-second window, not per second: Whisper pads every
+#: chunk to 30 s, so an 11.6 s clip costs one whole window — 9.9 s on large-v3,
+#: 5.8 s on medium — where a per-second rate (0.45 s/s) said 5 s. Four windows
+#: (92 s of German) measured 40 s and 45 s. The fixed part is Silero's load,
+#: the audio decode and the align model's load, all inside this leg.
+ASR_WINDOW = 30.0
+ASR_PER_WINDOW = {"large-v3": 10.0, "medium": 6.0}
+ASR_FIXED = 0.5
+#: Alignment proper, the JSON write and WhisperX's exit: 1.1 s for 11.6 s and
+#: 3.8 s for 67 s of German, so ~5 s for a 92 s clip. Polish aligns with the
+#: xlsr-53 large model, about three times the work (~15 s for 92 s).
+ALIGN_FIXED, ALIGN_PER_S = 0.5, 0.05
+ALIGN_BY_LANG = {"pl": (1.5, 0.15)}
+#: One Gemini call as it usually goes (3–30 s seen, ~10 s typical).
+PRIOR_GEMINI = 10.0
+PRIOR_WRITE = 0.5
+#: A download smaller than this is a config file, not a model — and its bar
+#: reaching 100 % says nothing about the model still coming.
+DOWNLOAD_MIN_BYTES = 50e6
+
+GEMINI_LEGS = {
+    "segment": "Grouping into captions",
+    "review": "Reviewing the grouping",
+    "terms": "Checking brand spellings",
+    "recase": "Fixing the capitalization",
+}
+
+_PLANNED: set = set()
+
+
+def _progress(event: dict) -> None:
+    """One event, one line, one write — and only when asked for."""
+    if not PROGRESS:
+        return
+    try:
+        sys.stdout.write("@@progress " + json.dumps(event, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except (OSError, ValueError):
+        pass                    # a reader that went away is not our failure
+
+
+def _enter(key: str) -> None:
+    """This leg started — if it is one we planned. Entering an unplanned key
+    would append it to the END of the route and close every leg before it."""
+    if key in _PLANNED:
+        _progress({"enter": key})
+
+
+def _skip(key: str) -> None:
+    if key in _PLANNED:
+        _progress({"skip": key})
+
+
+def gemini_legs(language: str, no_ai: bool, has_key: bool, has_terms: bool) -> list:
+    """The Gemini calls this run WILL make, in order — main()'s own guards:
+    segmentation, then (if it answered) the grouping review, then term repair
+    (only with configured terms), then the German casing pass, which runs with
+    a key even under --no-ai."""
+    legs = []
+    if has_key and not no_ai:
+        legs += ["segment", "review"] + (["terms"] if has_terms else [])
+    if has_key and language == "de":
+        legs.append("recase")
+    return legs
+
+
+def _load_prior(windows: bool) -> float:
+    return PRIOR_LOAD_WINDOWS if windows else PRIOR_LOAD
+
+
+def asr_prior(seconds: float, model: str) -> float:
+    per = ASR_PER_WINDOW.get(model, ASR_PER_WINDOW["large-v3"])
+    return round(ASR_FIXED + per * max(1, math.ceil(max(0.0, seconds) / ASR_WINDOW)), 1)
+
+
+def align_prior(seconds: float, language: str) -> float:
+    fixed, per_s = ALIGN_BY_LANG.get(language, (ALIGN_FIXED, ALIGN_PER_S))
+    return round(fixed + per_s * max(0.0, seconds), 1)
+
+
+def reask_prior(window: float, model: str, language: str, windows: bool = False) -> float:
+    """A gap re-ask is a whole WhisperX run on a short window: the model load
+    again, the window's audio, the alignment."""
+    return round(_load_prior(windows) + asr_prior(window, model)
+                 + align_prior(window, language), 1)
+
+
+def progress_plan(duration: float, model: str, language: str, gemini: list,
+                  windows: bool = False, cached: bool = False) -> list:
+    """Every leg of one clip, in order, priced.
+
+    The re-ask slots cost nothing until a hole is found: the wire can only
+    append a leg at the END of a route, so the three a file may need are
+    reserved here, at zero, and priced by a second `add` the moment the holes
+    are known. A cached transcription prices WhisperX's three legs at zero
+    too, before skipping them: a skipped leg counts as work done, and a bar
+    that leapt to 60 % and then crawled through Gemini would be a lie about
+    the time this clip still takes."""
+    legs = [
+        {"key": "load", "kind": "captions.load",
+         "prior": 0.0 if cached else _load_prior(windows),
+         "label": "Loading the speech model"},
+        {"key": "asr", "kind": f"captions.asr.{model}",
+         "prior": 0.0 if cached else asr_prior(duration, model),
+         "label": "Transcribing"},
+        {"key": "align", "kind": f"captions.align.{language}",
+         "prior": 0.0 if cached else align_prior(duration, language),
+         "label": "Aligning the words"},
+    ]
+    legs += [{"key": f"reask{i}", "kind": "captions.reask", "prior": 0.0,
+              "label": "Asking again"} for i in range(1, GAP_REPAIRS_MAX + 1)]
+    legs += [{"key": k, "kind": "captions.gemini", "prior": PRIOR_GEMINI,
+              "label": GEMINI_LEGS[k]} for k in gemini]
+    legs.append({"key": "write", "kind": "captions.write", "prior": PRIOR_WRITE,
+                 "label": "Writing the .srt"})
+    return legs
+
+
+def _plan(legs: list) -> None:
+    _PLANNED.update(leg["key"] for leg in legs)
+    _progress({"plan": legs})
+
+
+# WhisperX's own log lines, in the format its log_utils sets:
+#   2026-09-04 16:03:16 - whisperx.transcribe - INFO - Performing alignment...
+# Read by the logger's MESSAGE, never by a word anywhere in the line: the logger
+# is called "whisperx.transcribe", so "transcrib" also matches the alignment
+# line, and a clip's own speech arrives as "Transcript: [..] Che vada bene".
+_WX_LOG = re.compile(r" - whisperx(?:\.[\w.]+)? - [A-Z]+ - (.*)$")
+# A tqdm byte bar, as huggingface_hub and torch.hub draw it:
+#   model.bin:  45%|####5     | 1.39G/3.09G [00:30<00:37, 45.2MB/s]
+_TQDM_BYTES = re.compile(
+    r"%\|.*?\|\s*(\d+(?:\.\d+)?)([kKMGT]?)i?B?/(\d+(?:\.\d+)?)([kKMGT]?)i?B?"
+    r"\s*\[([\d:]+)<([\d:]+|\?)")
+_UNITS = {"": 1.0, "k": 1e3, "K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12}
+
+
+def _clock_secs(s: str):
+    try:
+        parts = [int(p) for p in s.split(":")]
+    except ValueError:
+        return None
+    total = 0
+    for p in parts:
+        total = total * 60 + p
+    return float(total)
+
+
+def parse_download(line: str):
+    """(bytes done, bytes total, seconds left or None) for a model download's
+    progress bar; None for anything else, a small file's bar included."""
+    m = _TQDM_BYTES.search(line)
+    if not m:
+        return None
+    done = float(m.group(1)) * _UNITS[m.group(2)]
+    total = float(m.group(3)) * _UNITS[m.group(4)]
+    if total < DOWNLOAD_MIN_BYTES or done > total * 1.001:
+        return None
+    left = _clock_secs(m.group(6)) if m.group(6) != "?" else None
+    return done, total, left
+
+
+def whisperx_events(line: str, stage: str, *, tail: float = 7.0):
+    """The progress events one line of WhisperX output means, and the stage
+    after it. Pure: `stage` is "load", "asr" or "align", the leg the run is in.
+
+      * the Silero line is logged at the END of the model load (it comes from
+        the VAD's constructor), so it — or "Performing transcription", if a VAD
+        line is ever missing — means the decode has begun;
+      * "Performing alignment" is logged after the align model is loaded;
+      * a model download's bar is a real fraction: during the load it is the
+        Whisper model, after the decode it can only be the align model, which
+        WhisperX loads once transcription is over. `tail` is the load still to
+        come once the download is in.
+    A clip's own words never move anything."""
+    s = line.strip()
+    if not s or s.startswith("Transcript:"):
+        return [], stage
+    m = _WX_LOG.search(s)
+    if m:
+        msg = m.group(1)
+        if msg.startswith("Performing alignment"):
+            return ([{"enter": "align"}], "align") if stage != "align" else ([], stage)
+        if msg.startswith(("Performing voice activity detection",
+                           "Performing transcription")) and stage == "load":
+            return [{"enter": "asr"}], "asr"
+        return [], stage
+    dl = parse_download(s)
+    if dl is None:
+        return [], stage
+    done, total, left = dl
+    frac = done / total if total else 0.0
+    if stage == "load":
+        ev = {"frac": round(0.9 * frac, 4), "key": "load"}
+        if left is not None:
+            ev["left"] = round(left + tail, 1)
+        return [ev], stage
+    if stage == "asr":
+        ev = {"frac": round(0.9 + 0.09 * frac, 4), "key": "asr"}
+        if left is not None:
+            ev["left"] = round(left + 1.0, 1)
+        return [ev], stage
+    return [], stage
+
+
+def relay_output(src, out, scan, emit) -> None:
+    """Copy a child's output to `out` byte for byte, and read it on the way.
+
+    Every complete line — ended by "\\n" or by tqdm's "\\r" — goes to
+    `scan(text)`, and the events it returns to `emit(event)`. Bytes after the
+    last line end are held back until the line is complete, so an event line
+    is only ever written at a line boundary: printed into the middle of a
+    redrawing bar it would be glued to it and read as neither."""
+    held = b""
+    while True:
+        chunk = src.read1(65536) if hasattr(src, "read1") else src.read(65536)
+        if not chunk:
+            break
+        data = held + chunk
+        cut = max(data.rfind(b"\n"), data.rfind(b"\r"))
+        if cut < 0:
+            held = data
+            if len(held) > (1 << 20):     # a megabyte with no line end is no log line
+                out.write(held)
+                out.flush()
+                held = b""
+            continue
+        whole, held = data[:cut + 1], data[cut + 1:]
+        out.write(whole)
+        out.flush()
+        events = []
+        for seg in re.split(rb"[\r\n]", whole):
+            if seg.strip():
+                events += scan(seg.decode("utf-8", "replace")) or []
+        for ev in events:
+            emit(ev)
+    if held:
+        out.write(held)
+        out.flush()
+
+
+def _run_relayed(cmd: list, stages: bool, tail: float) -> None:
+    """Run WhisperX with its output piped through this process: forwarded
+    unchanged (tqdm's "\\r" redraws stay redraws) and scanned for the stage
+    boundaries only WhisperX's own log can tell. Raises CalledProcessError on a
+    non-zero exit, exactly as `subprocess.run(check=True)` did."""
+    sys.stdout.flush()
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, **_no_window())
+    import time
+    state = {"stage": "load", "frac_at": 0.0}
+
+    def scan(text: str) -> list:
+        if not stages:
+            return []
+        events, state["stage"] = whisperx_events(text, state["stage"], tail=tail)
+        out = []
+        for ev in events:
+            if "frac" in ev and "enter" not in ev:
+                # A bar redraws ten times a second; four reports are plenty —
+                # but the one that says the download is in always goes.
+                now = time.monotonic()
+                last = ev["frac"] >= (0.9 if ev.get("key") == "load" else 0.99)
+                if now - state["frac_at"] < 0.25 and not last:
+                    continue
+                state["frac_at"] = now
+            out.append(ev)
+        return out
+
+    try:
+        relay_output(proc.stdout, sys.stdout.buffer, scan, _progress)
+    finally:
+        proc.stdout.close()
+        code = proc.wait()
+    if code:
+        raise subprocess.CalledProcessError(code, cmd)
+
+
 def run_whisperx(video_path: Path, model: str, output_dir: Path,
-                  language: str = "de") -> Path:
+                  language: str = "de", stages: bool = True) -> Path:
+    """`stages` is False for a gap re-ask: its load, decode and alignment
+    belong to the re-ask's own leg, not to the clip's legs that already ran."""
     whisperx_bin = shutil.which("whisperx")
     if not whisperx_bin:
         venv_whisperx = Path.home() / "whisperx" / "bin" / "whisperx"
@@ -503,6 +811,8 @@ def run_whisperx(video_path: Path, model: str, output_dir: Path,
         sys.exit("Error: whisperx not found. Run install.py first.")
 
     print(f"Transcribing {video_path.name} with WhisperX ({model}, lang={language})...")
+    if stages:
+        _enter("load")
     cmd = [
         whisperx_bin, str(video_path),
         "--model", model,
@@ -535,7 +845,13 @@ def run_whisperx(video_path: Path, model: str, output_dir: Path,
     if sys.platform == "darwin" and _is_apple_silicon():
         cmd = ["arch", "-arm64", *cmd]
     try:
-        subprocess.run(cmd, check=True)
+        if PROGRESS and getattr(sys.stdout, "buffer", None) is not None:
+            # The model load is ~40 % imports (before any download) and ~60 %
+            # loading the weights (after it).
+            tail = round(0.6 * _load_prior(sys.platform == "win32"), 1)
+            _run_relayed(cmd, stages=stages, tail=tail)
+        else:
+            subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError:
         sys.exit(
             "Error: WhisperX failed to load the model. If the log above shows "
@@ -590,14 +906,22 @@ def find_gaps(words: list, threshold: float = GAP_SUSPECT) -> list:
 def _extract_window(video_path: Path, start: float, end: float, dest: Path) -> bool:
     """16 kHz mono WAV of one window — what the transcriber wants anyway."""
     try:
+        # Captured rather than inherited, so the Windows no-console flag
+        # cannot make ffmpeg's one error line disappear.
         subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.3f}",
              "-to", f"{end:.3f}", "-i", str(video_path),
              "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(dest)],
-            check=True,
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            **_no_window(),
         )
         return dest.exists()
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or b"").decode("utf-8", "replace").strip()
+        if err:
+            print(err.splitlines()[-1])
+        return False
+    except (FileNotFoundError, OSError):
         return False
 
 
@@ -617,6 +941,14 @@ def repair_gaps(video_path: Path, words: list, model: str, output_dir: Path,
     if not gaps:
         return words
     import tempfile
+    # Price the re-asks the moment the holes are known — before the first one
+    # starts — in the slots the plan reserved for them.
+    windows = sys.platform == "win32"
+    if "reask1" in _PLANNED:
+        _progress({"add": [
+            {"key": f"reask{i + 1}", "kind": "captions.reask", "label": "Asking again",
+             "prior": reask_prior((b - a) + 2 * GAP_PAD, model, language, windows)}
+            for i, (a, b) in enumerate(gaps[:GAP_REPAIRS_MAX])]})
     recovered: list = []
     for i, (a, b) in enumerate(gaps):
         if i >= GAP_REPAIRS_MAX:
@@ -625,6 +957,7 @@ def repair_gaps(video_path: Path, words: list, model: str, output_dir: Path,
             break
         print(f"⚠ No words between {a:.1f}s and {b:.1f}s — {b - a:.1f}s of audio "
               f"produced nothing. Asking again for that window...")
+        _enter(f"reask{i + 1}")
         lo = max(0.0, a - GAP_PAD)
         hi = b + GAP_PAD
         with tempfile.TemporaryDirectory() as tmp:
@@ -633,7 +966,8 @@ def repair_gaps(video_path: Path, words: list, model: str, output_dir: Path,
                 print("  ...could not cut that window out; leaving it as it is")
                 continue
             try:
-                win_json = run_whisperx(wav, model, Path(tmp), language=language)
+                win_json = run_whisperx(wav, model, Path(tmp), language=language,
+                                        stages=False)
                 win_words = load_words(win_json)
             except (RuntimeError, SystemExit, OSError, ValueError) as e:
                 print(f"  ...the re-ask failed ({e}); leaving the window as it is")
@@ -1701,6 +2035,7 @@ def repair_terms_with_ai(segments: list, language: str = "de") -> list:
     terms = _canonical_terms()
     if not terms or len(segments) < 1:
         return segments
+    print("Checking brand spellings with Gemini...")
     flats = [" ".join(_flat_text(s).split()) for s in segments]
     data = _call_gemini(_build_terms_prompt(flats, terms, language))
     if not isinstance(data, list):
@@ -2872,7 +3207,7 @@ def write_srt(segments: list, spans: list, out_path: Path):
 
 
 def main():
-    global ACTIVE_LANG, LINE_MODE
+    global ACTIVE_LANG, LINE_MODE, PROGRESS
     parser = argparse.ArgumentParser(
         description="Generate TikTok-style captions from a video.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2891,10 +3226,14 @@ def main():
     parser.add_argument("--lines", default="hybrid", choices=["hybrid", "1"],
                         help="Caption length: hybrid (default, natural 1-2 line "
                              "mix) or 1 (one line per caption)")
+    parser.add_argument("--progress", action="store_true",
+                        help="Report the plan and each stage as @@progress lines "
+                             "(for the Studio's progress bar)")
     args = parser.parse_args()
 
     ACTIVE_LANG = args.language
     LINE_MODE = args.lines
+    PROGRESS = args.progress
 
     video_path = Path(args.video).expanduser().resolve()
     if not video_path.exists():
@@ -2910,12 +3249,20 @@ def main():
 
     # Per-language cache so switching language doesn't reuse the wrong transcription.
     json_path = out_dir / f"{video_path.stem}.{args.language}.json"
-    if not json_path.exists():
+    cached = json_path.exists()
+    has_key = bool(os.environ.get("GEMINI_API_KEY", "").strip())
+    _plan(progress_plan(
+        duration, args.model, args.language,
+        gemini_legs(args.language, args.no_ai, has_key, bool(_canonical_terms())),
+        windows=sys.platform == "win32", cached=cached))
+    if not cached:
         json_path = run_whisperx(video_path, args.model, out_dir, language=args.language)
     else:
+        _progress({"skip": ["load", "asr", "align"]})
         print(f"Reusing existing transcription: {json_path.name}")
 
     words = load_words(json_path)
+    _progress({"done": "align"})
     print(f"Loaded {len(words)} words.")
     # A hole in the transcription is a lost chunk, not a silent clip: ask again
     # for that window before anything downstream reads the words.
@@ -2926,6 +3273,7 @@ def main():
     segments = None
     used_ai = False
     if not args.no_ai:
+        _enter("segment")
         segments = segment_with_ai(words, args.context, language=args.language)
         used_ai = segments is not None
 
@@ -2941,8 +3289,11 @@ def main():
     # Second AI pass: re-group the draft into natural units (merge-only, never
     # changes words). Skipped for the heuristic fallback / --no-ai.
     if used_ai:
+        _enter("review")
         print("Reviewing caption grouping with Gemini...")
         segments = review_grouping(segments, language=args.language)
+    else:
+        _skip("review")
 
     segments = move_trailing_binders(segments)
     segments = merge_split_numbers(segments)
@@ -2964,6 +3315,7 @@ def main():
     # changes a line's width must be re-laid-out, not shipped over budget.
     # Self-guards to a no-op with no key, no configured terms, or any failure.
     if not args.no_ai and os.environ.get("GEMINI_API_KEY", "").strip():
+        _enter("terms")
         segments = repair_terms_with_ai(segments, language=args.language)
     # German casing — two layers. First the deterministic learner (always; sets
     # LEARNED_UPPER, fixes obvious caption-initial words; the offline floor).
@@ -2974,11 +3326,14 @@ def main():
     # fallback (e.g. the segmentation call timed out) still gets AI-quality casing.
     # Self-guards to a no-op without a key / for non-German / on any API failure.
     if args.language == "de" and os.environ.get("GEMINI_API_KEY", "").strip():
+        _enter("recase")
         print("Fixing German capitalization with Gemini...")
         segments = recase_with_ai(segments, language=args.language)
+    _enter("write")
     boundaries = compute_boundaries(segments, words, duration)
     spans = caption_spans(segments, words, boundaries)
     write_srt(segments, spans, out_path)
+    _progress({"done": "write"})
     print(f"Wrote {len(segments)} captions to {out_path}")
     # Say it once more at the end: a hole the re-ask could not fill is the one
     # thing about a finished .srt that cannot be seen from the file's size.

@@ -146,8 +146,11 @@ class BatchCard(QFrame):
 # Extract Frame
 
 class ExtractFramePage(ToolPage):
-    # A pull takes about a second. A third of the screen for a log would
-    # be a lie about how long you will be waiting.
+    # Most pulls are over in a second or two; one every half second across a
+    # long 4K clip is hundreds of frames and can take a minute. The strip under
+    # the form carries the same moving bar and countdown as the log column, fed
+    # frame by frame by the script — a third of the screen for a log would
+    # still overstate the wait.
     SIDE = "none"
     title = "Extract Frame"
     # No blurb: the drop target, the two controls and the shelf of pulls say
@@ -169,6 +172,10 @@ class ExtractFramePage(ToolPage):
     MODE_ICONS = ["arrow-down-to-line", "arrow-up-to-line", "shuffle", "timer"]
     COUNT_CHOICES    = ["1", "2", "3", "5", "10", "20", "50"]
     INTERVAL_CHOICES = ["0.5", "1", "2", "3", "5", "10"]
+
+    #: True once this run's script has spoken `@@progress` — from then on its
+    #: own frame count drives the bar, and nothing else may.
+    _wired = False
 
     def __init__(self, on_back):
         super().__init__(on_back)
@@ -341,11 +348,38 @@ class ExtractFramePage(ToolPage):
         out_dir = self._resolve_output()
         out_dir.parent.mkdir(parents=True, exist_ok=True)
         short, _kind = self._mode_meta()
-        args = ["-u", str(EXTRACT_DIR / "extract_last_frame.py"),
+        args = ["-u", str(EXTRACT_DIR / "extract_last_frame.py"), "--progress",
                 self.video.value(), short, self.value.currentText().strip(),
                 str(out_dir.parent), out_dir.name]
         self._last_out = out_dir
         return py, args, EXTRACT_DIR
+
+    # ---- progress (docs/PROGRESS.md) ----------------------------------------
+    def plan_run(self):
+        """Nothing to plan from here: the script knows the frame count once it
+        has opened the clip, and plans the one leg itself."""
+        self._wired = False
+        return []
+
+    def on_progress(self, scope: str, event: dict):
+        if not scope:
+            self._wired = True
+            # The script's own name for the leg ("Pulling 60 frames") is the
+            # truest sentence the strip can show while it runs.
+            plan = event.get("plan")
+            for leg in plan if isinstance(plan, list) else []:
+                label = leg.get("label") if isinstance(leg, dict) else None
+                if label:
+                    self._sentence(f"{label}…")
+                    break
+        super().on_progress(scope, event)
+
+    def progress_from_line(self, raw_line: str):
+        """The `[n/m]` fallback, only for a script that never planned: two
+        sources moving one bar would fight over it."""
+        if self._wired:
+            return None
+        return super().progress_from_line(raw_line)
 
     def after_finished(self, code: int):
         if code != 0 or not getattr(self, "_last_out", None):

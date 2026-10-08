@@ -24,6 +24,7 @@ Reuses caption.py's Gemini plumbing (.env loading, retry/backoff, JSON parsing).
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -32,6 +33,28 @@ from pathlib import Path
 # Importing caption.py runs its top-level .env loader, so GEMINI_API_KEY /
 # CAPTION_BRAND / CAPTION_TERMS are picked up exactly as in production.
 import caption
+
+
+#: With --progress, each pass is announced on stderr as an `@@progress` line —
+#: the Studio's wire format. stderr because in --json mode stdout must stay
+#: pure JSON, and the app reads the two channels apart.
+PROGRESS = False
+
+#: One QA pass on the reference machine (an Apple M4): one Gemini call over the
+#: whole briefing and every caption.
+PRIOR_PASS = 15.0
+PLAN = [
+    {"key": "findings", "kind": "captions.qa", "prior": PRIOR_PASS,
+     "label": "Checking the words"},
+    {"key": "omissions", "kind": "captions.qa", "prior": PRIOR_PASS,
+     "label": "Looking for skipped lines"},
+]
+
+
+def _mark(event: dict) -> None:
+    if PROGRESS:
+        sys.stderr.write("@@progress " + json.dumps(event, ensure_ascii=False) + "\n")
+        sys.stderr.flush()
 
 
 # --------------------------------------------------------------------------- #
@@ -203,10 +226,12 @@ def qa_check(captions: list, briefing: str, language: str = "de") -> dict:
     {"findings": [...], "omissions": [...]}, both validated/guarded."""
     if not captions or not briefing.strip():
         return {"findings": [], "omissions": []}
-    return {
-        "findings": _check_findings(captions, briefing, language),
-        "omissions": _check_omissions(captions, briefing, language),
-    }
+    _mark({"enter": "findings"})
+    findings = _check_findings(captions, briefing, language)
+    _mark({"enter": "omissions"})
+    omissions = _check_omissions(captions, briefing, language)
+    _mark({"done": "omissions"})
+    return {"findings": findings, "omissions": omissions}
 
 
 def _check_findings(captions: list, briefing: str, language: str) -> list:
@@ -304,6 +329,7 @@ _CONF_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
 def main() -> None:
+    global PROGRESS
     import json as _json
     ap = argparse.ArgumentParser(description="Caption QA vs briefing (Gemini).")
     ap.add_argument("srt", help="Path to the captions .srt")
@@ -315,7 +341,11 @@ def main() -> None:
                     choices=["de", "en", "es", "fr", "it", "pl"])
     ap.add_argument("--json", action="store_true",
                     help="Emit {cues, findings} as JSON on stdout (used by the app).")
+    ap.add_argument("--progress", action="store_true",
+                    help="Announce each pass on stderr as an @@progress line.")
     args = ap.parse_args()
+    PROGRESS = args.progress
+    _mark({"plan": PLAN})
     # The brand and terms are per market, read through caption.py's ACTIVE_LANG.
     # Left at its German default, the "known correct spellings" handed to the
     # model for a Spanish clip were German's — and a correct Spanish spelling

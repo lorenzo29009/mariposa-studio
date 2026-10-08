@@ -8,6 +8,7 @@ what lands in the filename.
 from __future__ import annotations
 
 import re
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,7 @@ from core import (
     FLOW_CROPPER_DIR, studio_python, make_qprocess_env, open_folder,
 )
 from widgets import DropZone, Segmented, Field, Select, _panel
+from progress import Leg
 from tool_page import ToolPage
 
 
@@ -182,9 +184,12 @@ class FlowCropperPage(ToolPage):
 
     SIDE = "log"
     SIDE_WIDTH = 404
-    LOG_NOTE = "Nothing is written until this finishes."
+    # Renames land in the first second and the 4x5 files appear one by one, so
+    # there is no true sentence to put here about when things are written.
+    LOG_NOTE = ""
 
     def build_form(self):
+        self._reset_run()
         # Hero: the campaign folder is the one thing you must give it.
         self.folder = DropZone("Drop the campaign folder", is_folder=True)
         self.folder.changed.connect(self._on_folder_changed)
@@ -348,7 +353,14 @@ class FlowCropperPage(ToolPage):
         args = ["-u", str(FLOW_CROPPER_DIR / "crop.py"), "--undo", self.folder.value()]
         self.clear_cards()
         self._undoing = True
-        self._skipped = 0
+        self._reset_run()
+        # An undo takes milliseconds: its bar stays indeterminate, and it is not
+        # a run. Without letting go of the last run's route here, finishing the
+        # undo taught the timing history that run's legs a second time.
+        self.route = None
+        self.batch_route = None
+        self._reader = None
+        self._job_started = time.monotonic()
         self._log(f"$ {program} {' '.join(args)}", color=TXT_META)
         proc = QProcess(self)
         proc.setProcessChannelMode(QProcess.MergedChannels)
@@ -428,27 +440,133 @@ class FlowCropperPage(ToolPage):
             return "Fill in the Creative id, Ad format, Avatar and Angle."
         return None
 
-    # `[n/m] 4x5 already exists — skipping` is what crop.py prints for a clip
-    # that already has its 4x5 file: it is renamed but not reframed, and the
-    # result card says so honestly. Counted here from the line crop.py already
-    # prints, so no script had to change.
+    # ---- reading crop.py --------------------------------------------------
+    # Everything the result card says is counted from lines crop.py already
+    # prints, so the card reports THIS run — not every 4x5 that happens to be
+    # in the folder from an earlier one.
+    #   `[n/m] 4x5 already exists — skipping`  renamed (maybe), not reframed
+    #   `[n/m] ✓ <4x5 name>`                   reframed by this run
+    #   `[n/m] rename <old> → <new>`           renamed by this run
+    #   `[n/m] cropping <name> ...`            a reframe starts
+    RE_COUNTED = re.compile(r"^\[(\d+)/(\d+)\]\s+(.*)$")
     RE_SKIP = re.compile(r"\[\d+/\d+\]\s+4x5 already exists")
+    RE_FOUND = re.compile(r"^(?:(.+?):\s+)?(?:PREVIEW · )?Found\s+(\d+)\s+video",
+                          re.IGNORECASE)
+    FALLBACK = "re-encoding in software"
 
-    def on_output_line(self, line: str):
-        if self.RE_SKIP.match(line.strip()):
-            self._skipped += 1
+    #: The leg a run starts on, before crop.py has planned anything: it has no
+    #: estimate, so the countdown stays blank instead of reading an empty
+    #: route as "no time left" and climbing from there. Dropped the moment
+    #: the script's plan arrives.
+    HOLD = "flow.hold"
 
     #: True while an undo is in flight, so its finish is not reported as a run.
     _undoing = False
+    _skipped = 0
+    _renamed = 0
+    _made: list = []
+    _crops = 0
+    _clips_total = 0
+    _software = False
+    _cta = ""
+    _wired = False
+
+    def _reset_run(self):
+        self._skipped = 0
+        self._renamed = 0
+        self._made = []
+        self._crops = 0
+        self._clips_total = 0
+        self._software = False
+        self._cta = ""
+        self._wired = False
+
+    def on_output_line(self, line: str):
+        ls = line.strip()
+        m = self.RE_FOUND.match(ls)
+        if m:
+            self._cta = m.group(1) or ""
+            return
+        m = self.RE_COUNTED.match(ls)
+        if not m:
+            if self.FALLBACK in ls:
+                self._software = True
+            return
+        action = m.group(3)
+        if action.startswith("cropping "):
+            self._crops += 1
+            self._software = False
+        elif action.startswith("✓"):
+            self._made.append(action[1:].strip())
+        elif action.startswith("rename "):
+            self._renamed += 1
+        elif self.RE_SKIP.match(ls):
+            self._skipped += 1
+
+    # ---- progress (see docs/PROGRESS.md) --------------------------------------
+    def plan_run(self) -> list[Leg]:
+        # crop.py plans the whole run itself — every clip it will reframe,
+        # priced from the clip's length — once it has probed them.
+        return [Leg(self.HOLD)]
+
+    def on_progress(self, scope: str, event: dict):
+        route = self.route
+        if not scope and route is not None:
+            self._wired = True
+            plan = event.get("plan")
+            if isinstance(plan, list):
+                hold = route.leg(self.HOLD)
+                if hold is not None:
+                    route.legs.remove(hold)
+                self._clips_total = sum(
+                    1 for it in plan if isinstance(it, dict)
+                    and str(it.get("key", "")).startswith("encode#"))
+                self._rekind(route, plan)
+        super().on_progress(scope, event)
+
+    @staticmethod
+    def _rekind(route, plan: list):
+        """A re-sent plan prices only legs that have not begun — but when the
+        hardware encoder fails, the clip being encoded right now starts over in
+        software. Re-price THAT leg as what it now is, so it is drawn at the
+        software speed and learned as a software encode; left alone, the
+        failed attempt's second of work would teach the history that hardware
+        encodes take a tenth of their real time."""
+        for it in plan:
+            if not isinstance(it, dict) or not it.get("kind"):
+                continue
+            leg = route.leg(str(it.get("key", "")))
+            if leg is None or leg.started is None or leg.ended is not None:
+                continue
+            if leg.kind == it["kind"]:
+                continue
+            prior = it.get("prior")
+            route.replan(leg.key, kind=str(it["kind"]),
+                         prior=float(prior) if isinstance(prior, (int, float)) else None)
+            # The retry reports its own fractions from zero.
+            leg.frac, leg.frac_at, leg.frac0, leg.frac0_at, leg.rate = 0.0, None, None, None, None
+
+    def progress_from_line(self, raw_line: str) -> Optional[tuple[int, int]]:
+        """crop.py reports through `@@progress`; its `[n/m]` lines count per CTA
+        folder and include renames, so they never move the bar while it does.
+        Without it (an older script) only a reframe's start and end count."""
+        if self._wired:
+            return None
+        m = re.match(r"^\s*\[(\d+)\s*/\s*(\d+)\]\s+(cropping |✓)", raw_line)
+        if not m:
+            return None
+        n, total = int(m.group(1)), int(m.group(2))
+        return (n if m.group(3) == "✓" else n - 1), total
 
     def build_command(self):
         self._undoing = False
-        self._skipped = 0
+        self._reset_run()
         py = studio_python()
         script = str(FLOW_CROPPER_DIR / "crop.py")
         # No --workers flag: crop.py defaults to 1 (one ffmpeg already saturates
-        # the CPU, so parallel encodes only slow the batch down).
-        args = ["-u", script]
+        # the CPU, so parallel encodes only slow the batch down). --progress
+        # makes it plan the run and report each reframe's position.
+        args = ["-u", script, "--progress"]
         if self.input_mode.currentText() == "Simple":
             # Old short convention: {ratio} - {id}[-{CTA}]-{hook} - {format}
             args += ["--simple", self.folder.value(),
@@ -486,18 +604,28 @@ class FlowCropperPage(ToolPage):
         # folder may already have been spelled "4X5" before we got there. Looking
         # only in `target/4x5` reported "nothing" after a CTA run that had just
         # made ten files.
-        out, made, where = _reframed(target)
-        for f in made:
-            self.record_artefact(f.name, f)
-        n = len(made)
-        head = (f"{n} clip{'' if n == 1 else 's'} reframed and renamed"
-                if n else "Renamed, nothing left to crop")
+        out, present, where = _reframed(target)
+        # The count is the clips THIS run reframed (crop.py's ✓ lines), not
+        # every 4x5 in the folder — a re-run that made nothing said "4 clips
+        # reframed" because four were there from before.
+        made = set(self._made)
+        for f in present:
+            if f.name in made:
+                self.record_artefact(f.name, f)
+        n = len(self._made)
+        clips = f"{n} clip{'' if n == 1 else 's'}"
+        if n:
+            head = f"{clips} reframed" + (" and renamed" if self._renamed else "")
+        elif self._renamed:
+            head = "Renamed, nothing left to reframe"
+        else:
+            head = "Nothing left to reframe"
         note = ""
-        if self._skipped:
-            note = (f"{self._skipped} clip{'' if self._skipped == 1 else 's'} "
-                    "already had a 4x5 file, so they were renamed but not "
-                    "reframed.")
-        self._sentence(f"Done — {n} clip{'' if n == 1 else 's'}")
+        k = self._skipped
+        if k:
+            note = (f"{k} clip{'' if k == 1 else 's'} already had a 4x5 file, so "
+                    f"{'it was' if k == 1 else 'they were'} not reframed again.")
+        self._sentence(f"Done — {clips} reframed" if n else "Done")
         self.show_result(
             head,
             path=where,
@@ -519,28 +647,38 @@ class FlowCropperPage(ToolPage):
         super().apply_fix(key)
 
     def _to_status_detail(self, raw_line: str) -> Optional[str]:
+        """The state sentence. Clips are numbered across the whole run — crop.py
+        counts per CTA folder, so "clip 1 of 2" came round once per folder."""
         ls = raw_line.strip()
         if not ls:
             return None
-        m = re.match(r'^\[(\d+)/(\d+)\]\s+(.*)', ls)
+        m = self.RE_COUNTED.match(ls)
         if m:
-            pos, total, action = m.group(1), m.group(2), m.group(3)
-            al = action.lower()
-            if "crop" in al:
-                return f"Cropping clip {pos} of {total}…"
-            if "rename" in al:
-                return f"Renaming clip {pos} of {total}…"
-            if al.startswith("✓"):
-                return f"Clip {pos} of {total} done ✓"
-            if "already" in al:
-                return f"Clip {pos} of {total}: already up to date"
-            return f"Processing clip {pos} of {total}…"
-        m2 = re.match(r'^Found\s+(\d+)\s+video', ls, re.IGNORECASE)
-        if m2:
-            return f"Found {m2.group(1)} video(s) to process"
-        if ls.startswith("✓"):
-            return ls[1:].strip() or "Done"
-        if ls.startswith("✗"):
-            return ls
-        return None
+            # The verb is read from the start of the action: a clip named
+            # "cropped_h1.mp4" being renamed is a rename, not a crop.
+            action = m.group(3)
+            if action.startswith("cropping "):
+                return self._reframing()
+            if action.startswith(("rename ", "would rename ")):
+                return f"Renaming the {self._cta} clips" if self._cta else "Renaming the clips"
+            return None          # a ✓, a skip, a preview: the sentence stands
+        m = self.RE_FOUND.match(ls)
+        if m:
+            n = int(m.group(2))
+            found = f"{n} clip{'' if n == 1 else 's'} found"
+            return f"{m.group(1)}: {found}" if m.group(1) else found.capitalize()
+        if ls.startswith("filing "):
+            return "Filing the loose clips"
+        if self.FALLBACK in ls:
+            return self._reframing()
+        if "is in use by another program" in ls:
+            return "Waiting for another program to let go of a clip"
+        return None             # "✓ All done." included: the done state says it
 
+    def _reframing(self) -> str:
+        k, n = self._crops, self._clips_total
+        verb = "Re-encoding" if self._software else "Reframing"
+        tail = " in software" if self._software else ""
+        if k and n:
+            return f"{verb} clip {min(k, n)} of {n}{tail}"
+        return f"{verb} clip {k}{tail}" if k else f"{verb} the clips{tail}"

@@ -2,24 +2,31 @@
 """Camera Prompts - the gallery widgets.
 
 `PromptCard` (a shot, its `RoundedImage` thumbnail and its copy action) laid
-out by `FlowLayout` inside a `CategorySection` per group. The page that hosts
-them is `camera_page`.
+out by `FlowLayout` inside a `CategorySection` per group; the `FuseSheet` the
+merged prompt arrives in, with the running merge's `ProgressLine` in its foot;
+and the `Toast` that confirms a pick. The page that hosts them is
+`camera_page`.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSize, Signal, QRect, QPoint
+from PySide6.QtCore import (
+    Qt, QSize, Signal, QRect, QPoint, QTimer, QPropertyAnimation, QEasingCurve,
+)
 from PySide6.QtGui import (QColor, QPainter, QPixmap, QPainterPath)
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QSizePolicy,
-    QGridLayout, QLayout,
+    QGridLayout, QLayout, QPlainTextEdit, QPushButton, QToolButton,
+    QGraphicsOpacityEffect,
 )
 
-from design import INK_PANEL
+from design import INK_PANEL, SHADOW_FLOAT, WINE_FG, apply_shadow, svg_icon
 
 from core import CAMERA_PROMPT_DIR
+from progress import Route
+from widgets_status import ProgressLine
 
 # ---------------------------------------------------------------------------
 
@@ -314,3 +321,135 @@ class CategorySection(QWidget):
         self.count_lbl.setText(f"{len(visible)}")
         self.setVisible(bool(visible))
 
+
+class FuseSheet(QFrame):
+    """The merged prompt, in a sheet over the gallery.
+
+    This tool's output is the clipboard, so the prompt is something you read
+    once, copy and dismiss — nothing is written to disk. While the merge runs,
+    the foot carries the app's `ProgressLine` (a bar that keeps moving, the
+    elapsed time and the time left) directly under the box the paragraph will
+    land in: the eye is already there, so the waiting is shown there too."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setObjectName("FuseSheet")
+        self.setVisible(False)
+        sv = QVBoxLayout(self)
+        sv.setContentsMargins(24, 22, 24, 22)
+        sv.setSpacing(14)
+        head = QHBoxLayout(); head.setSpacing(10)
+        title = QLabel("One camera prompt")
+        title.setObjectName("ResultHead")
+        head.addWidget(title)
+        head.addStretch(1)
+        self.close_btn = QToolButton()
+        self.close_btn.setObjectName("ChipRemove")
+        self.close_btn.setText("×")
+        self.close_btn.setFixedSize(24, 24)
+        self.close_btn.setCursor(Qt.PointingHandCursor)
+        self.close_btn.clicked.connect(lambda: self.setVisible(False))
+        head.addWidget(self.close_btn)
+        sv.addLayout(head)
+
+        self.result = QPlainTextEdit()
+        self.result.setObjectName("ResultBox")
+        self.result.setReadOnly(True)
+        self.result.setMinimumHeight(190)
+        sv.addWidget(self.result, 1)
+
+        foot = QHBoxLayout(); foot.setSpacing(16)
+        # The bar's slot keeps its width when the bar is hidden, so Copy stays
+        # put on the right whether a merge is running or not.
+        slot = QWidget(); slot.setObjectName("TransparentPanel")
+        sl = QVBoxLayout(slot); sl.setContentsMargins(0, 0, 0, 0); sl.setSpacing(0)
+        self.progress = ProgressLine()
+        self.progress.setVisible(False)
+        sl.addWidget(self.progress, 0, Qt.AlignVCenter)
+        foot.addWidget(slot, 1, Qt.AlignVCenter)
+        self.copy_btn = QPushButton("Copy")
+        self.copy_btn.setObjectName("PrimaryBtn")
+        self.copy_btn.setIcon(svg_icon("copy", WINE_FG, 14))
+        self.copy_btn.setCursor(Qt.PointingHandCursor)
+        self.copy_btn.setEnabled(False)
+        foot.addWidget(self.copy_btn, 0, Qt.AlignVCenter)
+        sv.addLayout(foot)
+        apply_shadow(self, SHADOW_FLOAT)
+
+    def place(self, width: int, height: int) -> None:
+        """Centre over a parent of this size, show, and raise."""
+        w = min(620, max(360, width - 160))
+        h = min(420, max(280, height - 200))
+        self.setFixedSize(w, h)
+        self.move((width - w) // 2, (height - h) // 2)
+        self.setVisible(True)
+        self.raise_()
+
+    def begin_progress(self, route: Route) -> None:
+        self.progress.start()
+        self.progress.track(route)
+        self.progress.setVisible(True)
+
+    def end_progress(self, ok: bool) -> None:
+        self.progress.finish(ok)
+        self.progress.setVisible(False)
+
+
+class Toast(QLabel):
+    """A one-line confirmation over its parent: fades in, holds, fades out.
+
+    One hold timer, restarted by every new message — a quick second pick must
+    not be faded out by the first pick's timer."""
+
+    HOLD_MS = 1500
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setObjectName("Toast")
+        self.setAlignment(Qt.AlignCenter)
+        self.hide()
+        self._inset = 0
+        self._effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._effect)
+        # One animation, reused: a new one per message used to pile up as
+        # children of the label for as long as the page lived.
+        self._anim = QPropertyAnimation(self._effect, b"opacity", self)
+        self._anim.finished.connect(self._settled)
+        self._hold = QTimer(self)
+        self._hold.setSingleShot(True)
+        self._hold.timeout.connect(self._fade_out)
+
+    def place(self, bottom_inset: int = 0) -> None:
+        """Centred, `bottom_inset` px above the parent's bottom edge — over
+        whatever bar the parent keeps there, never covering it."""
+        self._inset = bottom_inset
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        self.adjustSize()
+        x = (parent.width() - self.width()) // 2
+        y = parent.height() - bottom_inset - self.height() - 24
+        self.move(max(10, x), max(10, y))
+
+    def flash(self, message: str, bottom_inset: int = 0) -> None:
+        self.setText(message)
+        self.place(bottom_inset)
+        self.show()
+        self.raise_()
+        self._animate(1.0, 160, QEasingCurve.OutCubic)
+        self._hold.start(self.HOLD_MS)
+
+    def _fade_out(self) -> None:
+        self._animate(0.0, 260, QEasingCurve.InCubic)
+
+    def _animate(self, to: float, ms: int, curve) -> None:
+        self._anim.stop()                 # stop() does not emit finished
+        self._anim.setDuration(ms)
+        self._anim.setStartValue(self._effect.opacity() if to == 0.0 else 0.0)
+        self._anim.setEndValue(to)
+        self._anim.setEasingCurve(curve)
+        self._anim.start()
+
+    def _settled(self) -> None:
+        if self._anim.endValue() == 0.0:
+            self.hide()

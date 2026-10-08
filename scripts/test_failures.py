@@ -16,6 +16,9 @@ cases = [
     ("google.api_core.exceptions.PermissionDenied: 403 API key not valid", "bad_key", "open_settings"),
     ("ValueError: GEMINI_API_KEY is not set", "no_key", "open_settings"),
     ("429 RESOURCE_EXHAUSTED: Quota exceeded", "rate_limit", ""),
+    ("urllib.error.HTTPError: HTTP Error 429: Too Many Requests", "rate_limit", ""),
+    # A timestamp that happens to contain 429 is not a rate limit.
+    ("Transcript: [12.429 --> 14.0] hallo\nKeyError: 'segments'", "unknown", ""),
     ("urllib.error.URLError: <urlopen error timed out>", "network", ""),
     ("OSError: [Errno 28] No space left on device", "disk_full", "open_settings"),
     ("espeak: command not found", "no_espeak", "install_deps"),

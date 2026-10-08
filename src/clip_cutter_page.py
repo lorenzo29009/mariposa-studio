@@ -37,6 +37,7 @@ from tool_page import ToolPage
 from widgets import Segmented, Select, ask_text
 from clip_cutter_widgets import (BodyStrip, DashedButton, DropArea, DropCue,
                                  PoolCard, SlotRow, register_thumb)
+from clip_cutter_progress import ClipCutterProgress
 
 # The pipeline this page drives ships WITH the app, as tools/clip-cutter/. It
 # used to live in the caption-ugc Claude skill under ~/.claude, which meant it
@@ -225,7 +226,7 @@ def _sort_clips(stems: list[str]) -> tuple[list[str], list[str], dict, list[str]
     return hooks, body, dict(sorted(ctas.items())), sorted(pool)
 
 
-class ClipCutterPage(ToolPage):
+class ClipCutterPage(ClipCutterProgress, ToolPage):
     # Its own two-column board owns the width; the runner state rides in
     # the strip above the footer.
     SIDE = "none"
@@ -932,15 +933,6 @@ class ClipCutterPage(ToolPage):
             out += row.names()
         return out
 
-    def _to_status_detail(self, raw_line: str):
-        """Surface run_clip_cutter.py's own "· step" lines as the status text, so a
-        long export (captioning takes minutes) visibly progresses instead of
-        looking dead."""
-        ls = raw_line.strip()
-        if ls.startswith("· "):
-            return ls[2:]
-        return None
-
     # ----------------------------------------------------------- validate
     def validate(self) -> Optional[str]:
         if not self._folder or not self._folder.is_dir():
@@ -1078,7 +1070,10 @@ class ClipCutterPage(ToolPage):
                 # arrive as three.
                 "--lines", "1",
                 "--combo-hook", "1",
-                "--name", self._name]
+                "--name", self._name,
+                # The run's route and each caption lane's position, as
+                # `@@progress` lines — see clip_cutter_progress.
+                "--progress"]
         if headlines:
             args += ["--headlines", json.dumps(headlines, ensure_ascii=False)]
 

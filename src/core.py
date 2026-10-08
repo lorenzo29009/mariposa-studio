@@ -27,6 +27,33 @@ APP_DIR     = Path(__file__).resolve().parent.parent
 TOOLS_DIR   = APP_DIR / "tools"
 
 
+def _read_env_text(path: Path) -> str:
+    """The .env's text, whatever saved it — "" when it is missing or unreadable.
+
+    The app writes UTF-8, but the file is also opened by hand: Windows Notepad
+    adds a BOM (which used to glue itself to the first key's name), and one
+    saved in the ANSI code page holds `Jörg` as a single cp1252 byte, which a
+    strict UTF-8 read raised on — from inside `pref()`, so the ending of every
+    job and the Settings screen itself went down with it. Decoded line by line,
+    so one hand-edited line cannot spoil the lines the app wrote. Never raises.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ""
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):          # Notepad's "Unicode"
+        return data.decode("utf-16", errors="replace")
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    lines = []
+    for raw in data.split(b"\n"):
+        try:
+            lines.append(raw.decode("utf-8"))
+        except UnicodeDecodeError:
+            lines.append(raw.decode("cp1252", errors="replace"))
+    return "\n".join(lines)
+
+
 def _exports_dir() -> Path:
     """Where every tool writes. `exports/` beside the app unless told otherwise.
 
@@ -41,14 +68,11 @@ def _exports_dir() -> Path:
     override = os.environ.get("MARIPOSA_EXPORTS_DIR", "").strip()
     if not override:
         env = TOOLS_DIR / "captions-de" / ".env"
-        try:
-            for line in env.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line.startswith("MARIPOSA_EXPORTS_DIR="):
-                    override = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    break
-        except OSError:
-            override = ""
+        for line in _read_env_text(env).splitlines():
+            line = line.strip()
+            if line.startswith("MARIPOSA_EXPORTS_DIR="):
+                override = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
     if override:
         try:
             p = Path(override).expanduser()
@@ -117,7 +141,8 @@ __all__ = [
     "FLOW_CROPPER_DIR", "CAPTIONS_DIR", "EXTRACT_DIR", "CAMERA_PROMPT_DIR",
     "WHISPERX_PY", "ENV_PATH", "CAPTION_MARKETS",
     "studio_python", "make_qprocess_env", "chevron_icon", "arrow_icon",
-    "reveal_in_finder", "open_folder", "notify",
+    "reveal_in_finder", "open_folder", "notify", "bring_back_main_window",
+    "OSASCRIPT",
     "read_env_value", "write_env_value",
     "gemini_model_override",
     "ensure_windows_shortcut", "make_nonactivating_panel",
@@ -179,30 +204,94 @@ def reveal_in_finder(p: Path):
         pass
 
 
+#: macOS delivers through AppleScript. Title and body travel as `argv`, never
+#: spliced into the script, so a quote, a backslash or an umlaut in a file
+#: name needs no escaping and cannot break out of the string.
+OSASCRIPT = "/usr/bin/osascript"
+_MAC_NOTIFY = ("on run argv",
+               "display notification (item 2 of argv) with title (item 1 of argv)",
+               "end run")
+
+
 def notify(title: str, body: str = "") -> None:
     """A system notification, on whichever platform we are on.
 
-    QSystemTrayIcon is the cross-platform route and it is already in QtWidgets,
-    so this costs no new dependency. Best-effort by design: a machine with
-    notifications switched off should finish the job quietly, not raise about it.
+    Best-effort by design: a machine with notifications switched off should
+    finish the job quietly, not raise about it. Never blocks either.
+
+    * **macOS** — `osascript`, started detached. Qt's tray route posts to the
+      deprecated NSUserNotificationCenter, which does not exist for an
+      interpreter that is not an app bundle (ours never is: the .app's
+      launcher `exec`s the venv python), so every message went nowhere and
+      left a stray menu-bar icon behind as its only trace.
+    * **Windows / Linux** — `QSystemTrayIcon`, created on first use with the
+      app's icon (a null icon shows nothing), hidden when the app quits so no
+      ghost stays in the tray; clicking the message brings the window back.
 
     Lives here, beside the other platform helpers, because it is not one tool's
-    business — it used to be private to `tool_page`, which is why the Settings
-    switch that turns it on did nothing for the Script Animator.
+    business. Call it through `settings_page.notify_if_enabled`, never
+    directly: that is where the user's switch is read.
     """
     try:
-        from PySide6.QtWidgets import QApplication, QSystemTrayIcon
-        if not QSystemTrayIcon.isSystemTrayAvailable():
+        if IS_MAC:
+            _notify_mac(title, body)
+        else:
+            _notify_tray(title, body)
+    except Exception:
+        pass
+
+
+def _notify_mac(title: str, body: str) -> None:
+    from PySide6.QtCore import QProcess
+    if not body:
+        # "display notification" wants a body; a title alone reads as one.
+        title, body = "Mariposa Studio", title
+    args: list[str] = []
+    for line in _MAC_NOTIFY:
+        args += ["-e", line]
+    # "--" ends osascript's own options, so a body that starts with a dash is
+    # still text.
+    QProcess.startDetached(OSASCRIPT, args + ["--", title, body])
+
+
+def _notify_tray(title: str, body: str) -> None:
+    from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+    app = QApplication.instance()
+    if app is None or not QSystemTrayIcon.isSystemTrayAvailable():
+        return
+    tray = getattr(app, "_mariposa_tray", None)
+    if tray is None:
+        icon = app.windowIcon()
+        if icon.isNull():
+            icon = QIcon(str(APP_DIR / "brand" / "AppIcon.ico"))
+        tray = QSystemTrayIcon(icon, app)
+        tray.setToolTip("Mariposa Studio")
+        tray.messageClicked.connect(bring_back_main_window)
+        tray.activated.connect(lambda _reason: bring_back_main_window())
+        app.aboutToQuit.connect(tray.hide)
+        tray.show()
+        app._mariposa_tray = tray          # type: ignore[attr-defined]
+    tray.showMessage(title, body, tray.icon(), 5000)
+
+
+def bring_back_main_window() -> None:
+    """Show, un-minimise and raise the main window, wherever it went.
+
+    Found by objectName so this module never imports the shell. A window that
+    knows how to come back (`MainWindow.bring_back`) is asked to."""
+    try:
+        from PySide6.QtWidgets import QApplication
+        for w in QApplication.topLevelWidgets():
+            if w.objectName() != "MainWindow":
+                continue
+            back = getattr(w, "bring_back", None)
+            if callable(back):
+                back()
+            else:
+                w.showNormal()
+                w.raise_()
+                w.activateWindow()
             return
-        app = QApplication.instance()
-        if app is None:
-            return
-        tray = getattr(app, "_mariposa_tray", None)
-        if tray is None:
-            tray = QSystemTrayIcon(app.windowIcon(), app)
-            tray.show()
-            app._mariposa_tray = tray          # type: ignore[attr-defined]
-        tray.showMessage(title, body, QSystemTrayIcon.Information, 5000)
     except Exception:
         pass
 
@@ -351,9 +440,8 @@ def ensure_windows_shortcut() -> None:
 
 # --- .env read/write (shared by captions, camera, animator, settings) -----
 def read_env_value(key: str) -> str:
-    if not ENV_PATH.exists():
-        return ""
-    for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+    """One value from the .env, or "". Never raises — see `_read_env_text`."""
+    for line in _read_env_text(ENV_PATH).splitlines():
         line = line.strip()
         if line.startswith(f"{key}="):
             return line.split("=", 1)[1].strip().strip('"').strip("'")
@@ -372,10 +460,13 @@ def gemini_model_override() -> str:
 
 
 def write_env_value(key: str, value: str):
+    """Set one key, keeping every other line as it was. The file goes back as
+    UTF-8 without a BOM whatever it was read as, so a Notepad-saved .env is
+    mended by the first switch flipped rather than spoiled by it."""
     lines = []
     found = False
     if ENV_PATH.exists():
-        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+        for line in _read_env_text(ENV_PATH).splitlines():
             if line.strip().startswith(f"{key}="):
                 lines.append(f"{key}={value}")
                 found = True

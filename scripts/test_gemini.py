@@ -61,7 +61,9 @@ QUOTA_BODY_PER_DAY = QUOTA_BODY_PER_MINUTE.replace("PerMinute", "PerDay")
 
 
 class FakeTransport:
-    """Stands in for urlopen. `plan` maps a model name to a code or a payload."""
+    """Stands in for urlopen. `plan` maps a model name to a code — or to a list
+    of codes, used up one request at a time (then 200): `[503]` is a model
+    that is busy once and then answers."""
 
     def __init__(self, plan: dict, body: str = ""):
         self.plan = plan
@@ -75,6 +77,8 @@ class FakeTransport:
         self.calls.append(model)
         self.requests.append(req)
         outcome = self.plan.get(model, 200)
+        if isinstance(outcome, list):
+            outcome = outcome.pop(0) if outcome else 200
         if outcome != 200:
             raise http_error(outcome, self.body)
         return _Resp('{"candidates":[{"content":{"parts":[{"text":'
@@ -276,6 +280,73 @@ def main():
           (gemini.key_shape(AQ), gemini.key_shape(AIZA),
            gemini.key_shape(AIZA + AQ)) ==
           ("AQ. auth key", "AIza key", "2 keys run together"))
+
+    print("\non_event hears the attempts, the waits and the fallbacks, in order")
+    seen: list = []
+    out, t, err = run({first: [503]}, BUSY, on_event=lambda k, i: seen.append((k, i)))
+    check("503 then an answer: still one model", t.calls == [first, first], str(t.calls))
+    check("...attempt, backoff, attempt",
+          seen == [("attempt", {"model": first, "n": 1}),
+                   ("backoff", {"model": first, "seconds": gemini.BACKOFF_S[0],
+                                "code": 503}),
+                   ("attempt", {"model": first, "n": 2})], str(seen))
+    check("...and the answer came back", out == {"ok": True}, str(err))
+    check("...after the same sleep as without a listener",
+          t.slept == gemini.BACKOFF_S[0], "slept %ss" % t.slept)
+
+    seen = []
+    out, t, err = run({first: 404}, '{"error":"not found"}',
+                      on_event=lambda k, i: seen.append((k, i)))
+    check("404: attempt, fallback, attempt on the next model",
+          seen == [("attempt", {"model": first, "n": 1}),
+                   ("fallback", {"from": first, "to": second, "code": 404}),
+                   ("attempt", {"model": second, "n": 1})], str(seen))
+    check("...and the answer came back", out == {"ok": True}, str(err))
+
+    seen = []
+    _, t, err = run({first: 503, second: 503, third: 503}, BUSY,
+                    on_event=lambda k, i: seen.append((k, i)))
+    kinds = [k for k, _ in seen]
+    check("503 everywhere: one event per request, wait and hand-over",
+          kinds.count("attempt") == len(t.calls)
+          and kinds.count("fallback") == len(gemini.MODEL_CHAIN) - 1
+          and sum(i["seconds"] for k, i in seen if k == "backoff") == t.slept,
+          str(seen))
+    check("...and the failure is unchanged", getattr(err, "code", 0) == 503, repr(err))
+
+    print("\nno listener, or a broken one, changes nothing")
+    for plan, body in (({}, ""), ({first: [503]}, BUSY), ({first: 404}, "not found"),
+                       ({first: 429, second: 429, third: 429}, QUOTA_BODY_PER_MINUTE),
+                       ({first: 400}, "bad argument")):
+        plain = run({k: (list(v) if isinstance(v, list) else v) for k, v in plan.items()},
+                    body)
+        heard = run({k: (list(v) if isinstance(v, list) else v) for k, v in plan.items()},
+                    body, on_event=lambda k, i: None)
+
+        def boom(k, i):
+            raise RuntimeError("listener bug")
+        broken = run({k: (list(v) if isinstance(v, list) else v) for k, v in plan.items()},
+                     body, on_event=boom)
+        same = all((r[0], r[1].calls, r[1].slept, type(r[2]), str(r[2]))
+                   == (plain[0], plain[1].calls, plain[1].slept, type(plain[2]),
+                       str(plain[2])) for r in (heard, broken))
+        check("same calls, sleeps and outcome for %s" % (plan or "a clean answer"),
+              same, "plain=%s heard=%s broken=%s" % (
+                  (plain[1].calls, plain[2]), (heard[1].calls, heard[2]),
+                  (broken[1].calls, broken[2])))
+
+    seen = []
+    fake = FakeTransport({first: 503}, BUSY)
+    real_open, real_sleep = gemini.urllib.request.urlopen, gemini.time.sleep
+    gemini.urllib.request.urlopen, gemini.time.sleep = fake.urlopen, fake.sleep
+    gemini._WORKING_MODEL = None
+    try:
+        gemini.generate_text("KEY", "p", on_event=lambda k, i: seen.append(k))
+    finally:
+        gemini.urllib.request.urlopen, gemini.time.sleep = real_open, real_sleep
+        gemini._WORKING_MODEL = None
+    check("generate_text reports too (no retries, so no backoff)",
+          seen == ["attempt", "fallback", "attempt"], str(seen))
 
     print("\nthe captioner, which has its own copy of the transport")
     cap = (os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

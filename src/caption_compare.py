@@ -10,6 +10,12 @@ Mariposa "Club Paper" light theme.
 It answers what a glossary cannot: a word that is spelled fine but is the wrong
 word here, a line the transcriber skipped. Read-only — it reports, it does not
 rewrite the .srt.
+
+Progress is a two-leg route (`progress.py`): caption_qa.py makes two Gemini
+calls in a row and, run with --progress, announces each on stderr. A
+`ProgressLine` draws it — a moving bar and a countdown learned from this
+machine's past checks — and the job reports its end to `jobs`, so both
+Settings switches hold for it as for any tool.
 """
 
 from __future__ import annotations
@@ -23,10 +29,11 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from PySide6.QtCore import Qt, QProcess, QTimer
+import shiboken6
+from PySide6.QtCore import Qt, QProcess
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QPlainTextEdit,
-    QScrollArea, QFrame, QSizePolicy, QProgressBar,
+    QScrollArea, QFrame, QSizePolicy,
 )
 
 from design import (
@@ -35,6 +42,12 @@ from design import (
 )
 from core import CAPTIONS_DIR, studio_python, make_qprocess_env
 from widgets import Card, DropZone
+from widgets_status import ProgressLine
+from progress import Leg, Route
+from progress_wire import LineReader
+import jobs
+import progress
+import progress_wire
 
 # Per-issue-type colour (foreground, soft tint) — light-theme palette.
 _TYPE_STYLE = {
@@ -51,6 +64,38 @@ _TYPE_LABEL = {
     "omission": "Not in captions", "other": "Other",
 }
 _CONF_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+# The lines caption.py's Gemini transport prints while a call is struggling: a
+# transient HTTP error (with or without "— retrying"), a timeout or a dropped
+# connection, a model with no quota on this key. Exact prefixes, matched per
+# LINE — the old check looked for "retry" anywhere in a pipe chunk, and once it
+# had said so it never took it back.
+_GEMINI_BUSY = re.compile(
+    r"^(?:Gemini API error: (?:408|429|5\d\d)\b"
+    r"|Gemini attempt \d+/\d+ failed"
+    r"|\[gemini\] \S+ unavailable on this key)")
+_GEMINI_ANSWERED = re.compile(r"^\[gemini\] using \S+")
+
+
+def gemini_busy(line: str) -> Optional[bool]:
+    """True while a Gemini call is being tried again, False once one answered
+    after that, None for any other line. Shared with the Captions page, which
+    reads the same transport's lines from caption.py."""
+    s = line.strip()
+    if _GEMINI_BUSY.match(s):
+        return True
+    if _GEMINI_ANSWERED.match(s):
+        return False
+    return None
+
+
+#: The two passes caption_qa.py makes, as it plans them (its PLAN). Seeded
+#: here too so the bar is a route from the first frame, before Python is up.
+QA_PRIOR = 15.0
+QA_PASSES = {
+    "findings": "Checking the words against the script…",
+    "omissions": "Looking for lines the captions skipped…",
+}
 
 
 class ComparePanel(QWidget):
@@ -152,18 +197,16 @@ class ComparePanel(QWidget):
         runrow.addLayout(self.summary_row)
         root.addLayout(runrow)
 
-        # Slim indeterminate loading bar — visible only while a check runs.
-        self.progress = QProgressBar()
-        self.progress.setObjectName("CompareProgress")
-        self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(6)
-        self.progress.setRange(0, 0)   # indeterminate "busy" sweep
+        # The bar, the elapsed time and the countdown — only while a check runs.
+        self.progress = ProgressLine()
         self.progress.setVisible(False)
-        self.progress.setStyleSheet(
-            "QProgressBar#CompareProgress { background: rgba(4,108,78,0.12); "
-            "border: none; border-radius: 3px; }"
-            f"QProgressBar#CompareProgress::chunk {{ background: {GREEN}; border-radius: 3px; }}")
         root.addWidget(self.progress)
+        self._route: Optional[Route] = None
+        self._reader: Optional[LineReader] = None
+        self._pass = ""
+        self._stderr_buf = ""
+        self._t0: Optional[float] = None
+        jobs.register(self._busy_check)
 
         # ---- results (scrollable) ----
         self.scroll = QScrollArea()
@@ -181,6 +224,13 @@ class ComparePanel(QWidget):
         self._show_placeholder("Run a check to see suggestions.")
 
     # ---- public API used by CaptionsPage ----
+    def is_busy(self) -> bool:
+        """Is a check running? A running check keeps the app open on close."""
+        return self.proc is not None
+
+    def _busy_check(self) -> bool:
+        return shiboken6.isValid(self) and self.is_busy()
+
     def set_srt(self, path: Optional[Path]):
         """Pre-load the .srt the Captions tool just produced (or None)."""
         self._srt_path = Path(path) if path else None
@@ -249,13 +299,14 @@ class ComparePanel(QWidget):
 
         self._stderr_buf = ""
         self._t0 = time.monotonic()
-        self._phase = "Checking with Gemini…"
+        self._pass = ""
         self.run_btn.setEnabled(False)
         self.run_btn.setText("Checking…")
         self._set_summary({})
         self._show_placeholder("Comparing your captions against the briefing…")
         self._set_status_tone("working")
-        self.progress.setVisible(True)
+        self.status.setText("Checking with Gemini…")
+        self._begin_progress()
 
         self.proc = QProcess(self)
         self.proc.setProcessEnvironment(make_qprocess_env())
@@ -266,40 +317,80 @@ class ComparePanel(QWidget):
         self.proc.finished.connect(self._finished)
         self.proc.start(studio_python(), [
             "-u", str(CAPTIONS_DIR / "caption_qa.py"),
-            "--json", "--language", self._language, str(srt), self._brief_tmp,
+            "--json", "--progress", "--language", self._language,
+            str(srt), self._brief_tmp,
         ])
 
-        # Tick a live elapsed counter so the user always sees it's working.
-        self._tick = QTimer(self); self._tick.setInterval(500)
-        self._tick.timeout.connect(self._on_tick); self._tick.start()
-        self._on_tick()
+    # ---- progress: the route, and the lines that steer it ----
+    def _begin_progress(self):
+        """A fresh route for one check: the two passes, priced, learned per
+        machine under one kind."""
+        self._reader = LineReader()
+        self._route = Route([Leg(key, kind="captions.qa", prior=QA_PRIOR, label=text)
+                             for key, text in QA_PASSES.items()],
+                            history=progress.history())
+        self._route.begin()
+        self.progress.setVisible(True)
+        self.progress.start()
+        self.progress.track(self._route)
 
-    def _on_tick(self):
-        secs = int(time.monotonic() - self._t0)
-        self.status.setText(f"{self._phase}   ·   {secs}s")
+    def _pass_text(self) -> str:
+        return QA_PASSES.get(self._pass, "Checking with Gemini…")
 
     def _on_stderr(self):
-        if self.proc is None:
+        if self.proc is None or not shiboken6.isValid(self):
             return
-        chunk = bytes(self.proc.readAllStandardError()).decode("utf-8", "replace")
-        self._stderr_buf += chunk
-        low = chunk.lower()
-        # Surface what the underlying script is doing so a retry doesn't look frozen.
-        if "retry" in low or "429" in low or "too many" in low or "exhausted" in low:
-            self._phase = "Gemini is busy — retrying automatically…"
-            self._on_tick()
+        self._take_stderr(bytes(self.proc.readAllStandardError()))
+
+    def _take_stderr(self, data: bytes):
+        if self._reader is None:
+            self._reader = LineReader()
+        for line, final in self._reader.feed(data):
+            self._take_line(line, final)
+
+    def _take_line(self, line: str, final: bool):
+        """One stderr line: a pass marker steers the route and names the pass;
+        Gemini's retry lines say it is busy until it answers or the next pass
+        starts; everything else is kept for the error text."""
+        event = progress_wire.parse(line)
+        if event is not None:
+            scope, ev = event
+            if not scope and self._route is not None:
+                progress_wire.apply(self._route, ev)
+                key = ev.get("enter")
+                if isinstance(key, str):
+                    self._pass = key
+                    self.status.setText(self._pass_text())
+            return
+        if final:
+            self._stderr_buf += line + "\n"
+        busy = gemini_busy(line)
+        if busy is True:
+            self.status.setText("Gemini is busy — trying again…")
+        elif busy is False:
+            self.status.setText(self._pass_text())
 
     def _on_proc_error(self, err):
         # FailedToStart never reaches finished(), so report it here.
+        if not shiboken6.isValid(self) or jobs.quitting():
+            return
         if err == QProcess.FailedToStart and self.proc is not None:
-            self._end_run()
+            self._end_run(False)
             self.status.setText("Couldn't start the checker.")
             self._show_placeholder("Could not launch Python to run the check. Try reopening the app.")
             self._set_status_tone("error")
+            self._announce(False)
 
-    def _end_run(self):
-        if getattr(self, "_tick", None) is not None:
-            self._tick.stop(); self._tick = None
+    def _end_run(self, ok: bool):
+        if self._route is not None and ok:
+            # Only a clean check teaches the timings, like any tool's run.
+            try:
+                self._route.finish()
+                self._route.learn(progress.history())
+                progress.history().save()
+            except Exception:
+                pass
+        self.progress.finish(ok)
         self.progress.setVisible(False)
         self.run_btn.setEnabled(True)
         self.run_btn.setText("Run check")
@@ -311,20 +402,34 @@ class ComparePanel(QWidget):
             self._brief_tmp = None
         self.proc = None
 
+    def _announce(self, ok: bool):
+        """Hand the ending to `jobs`: the notification and auto-quit switches."""
+        seconds = (time.monotonic() - self._t0) if self._t0 else None
+        self._t0 = None
+        jobs.finished("Compare", ok, summary=self.status.text(), seconds=seconds)
+
     def _finished(self, code: int, _status):
-        if self.proc is None:
-            return  # already handled by _on_proc_error
+        if self.proc is None or not shiboken6.isValid(self):
+            return  # already handled by _on_proc_error, or the panel is gone
+        if jobs.quitting():
+            return  # killed by our own exit: nothing to report
         out = bytes(self.proc.readAllStandardOutput()).decode("utf-8", "replace").strip()
-        err = self._stderr_buf + bytes(self.proc.readAllStandardError()).decode("utf-8", "replace")
-        self._end_run()
+        self._take_stderr(bytes(self.proc.readAllStandardError()))
+        if self._reader is not None:
+            for line, final in self._reader.flush():
+                self._take_line(line, final)
+        err = self._stderr_buf
 
         data = None
         try:
             data = json.loads(out)
         except Exception:
             data = None
-        if isinstance(data, dict) and "findings" in data:
+        ok = isinstance(data, dict) and "findings" in data
+        self._end_run(ok)
+        if ok:
             self._render(data.get("cues", []), data["findings"], data.get("omissions", []))
+            self._announce(True)
             return
 
         # Something went wrong — say what, and how to resolve it.
@@ -332,6 +437,7 @@ class ComparePanel(QWidget):
         self.status.setText(status)
         self._set_status_tone("error")
         self._show_placeholder(detail)
+        self._announce(False)
 
     # ---- error UX helpers ----
     def _gemini_key_present(self) -> bool:

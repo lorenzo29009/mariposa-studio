@@ -3,10 +3,19 @@
 
 `whisperx_arch_ok()` is the pre-flight check - that venv is ~3 GB and lives
 outside the app, so the page has to say what is wrong before it starts.
+
+Progress comes from caption.py itself (`--progress`, see docs/PROGRESS.md): it
+plans every leg of a clip once it knows the clip's length — the model load,
+the transcription priced by the audio's seconds, the alignment, each Gemini
+call it will make — and says when each one starts, WhisperX's own stage
+boundaries included. The page only words it: one sentence per leg entered,
+never a guess from what a line happens to contain. A folder is one route with
+a leg per clip, each priced from the file before it runs.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import subprocess
@@ -21,10 +30,11 @@ from PySide6.QtWidgets import (
 from design import TXT_HI, TXT_META, svg_icon
 from core import (
     IS_MAC, IS_WINDOWS, CAPTION_MARKETS, CAPTIONS_DIR, WHISPERX_PY,
-    studio_python, reveal_in_finder,
+    studio_python, reveal_in_finder, read_env_value,
 )
 from widgets import DropZone, Segmented, SettingRow, Switch
-from caption_compare import ComparePanel
+from caption_compare import ComparePanel, gemini_busy
+from progress import Leg
 from tool_page import ToolPage
 
 
@@ -77,17 +87,39 @@ class CaptionsPage(ToolPage):
     #: state already says whether anything is running.
     LOG_NOTE = ""
 
-    #: The phases caption.py walks through, per clip, in order. Recognising
-    #: them turns "something is happening" into "step 3 of 6" without the
-    #: script printing anything new.
-    PHASES = [
-        ("extract",    "Extracting the audio"),
-        ("voice",      "Detecting voice activity"),
-        ("transcribe", "Transcribing"),
-        ("align",      "Aligning the words"),
-        ("segment",    "Grouping into captions"),
-        ("write",      "Writing the .srt"),
-    ]
+    #: What the runner says while caption.py is in each leg of its plan. Keyed
+    #: by the leg it ENTERED, never by a word in a line: WhisperX's logger is
+    #: called "whisperx.transcribe", so its alignment line contains
+    #: "transcrib", and a clip's own speech ("Transcript: [..] Che vada bene")
+    #: once moved the old phase guesser to "Detecting voice activity".
+    STAGES = {
+        "load": "Loading the speech model",
+        "asr": "Transcribing",
+        "align": "Aligning the words",
+        "segment": "Grouping into captions",
+        "review": "Reviewing the grouping",
+        "terms": "Checking brand spellings",
+        "recase": "Fixing the capitalization",
+        "write": "Writing the .srt",
+    }
+
+    #: caption.py's own priors (its PRIOR_LOAD, ASR_* and ALIGN_*, measured on
+    #: an Apple M4), mirrored here to price a clip before caption.py has looked
+    #: at it — the app never imports a tool. History learns this machine's
+    #: factor over them, so a drift between the two corrects itself.
+    PRIOR_LOAD = 30.0 if IS_WINDOWS else 8.0
+    ASR_WINDOW = 30.0
+    ASR_PER_WINDOW = {"large-v3": 10.0, "medium": 6.0}
+    ASR_FIXED = 0.5
+    ALIGN = {"pl": (1.5, 0.15)}
+    ALIGN_DEFAULT = (0.5, 0.05)
+    PRIOR_GEMINI = 10.0
+    #: Python, caption.py's imports and the ffmpeg duration probe.
+    PRIOR_FIXED = 0.5
+    #: A clip's length guessed from its size: phone footage runs at about
+    #: 12 Mbit/s; a WAV at CD rate, compressed audio at ~192 kbit/s.
+    VIDEO_BITRATE = 12e6
+    AUDIO_BITRATE = {".wav": 1.536e6, ".mp3": 0.192e6, ".m4a": 0.192e6}
 
     #: One line per caption, always. This used to be a choice between "Hybrid"
     #: (a mix of 1- and 2-line captions) and this, and the choice was not one
@@ -107,10 +139,13 @@ class CaptionsPage(ToolPage):
 
     def build_form(self):
         self._queue: list[Path] = []
+        self._queue_src = ""
         self._batch_at = 0
         self._written: list[Path] = []
-        self._phase = 0
         self._silent: list[float] = []
+        #: The leg caption.py is in, and the hole a re-ask is about.
+        self._stage_key = ""
+        self._reask_secs = ""
 
         # The drop target keeps its footprint and loses its swagger: one glyph,
         # one sentence, one fallback button. No video thumbnail is promised —
@@ -265,28 +300,173 @@ class CaptionsPage(ToolPage):
     _model: str = ""
 
     def build_command(self):
-        # A run is a queue of one or more clips; the first call builds it.
-        if not self._queue or self._batch_at >= len(self._queue):
+        # A run is a queue of one or more clips; the first call builds it. A
+        # queue a failure left half-done is carried on — unless what is in the
+        # drop zone is no longer what it was built from.
+        src = self.video.value() or ""
+        if (not self._queue or self._batch_at >= len(self._queue)
+                or src != self._queue_src):
             self._queue = self._collect()
+            self._queue_src = src
             self._batch_at = 0
             self._written = []
             self._silent = []
         clip = self._queue[self._batch_at]
-        self._phase = 0
-        if len(self._queue) > 1:
-            target = self.log or self.strip
-            if target:
-                target.set_units(self._batch_at, len(self._queue))
-            self._sentence(f"Working on clip {self._batch_at + 1} "
-                           f"of {len(self._queue)} — {clip.name}")
         args = ["-u", str(CAPTIONS_DIR / "caption.py"), str(clip)]
-        args += ["--language", self.LANG_CODES[self.language.currentIndex()]]
+        args += ["--language", self._lang()]
         args += ["--lines", self.LINE_MODE]
         if self._model:
             args += ["--model", self._model]
         if not self.use_ai.isChecked():   # toggle off → heuristic only
             args.append("--no-ai")
+        # The plan, each stage as it starts, WhisperX's own boundaries: the
+        # bar and the countdown are caption.py's to drive.
+        args.append("--progress")
         return str(WHISPERX_PY), args, CAPTIONS_DIR
+
+    def _lang(self) -> str:
+        return self.LANG_CODES[self.language.currentIndex()]
+
+    def _is_batch(self) -> bool:
+        return len(self._queue) > 1
+
+    # ---- progress -------------------------------------------------------------
+    def _has_key(self) -> bool:
+        return bool(os.environ.get("GEMINI_API_KEY", "").strip()
+                    or read_env_value("GEMINI_API_KEY").strip())
+
+    def _gemini_legs(self) -> list[str]:
+        """caption.py's own list (its gemini_legs()): segmentation, review and
+        term repair when refining with a key; German's casing pass with any
+        key. Every market ships brand terms, so term repair is assumed."""
+        key = self._has_key()
+        return ((["segment", "review", "terms"] if key and self.use_ai.isChecked() else [])
+                + (["recase"] if key and self._lang() == "de" else []))
+
+    def _clip_seconds(self, clip: Path) -> float:
+        """A clip's length guessed from its size, before ffmpeg has looked."""
+        try:
+            size = clip.stat().st_size
+        except OSError:
+            size = 0
+        bps = self.AUDIO_BITRATE.get(clip.suffix.lower(), self.VIDEO_BITRATE)
+        return size * 8.0 / bps
+
+    def clip_plan(self, clip: Path) -> list[Leg]:
+        """caption.py's plan for this clip, as well as the page can price it:
+        the same legs, keys and kinds (see its progress_plan()), so its own
+        plan, a moment later, re-prices them with the clip's real length.
+
+        Worked through for a 138 MB phone clip in German with a key: 12 Mbit/s
+        is 1.5 MB a second, so ~92 s of audio; 8 s model load; four 30-second
+        windows at 10 s each plus 0.5 s = 40.5 s transcription; 0.5 + 0.05 ×
+        92 = 5.1 s alignment; 4 × 10 s of Gemini; 0.5 s write — ~95 s, where
+        whole 92 s German runs took 80–120 s (roughly 25 s + 0.75 × the clip's
+        seconds). A cached transcription skips WhisperX."""
+        lang = self._lang()
+        model = self._model or "large-v3"
+        cached = (clip.parent / f"{clip.stem}.{lang}.json").exists()
+        secs = self._clip_seconds(clip)
+        per = self.ASR_PER_WINDOW.get(model, self.ASR_PER_WINDOW["large-v3"])
+        windows = max(1, math.ceil(secs / self.ASR_WINDOW))
+        a_fixed, a_per_s = self.ALIGN.get(lang, self.ALIGN_DEFAULT)
+        whisper = [("load", "captions.load", self.PRIOR_LOAD),
+                   ("asr", f"captions.asr.{model}", round(self.ASR_FIXED + per * windows, 1)),
+                   ("align", f"captions.align.{lang}", round(a_fixed + a_per_s * secs, 1))]
+        legs = [Leg(k, kind=kind, prior=0.0 if cached else prior)
+                for k, kind, prior in whisper]
+        legs += [Leg(f"reask{i}", kind="captions.reask", prior=0.0) for i in (1, 2, 3)]
+        legs += [Leg(k, kind="captions.gemini", prior=self.PRIOR_GEMINI)
+                 for k in self._gemini_legs()]
+        legs.append(Leg("write", kind="captions.write", prior=0.5))
+        return legs
+
+    def clip_prior(self, clip: Path) -> float:
+        """Seconds one clip should take on the reference machine: its plan,
+        and the half second before caption.py has said anything."""
+        return round(self.PRIOR_FIXED + sum(l.prior for l in self.clip_plan(clip)), 1)
+
+    def plan_batch(self) -> list[Leg]:
+        """A folder is one job: a leg per clip still to do, priced from the
+        file. Each clip's own run, planned by caption.py, nests inside its leg."""
+        self.status_detail.setText("")
+        if not self._is_batch():
+            return []
+        return [Leg(f"clip{i}", kind="captions.clip", label=clip.name,
+                    prior=self.clip_prior(clip))
+                for i, clip in enumerate(self._queue)
+                if i >= self._batch_at]
+
+    def plan_run(self) -> list[Leg]:
+        """The clip's legs, priced from the file, so the countdown is right
+        from the first frame rather than "a few seconds left" until caption.py
+        has started and planned it. Its plan re-prices them half a second
+        later. For a folder, which clip it is — the sentence that stays."""
+        self._stage_key = ""
+        self._reask_secs = ""
+        if not self._queue or self._batch_at >= len(self._queue):
+            return []
+        clip = self._queue[self._batch_at]
+        if self._is_batch():
+            self._sentence(f"Working on clip {self._batch_at + 1} "
+                           f"of {len(self._queue)} — {clip.name}")
+            self.status_detail.setText("")
+        return self.clip_plan(clip)
+
+    def on_progress(self, scope: str, event: dict):
+        super().on_progress(scope, event)
+        if not scope and isinstance(event.get("enter"), str):
+            self._stage_key = event["enter"]
+            self._say(self._stage_text())
+
+    def _stage_text(self) -> str:
+        key = self._stage_key
+        if key.startswith("reask"):
+            return self._reask_text()
+        base = self.STAGES.get(key)
+        return f"{base}…" if base else ""
+
+    def _reask_text(self) -> str:
+        if self._reask_secs:
+            return f"Asking again about {self._reask_secs} s the transcriber missed…"
+        return "Asking again about audio the transcriber missed…"
+
+    def _say(self, text: str) -> Optional[str]:
+        """Where a stage sentence goes: the state line itself for one clip; for
+        a folder the line under "Working on clip 4 of 12 — name", which stays.
+        Returns the text when it is the state line's, for `_to_status_detail`."""
+        if not text:
+            return None
+        if self._is_batch():
+            self.status_detail.setText(text)
+            return None
+        self._sentence(text)
+        return text
+
+    #: A model download's bar (first run only): "model.bin: 45%|… | 1.39G/3.09G [".
+    _DOWNLOAD_RE = re.compile(
+        r"%\|.*?\|\s*([\d.]+)([kKMGT]?)i?B?/([\d.]+)([kKMGT]?)i?B?\s*\[")
+    _UNITS = {"": 1.0, "k": 1e3, "K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12}
+
+    def _download_text(self, line: str) -> Optional[str]:
+        m = self._DOWNLOAD_RE.search(line)
+        if not m:
+            return None
+        try:
+            done = float(m.group(1)) * self._UNITS[m.group(2)]
+            total = float(m.group(3)) * self._UNITS[m.group(4)]
+        except ValueError:
+            return None
+        if total < 50e6:
+            return None              # a config file, not a model
+        if done >= total:
+            return self._stage_text()     # in: back to what the leg is doing
+        size = f"{total / 1e9:.1f} GB" if total >= 1e9 else f"{total / 1e6:.0f} MB"
+        if self._stage_key == "load":
+            return f"Downloading the speech model ({size})…"
+        if self._stage_key == "asr":
+            return f"Downloading the alignment model ({size})…"
+        return None
 
     #: caption.py's last word on lost audio: a window it could not fill even
     #: after asking the transcriber again. It is the one thing about a finished
@@ -340,15 +520,50 @@ class CaptionsPage(ToolPage):
             cmd = self.build_command()
             if cmd:
                 self._log("• Retrying on the medium model", color=TXT_META)
+                mid_batch = self.batch_route is not None
+                if mid_batch:
+                    self._reprice_batch()
+                held = self._hold_clock() if mid_batch else None
                 self._set_status("running")
-                self._start(*cmd)
+                self._start(*cmd, continuing=mid_batch)
+                if held:
+                    self._resume_clock(held)
             return
         if key == "install_deps":
             self._repair_whisperx()
             return
         super().apply_fix(key)
 
+    # ---- a retry in the middle of a folder is still the same job ------------
+    def _reprice_batch(self):
+        """The clips not yet done, priced for the medium model now; the one
+        that failed starts its clock again, so the failed attempt is not
+        learned as what a clip costs."""
+        route = self.batch_route
+        for leg in route.legs:
+            if leg.ended is not None or not leg.key.startswith("clip"):
+                continue
+            try:
+                clip = self._queue[int(leg.key[4:])]
+            except (ValueError, IndexError):
+                continue
+            route.replan(leg.key, prior=self.clip_prior(clip))
+            if leg.started is not None:
+                leg.started = route.clock()
+
+    def _hold_clock(self) -> Optional[float]:
+        """When the job started, before the retry restarts the bar."""
+        return (self.log or self.strip).progress.started_at()
+
+    def _resume_clock(self, started: float):
+        """The elapsed time runs on from the job's start. The bar itself eases
+        up from empty to where the folder really is — the failed clip's work
+        is gone, and showing it as done would be the one backwards step."""
+        (self.log or self.strip).progress.resume(started)
+        self._job_started = started
+
     def after_finished(self, code: int):
+        self.status_detail.setText("")
         if code != 0 or not self.video.value():
             return
         # The last clip of the queue never went through advance_batch().
@@ -395,67 +610,39 @@ class CaptionsPage(ToolPage):
                     f"heard nothing there.")
         return ""
 
-    def _phase_of(self, line: str) -> Optional[int]:
-        """Which of PHASES this output line announces, if any.
-
-        A warning is never a phase: "the transcriber heard nothing there"
-        contains "transcrib", and read as a phase it reported the job as
-        *Transcribing* at the very moment it was admitting to a hole."""
-        if line.lstrip().startswith(("⚠", "✗")):
-            return None
-        ll = line.lower()
-        if "extracting audio" in ll or "ffmpeg" in ll and "->" in ll:
-            return 0
-        if "detecting voice" in ll or "voice activity" in ll or "vad" in ll:
-            return 1
-        if "transcrib" in ll:
-            return 2
-        if "align" in ll:
-            return 3
-        if ("segment" in ll or "grouping" in ll or "casing pass" in ll
-                or "capitalization" in ll or "reviewing caption" in ll):
-            return 4
-        if "wrote" in ll and "caption" in ll:
-            return 5
-        return None
-
     def progress_from_line(self, raw_line: str) -> Optional[tuple[int, int]]:
-        """Progress means different things at the two scales here.
-
-        A folder counts clips — the page owns that number, so the bar is set
-        from `build_command()` and this only has to not fight it. A single clip
-        counts phases: six named steps caption.py already announces, which is a
-        real fraction rather than a barber pole."""
-        if len(self._queue) > 1:
-            return None
-        ph = self._phase_of(raw_line)
-        if ph is None:
-            return None
-        self._phase = max(self._phase, ph)
-        return self._phase, len(self.PHASES)
+        """Nothing here is counted from a line: caption.py reports its route.
+        (The old `[n/m]` fallback must not read a Gemini "attempt 1/3".)"""
+        return None
 
     def _to_status_detail(self, raw_line: str) -> Optional[str]:
+        """The few ordinary lines that change what the runner says. Stages come
+        from `on_progress`; a line of the clip's own speech changes nothing."""
         ls = raw_line.strip()
-        if not ls:
+        if not ls or ls.startswith("Transcript:"):
             return None
-        ll = ls.lower()
-        # Skip tqdm bars (e.g. 100%|████…) — they are not sentences.
-        if "%" in ls and ("|" in ls or "it]" in ls or "s/it" in ls):
-            return None
-        ph = self._phase_of(ls)
-        if ph is not None:
-            step = self.PHASES[ph][1]
-            if len(self._queue) > 1:
-                return (f"Clip {self._batch_at + 1} of {len(self._queue)} — "
-                        f"{step.lower()}…")
-            return f"{step}…"
-        if "refin" in ll or "[gemini]" in ll:
-            return "Refining with Gemini…"
+        busy = gemini_busy(ls)
+        if busy is True:
+            return self._say("Gemini is busy — trying again…")
+        if busy is False:
+            return self._say(self._stage_text())
+        dl = self._download_text(ls)
+        if dl:
+            return self._say(dl)
         if ls.startswith("✗"):
             return ls
-        m = self._REASK_RE.search(ls)
-        if m:
-            return f"Asking again about {m.group(1)}s the transcriber missed…"
         if ls.startswith("⚠"):
-            return ls[1:].strip()
+            m = self._REASK_RE.search(ls)
+            if m:
+                try:
+                    self._reask_secs = f"{float(m.group(1)):.0f}"
+                except ValueError:
+                    self._reask_secs = ""
+                return self._say(self._reask_text())
+            return self._say(ls[1:].strip())
         return None
+
+    def is_busy(self) -> bool:
+        """A check against the script is a job too: it keeps the app open."""
+        return super().is_busy() or bool(
+            self._compare is not None and self._compare.is_busy())

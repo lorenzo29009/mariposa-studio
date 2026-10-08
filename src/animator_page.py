@@ -3,9 +3,12 @@
 variants) -> duration-slotted scene prompts.
 
 Two stages in a QStackedWidget: the script, then the cut. The pieces live next
-door - `animator_pipeline` (Gemini + the session log), `animator_widgets`
-(BlockRow, SceneCard), `animator_panel` (the float panel), `animator_common`
-(constants). All the scene logic is in `script_packer`.
+door - `animator_runtime` (the spoken length while you write), `animator_build`
+(a build and its progress in the footer), `animator_scenes` (stage two),
+`animator_pipeline` (Gemini + the worker), `animator_plan` (what a build will
+take), `animator_widgets` (BlockRow, SceneCard), `animator_panel` (the float
+panel), `animator_common` (constants + the session log). All the scene logic
+is in `script_packer`.
 
 Division of labour, on purpose:
 
@@ -26,95 +29,34 @@ import datetime as _dt
 import re
 from typing import Callable, Optional
 
-from PySide6.QtCore import Qt, QRectF, QTimer, QThread, Slot
-from PySide6.QtGui import QColor, QPainter, QPainterPath
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QPlainTextEdit, QFrame, QScrollArea, QFileDialog, QStackedWidget,
 )
 
-from design import (
-    ACCENT, DONE, FILL, SHADOW_REST, TEXT_DIM, WINE, WINE_SOFT, apply_shadow,
-    svg_icon,
-)
-import session
-from core import chevron_icon, gemini_model_override, read_env_value
+from design import ACCENT, SHADOW_REST, TEXT_DIM, apply_shadow, svg_icon
+from core import chevron_icon
 from widgets import AppBar, Select
 from script_packer import (
-    build_markdown, build_prompt, ends_mid_sentence,
-    flag_for, format_runtime, leftover_symbols, merge_scenes, overruns,
-    parse_pronunciation, pronunciation_for, set_duration, split_scene,
-    verbatim_gaps,
-    pack_block,
+    build_markdown, build_prompt,
+    flag_for, merge_scenes,
+    pronunciation_for, set_duration, split_scene,
 )
-from speech_clock import engine_note, flush_cache
+from speech_clock import engine_note
 from animator_common import (
     LANG_CHOICES, DEFAULT_TAIL, MAX_HOOKS, MAX_CTAS, BODY_ID,
-    fit_scroll_content,
+    fit_scroll_content, log_load, log_save,
 )
-from animator_pipeline import ScenePipelineWorker, log_load, log_save
 from animator_widgets import BlockRow, SceneCard
 from animator_scenes import ScenesStage
+from animator_runtime import RuntimeColumn
+from animator_build import BuildRunner
 
 
 # ─── Tool page ────────────────────────────────────────────────────────────────
 
-def _secs(seconds: int) -> str:
-    """"8 s" under a minute, "1:42" over it — the phrasing the board uses."""
-    return f"{seconds} s" if seconds < 60 else format_runtime(seconds)
-
-
-class _ShareBar(QWidget):
-    """Hook / body / CTA as three widths of one 8px bar.
-
-    Painted rather than assembled from three styled QFrames: the shares change
-    on every keystroke, and repainting one widget is cheaper — and steadier —
-    than re-laying out three."""
-
-    HEIGHT = 8
-
-    def __init__(self):
-        super().__init__()
-        self.setFixedHeight(self.HEIGHT)
-        self._shares: tuple[float, float, float] = (0.0, 0.0, 0.0)
-
-    def set_shares(self, hook: float, body: float, cta: float):
-        total = hook + body + cta
-        self._shares = ((hook / total, body / total, cta / total) if total
-                        else (0.0, 0.0, 0.0))
-        self.update()
-
-    def paintEvent(self, _e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        r = self.rect()
-        radius = self.HEIGHT / 2
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(FILL))
-        p.drawRoundedRect(r, radius, radius)
-        if not any(self._shares):
-            p.end()
-            return
-        p.setClipPath(_rounded_path(r, radius))
-        x = 0.0
-        gap = 2
-        for share, color in zip(self._shares, (WINE, WINE_SOFT, DONE)):
-            w = share * r.width()
-            if w <= 0:
-                continue
-            p.setBrush(QColor(color))
-            p.drawRect(QRectF(x, 0, max(0.0, w - gap), r.height()))
-            x += w
-        p.end()
-
-
-def _rounded_path(rect, radius: float):
-    path = QPainterPath()
-    path.addRoundedRect(QRectF(rect), radius, radius)
-    return path
-
-
-class AnimatorPage(ScenesStage, QWidget):
+class AnimatorPage(RuntimeColumn, BuildRunner, ScenesStage, QWidget):
     """Two stages, one at a time.
 
     SCRIPT — a single centred column: the hooks, the body, the CTAs, the shot
@@ -140,12 +82,10 @@ class AnimatorPage(ScenesStage, QWidget):
         self._notes: list[str] = []
         self._block_notes: dict[str, list[str]] = {}
         self._panel: Optional[AnimatorFloatPanel] = None
-        self._thread: Optional[QThread] = None
-        self._worker: Optional[ScenePipelineWorker] = None
         self._hooks: list[BlockRow] = []
         self._ctas: list[BlockRow] = []
-        self._pending_blocks: list[dict] = []
         self._selected = -1
+        self._init_build()
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -284,7 +224,11 @@ class AnimatorPage(ScenesStage, QWidget):
         self.clear_btn.setCursor(Qt.PointingHandCursor)
         self.clear_btn.clicked.connect(self._reset)
         fl.addWidget(self.clear_btn)
-        fl.addStretch(1)
+        # While a build runs, the dot, its sentence and the moving bar take the
+        # footer's free width (stretch 1); at rest they are hidden and the
+        # spacer (stretch 0, so it yields to them) pushes the rest right.
+        fl.addWidget(self._build_footer_box(), 1, Qt.AlignVCenter)
+        fl.addStretch(0)
         self.status_lbl = QLabel("")
         self.status_lbl.setObjectName("StageMeta")
         fl.addWidget(self.status_lbl)
@@ -321,56 +265,6 @@ class AnimatorPage(ScenesStage, QWidget):
         self._add_cta()
         self._schedule_timing()
         return stage
-
-    TIMING_COLUMN = 300
-
-    def _build_timing_column(self) -> QWidget:
-        """The runtime of the finished ad, once there is a finished ad.
-
-        Everything here is arithmetic on what `speech_clock` **measured** (the
-        line is rendered by eSpeak and the audio is timed) and what
-        `script_packer` packed — no model, no network, cached per sentence. Which
-        is why it can update while you type.
-
-        One card, and it only ever shows one number: the total. A hook is an
-        alternative opening, so a script with five hooks is five ads of slightly
-        different lengths — the total is the longest of them, and the line
-        underneath names which. That used to be a second card listing every
-        H + body + CTA combination, which is arithmetic the reader can do and a
-        column of numbers nobody acted on."""
-        col = QWidget()
-        col.setObjectName("TransparentPanel")
-        col.setFixedWidth(self.TIMING_COLUMN)
-        v = QVBoxLayout(col)
-        v.setContentsMargins(0, 26, 28, 36)
-        v.setSpacing(14)
-
-        longest = QFrame()
-        longest.setObjectName("Card")
-        lv = QVBoxLayout(longest)
-        lv.setContentsMargins(20, 18, 20, 18)
-        lv.setSpacing(9)
-        cap = QLabel("Ad runtime, spoken")
-        cap.setObjectName("Meta")
-        cap.setToolTip(
-            "Measured, not guessed: every sentence is rendered by the offline "
-            "speech engine and the audio is timed.\n\nEach hook makes its own "
-            "ad, so this is the longest of them — the longest hook, the body, "
-            "and the longest CTA.")
-        lv.addWidget(cap)
-        self.total_lbl = QLabel("—")
-        self.total_lbl.setObjectName("HeroTitle")
-        lv.addWidget(self.total_lbl)
-        self.share_bar = _ShareBar()
-        lv.addWidget(self.share_bar)
-        self.share_lbl = QLabel("nothing written yet")
-        self.share_lbl.setObjectName("MetaFaint")
-        self.share_lbl.setWordWrap(True)
-        self.share_lbl.setMinimumWidth(1)
-        lv.addWidget(self.share_lbl)
-        v.addWidget(longest)
-        v.addStretch(1)
-        return col
 
     def _section(self, title: str) -> tuple[QWidget, QVBoxLayout, QLabel]:
         """An eyebrow line (title · count) above one white card. The card
@@ -567,158 +461,10 @@ class AnimatorPage(ScenesStage, QWidget):
         another card: with an engine installed there is nothing here to decide."""
         note = engine_note(self.language_name())
         self.build_btn.setToolTip(note)
-        if "No speech engine" in note:
+        # Mid-build the footer belongs to the build; the tooltip still says it.
+        if "No speech engine" in note and self._build is None:
             self.status_lbl.setText("Clip lengths estimated — no speech engine")
             self.status_lbl.setToolTip(note)
-
-    # ── Spoken length, while you write ──────────────────────────────────────
-    #
-    # The whole point of this section: the tool already knows how long a line
-    # takes to say (speech_clock measures it with eSpeak) and how many clips it
-    # becomes (script_packer cuts it deterministically). Both are offline and
-    # cached, so there is no reason to make you press Build to find out.
-
-    TIMING_DEBOUNCE = 420        # ms after the last keystroke
-
-    def _schedule_timing(self):
-        self._timing_timer.start(self.TIMING_DEBOUNCE)
-
-    def _recompute_timing(self):
-        """Re-cut every block and republish the numbers.
-
-        Deterministic and offline: same text in, same seconds out, no Gemini
-        involved. The seconds are the ones `speech_clock` **measured** — the
-        sentence is rendered by eSpeak NG and the audio is timed, cached per
-        sentence in `exports/speech_clock_cache.json`.
-
-        It is the same clock and the same packer the build uses, but it is the
-        *fallback* path through them (`pack_block`: raw copy → sentences →
-        `infer_link`). A build can still move a cut by a slot, because by then
-        Gemini has turned the copy into its spoken form (`15 % → fünfzehn
-        Prozent`, which is longer to say) and graded the seams. So this is the
-        real length of what you have written, not a promise about the cut."""
-        lang = self.language_name()
-        hooks: list[tuple[str, int]] = []
-        ctas: list[tuple[str, int]] = []
-
-        def cut(block_id: str, text: str, kind: str) -> list[dict]:
-            if not text:
-                return []
-            try:
-                return pack_block(block_id, text, lang, kind)
-            except Exception:
-                # A half-typed sentence must never take the page down; the
-                # numbers simply wait for the next keystroke.
-                return []
-
-        def publish(row: BlockRow, kind: str) -> int:
-            """Cut one row's copy and put its length on the row."""
-            scenes = cut(row.tag(), row.value(), kind)
-            secs = sum(int(sc.get("duration") or 0) for sc in scenes)
-            # `over` is the same test as the build's: a clip holding more speech
-            # than it can carry. Every slot 4/6/8/10 is one generation, so a long
-            # block is not itself a problem — an unshootable clip inside it is.
-            row.set_timing(secs, len(scenes), over=bool(overruns(scenes)))
-            return secs
-
-        for ed in self._hooks:
-            secs = publish(ed, "hook")
-            if secs:
-                hooks.append((ed.tag(), secs))
-        body_scenes = cut(BODY_ID, self.body_editor.value(), "body")
-        body_secs = sum(int(sc.get("duration") or 0) for sc in body_scenes)
-        self.body_editor.set_timing(body_secs, len(body_scenes),
-                                    over=bool(overruns(body_scenes)))
-        for ed in self._ctas:
-            secs = publish(ed, "cta")
-            if secs:
-                ctas.append((ed.tag(), secs))
-
-        self._hooks_count.setText(self._count_text(self._hooks, MAX_HOOKS))
-        self._ctas_count.setText(self._count_text(self._ctas, MAX_CTAS))
-        self._publish_timing(hooks, body_secs, len(body_scenes), ctas)
-        # The chips appear a beat after the keystroke that earned them, and they
-        # take width off the copy: without a re-measure here the row keeps the
-        # height it had when it was wider and hides its last line.
-        self._sync_scrolls()
-        # Keep what the engine just rendered. Measuring a fresh six-sentence body
-        # costs ~180ms of eSpeak renders and nothing once cached, and only the
-        # build used to write the cache out — so a script typed and not built
-        # paid that again on the next launch. Writing is a no-op when nothing
-        # new was measured.
-        flush_cache()
-
-    @staticmethod
-    def _count_text(rows: list, ceiling: int) -> str:
-        filled = sum(1 for r in rows if r.value())
-        return f"{filled} of {ceiling}"
-
-    @staticmethod
-    def _join(parts: list[str]) -> str:
-        """"a hook, the body and a CTA" — the list as a sentence says it."""
-        if len(parts) <= 1:
-            return "".join(parts)
-        return ", ".join(parts[:-1]) + " and " + parts[-1]
-
-    def _publish_timing(self, hooks, body_secs, body_scenes, ctas):
-        """The runtime of the ad — but only once there is an ad to run.
-
-        An ad is a hook, the body and a CTA. Until all three are written the
-        total would be the runtime of something nobody will ever cut, and a
-        number that climbs as you type reads as the answer when it is only a
-        subtotal — so until then the card says what is still missing and the
-        per-block lengths (on the rows themselves) carry the writing."""
-        longest_hook = max((s for _t, s in hooks), default=0)
-        longest_cta = max((s for _t, s in ctas), default=0)
-
-        if not (hooks or body_secs or ctas):
-            self.total_lbl.setText("—")
-            self.share_bar.set_shares(0, 0, 0)
-            self._fit_share_line("nothing written yet")
-            return
-
-        parts = []
-        if longest_hook:
-            parts.append(f"hook {_secs(longest_hook)}")
-        if body_secs:
-            parts.append(f"body {_secs(body_secs)} · {body_scenes} scene"
-                         + ("" if body_scenes == 1 else "s"))
-        if longest_cta:
-            parts.append(f"cta {_secs(longest_cta)}")
-        written = " · ".join(parts)
-
-        missing = [label for label, got in (("a hook", bool(hooks)),
-                                            ("the body", bool(body_secs)),
-                                            ("a CTA", bool(ctas))) if not got]
-        if missing:
-            self.total_lbl.setText("—")
-            self.share_bar.set_shares(0, 0, 0)
-            self._fit_share_line(f"{written} · waiting for "
-                                 f"{self._join(missing)}")
-            return
-
-        self.total_lbl.setText(format_runtime(longest_hook + body_secs
-                                              + longest_cta))
-        self.share_bar.set_shares(longest_hook, body_secs, longest_cta)
-        # Which of the alternatives this total belongs to — the one thing the
-        # removed hook × CTA table was actually for.
-        if len(hooks) > 1 or len(ctas) > 1:
-            hook_tag = max(hooks, key=lambda h: h[1])[0]
-            cta_tag = max(ctas, key=lambda c: c[1])[0]
-            written += f" · longest: {hook_tag} + body + {cta_tag}"
-        self._fit_share_line(written)
-
-    def _fit_share_line(self, text: str) -> None:
-        """Set the breakdown line and give it the height its wrapping needs.
-
-        A word-wrapping QLabel reports a single line as its size hint, so a
-        QVBoxLayout hands it one line's worth of card and clips the rest (the
-        same Qt limitation `fit_scroll_content` exists for). Measuring at the
-        width it actually has is the fix."""
-        self.share_lbl.setText(text)
-        width = self.share_lbl.width() or (
-            self.TIMING_COLUMN - 28 - 40)          # column margin + card padding
-        self.share_lbl.setMinimumHeight(self.share_lbl.heightForWidth(width))
 
     def _blocks(self) -> list[dict]:
         """Every non-empty block, in ad order: hooks → body → CTAs."""
@@ -743,8 +489,13 @@ class AnimatorPage(ScenesStage, QWidget):
         self.status_lbl.style().polish(self.status_lbl)
 
     def _mark_stale(self):
-        if self.scenes:
-            self._set_status("Script changed — rebuild to update the scenes.", warn=True)
+        # Mid-build the footer belongs to the build: an edit made meanwhile is
+        # caught when the scenes arrive (`_on_packed`), not written over it.
+        if self.scenes and self._build is None:
+            self._say_stale()
+
+    def _say_stale(self):
+        self._set_status("Script changed — rebuild to update the scenes.", warn=True)
 
     def _on_tail_changed(self):
         for card in self._cards:
@@ -771,158 +522,8 @@ class AnimatorPage(ScenesStage, QWidget):
         return block_id.upper()
 
     # ── Build ────────────────────────────────────────────────────────────────
-
-    def _on_build(self):
-        if self._thread is not None:
-            return
-        blocks = self._blocks()
-        if not blocks:
-            self._set_status("Write at least one block first.", err=True)
-            return
-        key = read_env_value("GEMINI_API_KEY")
-        if not key:
-            self._set_status("No Gemini key — set it in Settings.", err=True)
-            return
-
-        self._pending_blocks = blocks
-        self._set_status(f"Reading {len(blocks)} blocks…")
-        self.build_btn.setEnabled(False)
-        self.build_btn.setText("Building…")
-
-        thread = QThread(self)
-        worker = ScenePipelineWorker(key, blocks, self.language_name(),
-                                     model=gemini_model_override(),
-                                     pronunciation=parse_pronunciation(
-                                         self.pronunciation()))
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.progress.connect(self._set_status)
-        worker.done.connect(self._on_packed)
-        worker.failed.connect(self._on_failed)
-        worker.done.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._on_thread_finished)
-        self._thread = thread
-        self._worker = worker
-        thread.start()
-
-    def _on_thread_finished(self):
-        self._thread = None
-        self._worker = None
-        self.build_btn.setText("Rebuild scenes")
-        self.build_btn.setEnabled(True)
-
-    @Slot(dict)
-    def _on_packed(self, packed: dict):
-        # A fresh cut means the clip boundaries moved, so the old marks no
-        # longer describe anything real.
-        self._generated = set()
-        """The worker has cut the script. What's left is the copy hygiene: the
-        guards, the respelling, the punctuation check. None of it is a wall of
-        text any more — each finding is attached to the block or the clip it is
-        about, as a dot you can hover."""
-        blocks = self._pending_blocks or self._blocks()
-        pron = parse_pronunciation(self.pronunciation())
-        scenes: list[dict] = packed.get("scenes") or []
-        notes: list[str] = list(packed.get("notes") or [])
-        fixes: dict = packed.get("fixes") or {}
-
-        if not scenes:
-            self._set_status("Nothing to build — the blocks came back empty.", err=True)
-            return
-
-        for block in blocks:
-            bid = block["id"]
-            spoken = " ".join(s["text"] for s in scenes if s["block"] == bid)
-            # Two kinds of agreed edit are declared to the guard, so neither reads
-            # as the model quietly rewriting copy: the typos it reported fixing,
-            # and the words the pronunciation map respells ("Selen" → "Selehn").
-            # Everything else missing from the spoken version is a real rewrite.
-            declared = set(re.findall(r"[^\W\d_]+",
-                                      " ".join(fixes.get(bid, [])), re.UNICODE))
-            declared |= {written for written, _ in pron}
-            missing = verbatim_gaps(block["text"], spoken, ignore=declared)
-            if missing:
-                notes.append(f"{bid}: these words aren't in the spoken version — "
-                             f"{', '.join(missing)}")
-            symbols = leftover_symbols(spoken)
-            if symbols:
-                notes.append(f"{bid}: still contains {symbols} — write it out by hand.")
-
-        for scene in scenes:
-            # The respelling already happened, on the sentences, before the copy
-            # was timed and cut — so a later merge or split rebuilds the text the
-            # voice should say and the length it was measured at.
-            #
-            # A scene should close on a full stop. When it doesn't, the copy
-            # itself has no punctuation there — worth a look, not a silent edit.
-            # Unless the packer cut mid-sentence on purpose, because one sentence
-            # was longer than any clip: then the comma at the end is the cut, not
-            # a mistake, and saying otherwise sends the editor after nothing.
-            if (not ends_mid_sentence(scene)
-                    and scene["text"].rstrip()[-1:] not in (".", "!", "?", "…", ":")):
-                notes.append(f"{scene['label']}: doesn't end on . ! or ? — the "
-                             f"copy has no punctuation at that break.")
-
-        self.scenes = scenes
-        self._notes = notes
-        self._block_notes = self._attach_notes(notes, scenes)
-        self._render_scenes()
-        self._save_session()
-        self.restore_btn.setVisible(False)
-        self.to_scenes_btn.setVisible(True)
-        self._set_status(self._summary(), ok=True)
-        if self._panel is not None:
-            self._panel.update_scenes(self.scenes, self.tail())
-        self._show_stage(self.STAGE_SCENES)
-        # Two things Settings could not previously know about a build. The key
-        # dot stayed grey ("nothing has used it yet") after ten good builds,
-        # because only Camera Prompts ever said it had used the key; and the
-        # notification switch never fired for the longest wait in the app.
-        self._report_btn.setVisible(False)
-        session.note_gemini(self.title)
-        self._announce(f"{len(self.scenes)} clips cut" if self.scenes else "")
-
-    @Slot(str)
-    def _on_failed(self, err: str):
-        import diagnostics
-        diagnostics.note_error(self.title, err.splitlines()[0][:200] if err else "build failed", err)
-        self._set_status(f"Gemini failed — {err[:160]}", err=True)
-        self._announce("the build stopped")
-        self._report_btn.setVisible(True)
-
-    def _copy_report(self):
-        """Hand over everything about this failure, in one click."""
-        import diagnostics
-        path = diagnostics.share_report(f"{self.title} — pressed Build scenes")
-        self._set_status(diagnostics.shared_line(path))
-
-    def _announce(self, body: str):
-        """Honour the Settings notification switch, as every other tool does."""
-        import settings_page as prefs
-        prefs.notify_if_enabled("Script Animator", body)
-
-    def _attach_notes(self, notes: list[str], scenes: list[dict]) -> dict:
-        """Hang each build note on the thing it is about.
-
-        A note naming a clip becomes part of that clip's warning; a note naming
-        a block goes to the block's group heading. Anything else (the respelling
-        log) is housekeeping the user has no decision to make about, and is
-        dropped from the screen — it is still in the session file."""
-        by_block: dict[str, list[str]] = {}
-        by_label = {s["label"]: s for s in scenes}
-        block_ids = {s["block"] for s in scenes}
-        for note in notes:
-            head, sep, rest = note.partition(":")
-            head, rest = head.strip(), (rest.strip() if sep else note)
-            if head in by_label:
-                scene = by_label[head]
-                scene["flag"] = f"{scene['flag']}\n\n{rest}" if scene.get("flag") else rest
-            elif head in block_ids:
-                by_block.setdefault(head, []).append(rest)
-        return by_block
+    # In `animator_build.BuildRunner`: the worker, the footer's progress, the
+    # ending.
 
 
     # ── Scene list ───────────────────────────────────────────────────────────

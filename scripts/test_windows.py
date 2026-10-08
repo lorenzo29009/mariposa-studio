@@ -155,8 +155,12 @@ def test_encoding() -> None:
     check("make_qprocess_env() forces UTF-8 on every child",
           'env.insert("PYTHONUTF8", "1")' in core_src
           and 'env.insert("PYTHONIOENCODING", "utf-8")' in core_src)
+    # The pipe is read by progress_wire.LineReader — incrementally, so a
+    # character cut across two chunks is not turned into two replacement marks.
     check("ToolPage decodes child output as UTF-8",
-          'decode("utf-8"' in (SRC / "tool_page.py").read_text(encoding="utf-8"))
+          "LineReader" in (SRC / "tool_page.py").read_text(encoding="utf-8")
+          and 'getincrementaldecoder("utf-8")'
+          in (SRC / "progress_wire.py").read_text(encoding="utf-8"))
 
 
 # --- 2. Argument quoting --------------------------------------------------
