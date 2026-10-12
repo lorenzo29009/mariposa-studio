@@ -579,6 +579,74 @@ for _k, _v in _saved.items():
     if _v is not None:
         os.environ[_k] = _v
 
+# ─── the wrong language is caught before it is captioned ────────────────────
+# Forced into the wrong language WhisperX translates, and the aligner scores the
+# translation low: medians 0.40-0.52 on every such run measured, 0.77-0.94 on
+# every correct one.
+def _mismatch(lang, texts, score):
+    with _tempfile_mod.TemporaryDirectory() as _tmp:
+        _p = Path(_tmp) / f"x.{lang}.json"
+        _p.write_text(_json_mod.dumps({"segments": [
+            {"text": t, "words": [{"word": w, "score": score} for w in t.split()]}
+            for t in texts]}), encoding="utf-8")
+        return cap.language_mismatch(_p, lang)
+
+
+_slip = ("Medizinisch ergibt das Sinn und die Anwendung ist einfach. Schon nach "
+         "einer Woche beginnt die Leber wieder, falls du es noch nicht kennst.")
+check("a transcript that fits its audio is never stopped",
+      _mismatch("it", ["Se l'esterno delle tue sopracciglia si assottiglia "
+                       "sempre di più, non è un caso."], 0.84), None)
+check("a translation is stopped, naming the language it slipped back into",
+      _mismatch("it", ["Un team di Berlino ha sviluppato un complex di leber", _slip],
+                0.45),
+      "Wrong language: this audio is in German, but Italian was picked. "
+      "Choose German and run it again.")
+check("…and stopped without a name when nothing gives the language away",
+      (_mismatch("it", ["Sì, soprattutto allora dovresti usare l'intervistatore "
+                        "per attivare gli enzimi nella tua labbra."], 0.46) or "")
+      .startswith("Wrong language: the words do not match this audio"), True)
+check("a few low-scored words are not enough to stop a run",
+      _mismatch("de", ["ja genau"], 0.2), None)
+
+# ─── Gemini: what one call learns, the next ones keep ───────────────────────
+import io as _io, time as _time, urllib.error as _ue, urllib.request as _ur
+_hits, _real = [], (_ur.urlopen, _time.sleep, os.environ.get("GEMINI_API_KEY"),
+                    os.environ.pop("GEMINI_MODEL", None))
+
+
+class _Resp(_io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+
+
+def _fake(req, timeout=0):
+    model = req.full_url.split("/models/")[1].split(":")[0]
+    _hits.append(model)
+    if model == "gemini-3.5-flash":
+        raise _ue.HTTPError(req.full_url, 503, "Service Unavailable", {}, None)
+    if model == "gemini-2.5-flash":
+        raise _ue.HTTPError(req.full_url, 404, "Not Found", {}, None)
+    return _Resp(_json_mod.dumps({"candidates": [{"content": {"parts": [
+        {"text": "[]"}]}}]}).encode())
+
+
+_ur.urlopen, _time.sleep, os.environ["GEMINI_API_KEY"] = _fake, (lambda s: None), "test"
+cap._GEMINI_DEAD.clear(); cap._GEMINI_LAST = ""
+cap._gemini_generate("x")
+_n = len(_hits)
+cap._gemini_generate("x")
+check("after one call finds the model that answers, the next goes straight to it",
+      _hits[_n:], ["gemini-3.1-flash-lite"])
+_ur.urlopen, _time.sleep = _real[0], _real[1]
+if _real[2] is None:
+    os.environ.pop("GEMINI_API_KEY", None)
+else:
+    os.environ["GEMINI_API_KEY"] = _real[2]
+if _real[3] is not None:
+    os.environ["GEMINI_MODEL"] = _real[3]
+cap._GEMINI_DEAD.clear(); cap._GEMINI_LAST = ""
+
 print("\nALL CAPTION CHECKS PASSED" if not bad
       else f"\n{bad} CAPTION CHECK(S) FAILED")
 sys.exit(1 if bad else 0)

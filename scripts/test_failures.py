@@ -32,6 +32,12 @@ cases = [
      "path_too_long", "open_settings"),
     ("FAIL H1  (cannot run C:\\Users\\lo\\whisperx\\Scripts\\python.exe "
      "(No such file or directory))", "no_whisperx", "install_deps"),
+    # caption.py's own stop, also as Clip Cutter relays it from one segment.
+    ("Wrong language: this audio is in German, but Italian was picked. "
+     "Choose German and run it again.", "wrong_language", ""),
+    ("FAIL H1  (Wrong language: the words do not match this audio, so it is "
+     "not Italian. Choose the language spoken and run it again.)",
+     "wrong_language", ""),
     # ...and must not steal a log that has a more specific cause in it.
     ("MPS backend out of memory\nwhisperx: not found", "oom", "retry_medium"),
 ]

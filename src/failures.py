@@ -92,6 +92,16 @@ _TABLE: list[tuple[re.Pattern[str], Failure]] = [
          fix="open_settings",
          fix_label="Open Settings")),
 
+    # caption.py stops on its own sentence before captioning a translation: the
+    # sentence already names both languages, so the card only says what it means.
+    (re.compile(r"Wrong language: ", re.I),
+     Failure(
+         key="wrong_language",
+         title="The language picked isn't the one spoken",
+         body="Told the wrong language, the transcriber translates instead of "
+              "listening, and every caption comes out wrong. The log says which "
+              "language it heard. Nothing was sent to Gemini.")),
+
     (re.compile(r"cannot run .{0,120}whisperx|whisperx.{0,30}(not installed"
                 r"|not found|no such file|is not recognized)", re.I),
      Failure(

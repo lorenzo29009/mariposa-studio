@@ -1075,6 +1075,89 @@ def load_words(json_path: Path):
     return words
 
 
+#: Median alignment confidence below which the words do not belong to the
+#: audio. Forced into the wrong language, WhisperX TRANSLATES instead of
+#: transcribing ("Leber" comes back as "nella tua labbra"), and the aligner,
+#: matching those words against the real speech, scores them low across the
+#: board. Measured on 70+ real transcripts: every wrong-language run had a
+#: median of 0.40–0.52 (German audio as Italian, Italian audio as German),
+#: every correct one 0.77–0.94. The threshold sits in the empty middle.
+LANG_MISMATCH_MEDIAN = 0.65
+LANG_MISMATCH_MIN_WORDS = 8
+
+#: Frequent words that belong to ONE market language only — enough to name the
+#: language a stretch of the transcript slipped back into. (Shared spellings
+#: — "die", "con", "il", "que", "non", "to" — are left out on purpose.)
+_LANG_MARKERS = {
+    "de": {"und", "ist", "nicht", "das", "ich", "du", "mit", "auf", "sich",
+           "auch", "wenn", "dass", "ein", "eine", "einen", "dem", "den", "der",
+           "wird", "hat", "sind", "nach", "schon", "noch", "oder", "aber",
+           "wie", "bei", "zum", "zur", "für", "von", "sehr", "kann", "mehr",
+           "nur", "diese", "dieser", "wieder", "weil", "deine", "deiner"},
+    "it": {"il", "che", "di", "è", "per", "gli", "anche", "questo", "questa",
+           "della", "delle", "dei", "nel", "nella", "più", "perché", "molto",
+           "ancora", "quando", "ogni", "tutti", "hanno", "essere", "sono"},
+    "es": {"el", "los", "las", "del", "por", "para", "pero", "muy", "también",
+           "porque", "cuando", "esto", "esta", "está", "más", "hay", "yo",
+           "todo", "puede", "tu"},
+    "fr": {"le", "les", "des", "est", "et", "pas", "une", "du", "pour",
+           "dans", "avec", "qui", "ce", "cette", "mais", "très", "sur", "au",
+           "aux", "sont", "je", "vous", "nous", "elle"},
+    "en": {"the", "and", "is", "of", "that", "it", "you", "with", "for",
+           "this", "but", "are", "have", "your", "what", "they", "just"},
+    "pl": {"nie", "się", "jest", "że", "na", "jak", "ale", "tak", "czy",
+           "co", "jestem", "bardzo", "tylko", "już", "może"},
+}
+
+
+def _spoken_instead(segments: list, lang: str):
+    """The market language a transcript visibly slipped into, or None.
+
+    Forced into the wrong language the decoder mostly translates, but now and
+    then it gives up and writes what is really said — "Medizinisch ergibt das
+    Sinn" in the middle of an Italian run. A segment of a dozen words or more
+    that is plainly another language names the language of the audio."""
+    votes = Counter()
+    for seg in segments:
+        toks = [strip_punct(t).lower() for t in seg.get("text", "").split()]
+        toks = [t for t in toks if t]
+        if len(toks) < 12:
+            continue
+        hits = {k: sum(t in v for t in toks) for k, v in _LANG_MARKERS.items()}
+        best = max(hits, key=hits.get)
+        if best != lang and hits[best] >= 4 and hits[best] >= 3 * hits.get(lang, 0):
+            votes[best] += len(toks)
+    return votes.most_common(1)[0][0] if votes else None
+
+
+def language_mismatch(json_path: Path, lang: str):
+    """None when the transcription belongs to the audio; otherwise the sentence
+    that stops the run. Checked before anything is spent on the transcript:
+    captions of a translation are wrong in every line, and a run that ends in
+    "Done" over them is worse than one that ends here."""
+    try:
+        data = json.load(open(json_path, encoding="utf-8"))
+    except Exception:
+        return None
+    segments = data.get("segments", [])
+    scores = [w["score"] for seg in segments for w in seg.get("words", [])
+              if isinstance(w.get("score"), (int, float))]
+    if len(scores) < LANG_MISMATCH_MIN_WORDS:
+        return None
+    scores.sort()
+    median = scores[len(scores) // 2]
+    if median >= LANG_MISMATCH_MEDIAN:
+        return None
+    picked = LANGUAGE_META.get(lang, {}).get("name", lang)
+    other = _spoken_instead(segments, lang)
+    if other:
+        heard = LANGUAGE_META.get(other, {}).get("name", other)
+        return (f"Wrong language: this audio is in {heard}, but {picked} was "
+                f"picked. Choose {heard} and run it again.")
+    return (f"Wrong language: the words do not match this audio, so it is not "
+            f"{picked}. Choose the language spoken and run it again.")
+
+
 # ─── Per-language Gemini prompts ─────────────────────────────────────────────
 LANGUAGE_META = {
     "de": {"name": "German"},
@@ -1246,6 +1329,10 @@ word_index refers to the [N] numbers above. Indices must be inside 0..{len(words
     return _single_line(prompt, "Input (numbered words):", _SINGLE_LINE_GENERIC)
 
 
+_GEMINI_DEAD: set = set()
+_GEMINI_LAST = ""
+
+
 def _gemini_generate(prompt: str, retries: int = 3, timeout: int = 180):
     """POST a prompt to Gemini and return the raw text the model emitted, or None.
     Retries transient failures (timeouts, 429/5xx, dropped connections) with a
@@ -1274,6 +1361,13 @@ def _gemini_generate(prompt: str, retries: int = 3, timeout: int = 180):
     pin = os.environ.get("GEMINI_MODEL", "").strip()
     models = [pin] if pin else ["gemini-3.5-flash", "gemini-2.5-flash",
                                 "gemini-3.1-flash-lite"]
+    # One run makes three or four calls. What the first one learned holds for
+    # the rest: a model that 404'd is gone for this key, and the one that last
+    # answered goes first — before this, every call paid three 503s and their
+    # backoff on an overloaded model, then a 404, to reach the same fallback.
+    models = [x for x in models if x not in _GEMINI_DEAD] or models
+    if _GEMINI_LAST and _GEMINI_LAST in models:
+        models = [_GEMINI_LAST] + [x for x in models if x != _GEMINI_LAST]
     for i, model_id in enumerate(models):
         more = i < len(models) - 1
         # The key in the header, as src/gemini.py sends it: an "AQ." key (all
@@ -1285,12 +1379,15 @@ def _gemini_generate(prompt: str, retries: int = 3, timeout: int = 180):
                     "Content-Type": "application/json", "x-goog-api-key": api_key})
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     payload = json.loads(resp.read().decode("utf-8"))
-                if i:
+                if model_id != _GEMINI_LAST and (i or _GEMINI_LAST):
                     print(f"[gemini] using {model_id}")
+                globals()["_GEMINI_LAST"] = model_id
                 return payload["candidates"][0]["content"]["parts"][0]["text"]
             except urllib.error.HTTPError as e:
                 # Retired, or no quota for this key on this model. Another model
                 # may well answer, and waiting here would only delay finding out.
+                if e.code == 404:
+                    _GEMINI_DEAD.add(model_id)
                 if e.code in (404, 429) and more:
                     print(f"[gemini] {model_id} unavailable on this key "
                           f"({e.code}) — trying {models[i + 1]}")
@@ -3261,6 +3358,9 @@ def main():
         _progress({"skip": ["load", "asr", "align"]})
         print(f"Reusing existing transcription: {json_path.name}")
 
+    wrong = language_mismatch(json_path, args.language)
+    if wrong:
+        sys.exit(wrong)
     words = load_words(json_path)
     _progress({"done": "align"})
     print(f"Loaded {len(words)} words.")
