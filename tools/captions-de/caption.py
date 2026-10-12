@@ -1075,19 +1075,19 @@ def load_words(json_path: Path):
     return words
 
 
-#: Median alignment confidence below which the words do not belong to the
-#: audio. Forced into the wrong language, WhisperX TRANSLATES instead of
-#: transcribing ("Leber" comes back as "nella tua labbra"), and the aligner,
-#: matching those words against the real speech, scores them low across the
-#: board. Measured on 70+ real transcripts: every wrong-language run had a
-#: median of 0.40–0.52 (German audio as Italian, Italian audio as German),
-#: every correct one 0.77–0.94. The threshold sits in the empty middle.
+#: Median alignment confidence below which the words fit the audio poorly.
+#: Forced into the wrong language, WhisperX TRANSLATES instead of transcribing
+#: ("Leber" comes back as "nella tua labbra"), and the aligner scores those
+#: words low across the board: medians 0.40-0.52 on every such run measured,
+#: 0.77-0.94 on every correct one. But a heavily accented voice in the RIGHT
+#: language can score low too, so this is only ever a warning — a version
+#: that stopped the run here would have refused a real Italian voiceover.
 LANG_MISMATCH_MEDIAN = 0.65
 LANG_MISMATCH_MIN_WORDS = 8
 
 #: Frequent words that belong to ONE market language only — enough to name the
-#: language a stretch of the transcript slipped back into. (Shared spellings
-#: — "die", "con", "il", "que", "non", "to" — are left out on purpose.)
+#: language a stretch of the transcript is really in. (Shared spellings —
+#: "die", "con", "il", "que", "non", "to" — are left out on purpose.)
 _LANG_MARKERS = {
     "de": {"und", "ist", "nicht", "das", "ich", "du", "mit", "auf", "sich",
            "auch", "wenn", "dass", "ein", "eine", "einen", "dem", "den", "der",
@@ -1110,52 +1110,51 @@ _LANG_MARKERS = {
 }
 
 
-def _spoken_instead(segments: list, lang: str):
-    """The market language a transcript visibly slipped into, or None.
+def _other_language_stretches(segments: list, lang: str) -> list:
+    """(start, end, language) for every stretch of the transcript that is
+    plainly another market language — adjacent segments merged.
 
-    Forced into the wrong language the decoder mostly translates, but now and
-    then it gives up and writes what is really said — "Medizinisch ergibt das
-    Sinn" in the middle of an Italian run. A segment of a dozen words or more
-    that is plainly another language names the language of the audio."""
-    votes = Counter()
+    The transcriber writes what is said even against the language it was given
+    when the speech is clear enough: a passage of a voiceover left untranslated
+    ("Medizinisch ergibt das Sinn" in an Italian read) comes back in German.
+    A dozen words or more, mostly one other language's own words."""
+    out = []
     for seg in segments:
         toks = [strip_punct(t).lower() for t in seg.get("text", "").split()]
         toks = [t for t in toks if t]
-        if len(toks) < 12:
+        if len(toks) < 12 or "start" not in seg or "end" not in seg:
             continue
         hits = {k: sum(t in v for t in toks) for k, v in _LANG_MARKERS.items()}
         best = max(hits, key=hits.get)
-        if best != lang and hits[best] >= 4 and hits[best] >= 3 * hits.get(lang, 0):
-            votes[best] += len(toks)
-    return votes.most_common(1)[0][0] if votes else None
+        if best == lang or hits[best] < 4 or hits[best] < 3 * hits.get(lang, 0):
+            continue
+        if out and out[-1][2] == best and seg["start"] - out[-1][1] < 2.0:
+            out[-1] = (out[-1][0], seg["end"], best)
+        else:
+            out.append((seg["start"], seg["end"], best))
+    return out
 
 
-def language_mismatch(json_path: Path, lang: str):
-    """None when the transcription belongs to the audio; otherwise the sentence
-    that stops the run. Checked before anything is spent on the transcript:
-    captions of a translation are wrong in every line, and a run that ends in
-    "Done" over them is worse than one that ends here."""
+def language_warnings(json_path: Path, lang: str) -> list:
+    """What does not sound like the language picked, as ⚠ lines. Never stops
+    the run: the operator knows what the video is, this only says where to look."""
     try:
         data = json.load(open(json_path, encoding="utf-8"))
     except Exception:
-        return None
+        return []
     segments = data.get("segments", [])
-    scores = [w["score"] for seg in segments for w in seg.get("words", [])
-              if isinstance(w.get("score"), (int, float))]
-    if len(scores) < LANG_MISMATCH_MIN_WORDS:
-        return None
-    scores.sort()
-    median = scores[len(scores) // 2]
-    if median >= LANG_MISMATCH_MEDIAN:
-        return None
     picked = LANGUAGE_META.get(lang, {}).get("name", lang)
-    other = _spoken_instead(segments, lang)
-    if other:
+    lines = []
+    for a, b, other in _other_language_stretches(segments, lang):
         heard = LANGUAGE_META.get(other, {}).get("name", other)
-        return (f"Wrong language: this audio is in {heard}, but {picked} was "
-                f"picked. Choose {heard} and run it again.")
-    return (f"Wrong language: the words do not match this audio, so it is not "
-            f"{picked}. Choose the language spoken and run it again.")
+        lines.append(f"⚠ {a:.1f}s–{b:.1f}s is spoken in {heard}, not {picked} — "
+                     f"the captions there are in {heard}")
+    scores = sorted(w["score"] for seg in segments for w in seg.get("words", [])
+                    if isinstance(w.get("score"), (int, float)))
+    if len(scores) >= LANG_MISMATCH_MIN_WORDS and scores[len(scores) // 2] < LANG_MISMATCH_MEDIAN:
+        lines.append(f"⚠ Many words fit the audio poorly — if this is not "
+                     f"{picked}, captions in the language spoken will be right")
+    return lines
 
 
 # ─── Per-language Gemini prompts ─────────────────────────────────────────────
@@ -3358,9 +3357,9 @@ def main():
         _progress({"skip": ["load", "asr", "align"]})
         print(f"Reusing existing transcription: {json_path.name}")
 
-    wrong = language_mismatch(json_path, args.language)
-    if wrong:
-        sys.exit(wrong)
+    lang_notes = language_warnings(json_path, args.language)
+    for line in lang_notes:
+        print(line)
     words = load_words(json_path)
     _progress({"done": "align"})
     print(f"Loaded {len(words)} words.")
@@ -3441,6 +3440,8 @@ def main():
     for a, b in left:
         print(f"⚠ {b - a:.1f}s with no captions ({a:.1f}s–{b:.1f}s) — "
               f"the transcriber heard nothing there")
+    for line in lang_notes:
+        print(line)
 
 
 if __name__ == "__main__":

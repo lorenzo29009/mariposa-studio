@@ -110,10 +110,10 @@ Extract Frame: pull the last, first, random or every-N-seconds frame (OpenCV).
 
 `BatchCard`:46 · `ExtractFramePage`:148 · `ExtractFramePage.build_form`:189 · `ExtractFramePage.validate`:332 · `ExtractFramePage.build_command`:346 · `ExtractFramePage.plan_run`:358 · `ExtractFramePage.on_progress`:364 · `ExtractFramePage.progress_from_line`:377 · `ExtractFramePage.after_finished`:384
 
-### `src/failures.py` — 223 lines
+### `src/failures.py` — 213 lines
 Turning a stack trace into a sentence and a button.
 
-`Failure`:26 · `classify`:185 · `last_error_line`:195 · `describe`:212
+`Failure`:26 · `classify`:175 · `last_error_line`:185 · `describe`:202
 
 ### `src/first_run.py` — 337 lines
 First run — one thing to paste in, and a look at what installs itself.
@@ -247,7 +247,7 @@ The Script Animator's build progress (offscreen Qt, no network).
 
 `check`:69 · `pump`:75 · `emit`:80 · `new_page`:95 · `packed_for`:106 · `Clock`:113 · `copy_of`:141 · `fake_gemini`:381
 
-### `scripts/test_captions.py` — 652 lines
+### `scripts/test_captions.py` — 655 lines
 Offline checks for the captions tool's language layer (no Qt, no WhisperX).
 
 `check`:27 · `moved`:35 · `repaired_es`:335 · `repaired`:435
@@ -277,7 +277,7 @@ What the exporter inherits from the donor project, and what it must not.
 
 `check`:32
 
-### `scripts/test_failures.py` — 73 lines
+### `scripts/test_failures.py` — 67 lines
 Offline checks for the failure table (no Qt, no display needed).
 
 _No public symbols._
@@ -344,10 +344,10 @@ Upsert a KEY=VALUE into tools/captions-de/.env, preserving every other line.
 
 ## Bundled tool scripts (`tools/`) — separate processes, not imported
 
-### `tools/captions-de/caption.py` — 3447 lines
+### `tools/captions-de/caption.py` — 3448 lines
 Generate TikTok-style captions (SRT) from a video file. German is the default; English, Polish, French, Italian and Spanish (as spoken in Spain) are selected wi
 
-`text_width`:93 · `auto_hyphenate`:213 · `apply_auto_hyphenation`:240 · `join_soft_hyphens`:260 · `flatten_lines`:278 · `drop_midline_hyphens`:298 · `normalize_apostrophes`:318 · `strip_punct`:322 · `clean_for_output`:328 · `normalize_case`:363 · `insert_compound_hyphens`:377 · `tokenize_for_packing`:385 · `pack_lines`:401 · `format_caption`:452 · `fmt_time`:456 · `get_video_duration`:474 · `gemini_legs`:572 · `asr_prior`:589 · `align_prior`:594 · `reask_prior`:599 · `progress_plan`:606 · `parse_download`:667 · `whisperx_events`:681 · `relay_output`:724 · `run_whisperx`:797 · `find_gaps`:892 · `repair_gaps`:928 · `load_words`:1055 · `language_mismatch`:1133 · `build_generic_prompt`:1281 · `segment_with_ai`:1408 · `review_grouping`:1480 · `segment_heuristic`:1670 · `compute_boundaries`:1701 · `caption_spans`:1723 · `fix_line_break`:1760 · `normalize_text_preserve_breaks`:1816 · `apply_canonical_terms`:1983 · `repair_terms_with_ai`:2114 · `project_terms_block`:2200 · `rendered_width`:2236 · `finalize_caption`:2241 · `layout_caption`:2246 · `move_trailing_binders`:2630 · `split_emphasis_repeats`:2666 · `merge_orphans`:2717 · `merge_split_numbers`:2836 · `merge_short_durations`:2863 · `enforce_single_line`:3160 · `enforce_two_lines`:3169 · `learn_and_relabel_case`:3180 · `recase_with_ai`:3258 · `write_srt`:3297 · `main`:3306
+`text_width`:93 · `auto_hyphenate`:213 · `apply_auto_hyphenation`:240 · `join_soft_hyphens`:260 · `flatten_lines`:278 · `drop_midline_hyphens`:298 · `normalize_apostrophes`:318 · `strip_punct`:322 · `clean_for_output`:328 · `normalize_case`:363 · `insert_compound_hyphens`:377 · `tokenize_for_packing`:385 · `pack_lines`:401 · `format_caption`:452 · `fmt_time`:456 · `get_video_duration`:474 · `gemini_legs`:572 · `asr_prior`:589 · `align_prior`:594 · `reask_prior`:599 · `progress_plan`:606 · `parse_download`:667 · `whisperx_events`:681 · `relay_output`:724 · `run_whisperx`:797 · `find_gaps`:892 · `repair_gaps`:928 · `load_words`:1055 · `language_warnings`:1138 · `build_generic_prompt`:1280 · `segment_with_ai`:1407 · `review_grouping`:1479 · `segment_heuristic`:1669 · `compute_boundaries`:1700 · `caption_spans`:1722 · `fix_line_break`:1759 · `normalize_text_preserve_breaks`:1815 · `apply_canonical_terms`:1982 · `repair_terms_with_ai`:2113 · `project_terms_block`:2199 · `rendered_width`:2235 · `finalize_caption`:2240 · `layout_caption`:2245 · `move_trailing_binders`:2629 · `split_emphasis_repeats`:2665 · `merge_orphans`:2716 · `merge_split_numbers`:2835 · `merge_short_durations`:2862 · `enforce_single_line`:3159 · `enforce_two_lines`:3168 · `learn_and_relabel_case`:3179 · `recase_with_ai`:3257 · `write_srt`:3296 · `main`:3305
 
 ### `tools/captions-de/caption_qa.py` — 410 lines
 Gemini-based caption QA pass — finished captions vs the briefing.

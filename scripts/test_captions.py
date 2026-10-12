@@ -579,35 +579,38 @@ for _k, _v in _saved.items():
     if _v is not None:
         os.environ[_k] = _v
 
-# ─── the wrong language is caught before it is captioned ────────────────────
-# Forced into the wrong language WhisperX translates, and the aligner scores the
-# translation low: medians 0.40-0.52 on every such run measured, 0.77-0.94 on
-# every correct one.
-def _mismatch(lang, texts, score):
+# ─── speech in another language is pointed at, never refused ───────────────
+# A real Italian voiceover with one passage left in German, read by an accented
+# voice: the German passage is named with its times, the low fit is a warning,
+# and nothing stops the run (an earlier version refused it outright).
+def _notes(lang, segs, score):
     with _tempfile_mod.TemporaryDirectory() as _tmp:
         _p = Path(_tmp) / f"x.{lang}.json"
         _p.write_text(_json_mod.dumps({"segments": [
-            {"text": t, "words": [{"word": w, "score": score} for w in t.split()]}
-            for t in texts]}), encoding="utf-8")
-        return cap.language_mismatch(_p, lang)
+            {"start": a, "end": b, "text": t,
+             "words": [{"word": w, "score": score} for w in t.split()]}
+            for a, b, t in segs]}), encoding="utf-8")
+        return cap.language_warnings(_p, lang)
 
 
-_slip = ("Medizinisch ergibt das Sinn und die Anwendung ist einfach. Schon nach "
-         "einer Woche beginnt die Leber wieder, falls du es noch nicht kennst.")
-check("a transcript that fits its audio is never stopped",
-      _mismatch("it", ["Se l'esterno delle tue sopracciglia si assottiglia "
-                       "sempre di più, non è un caso."], 0.84), None)
-check("a translation is stopped, naming the language it slipped back into",
-      _mismatch("it", ["Un team di Berlino ha sviluppato un complex di leber", _slip],
-                0.45),
-      "Wrong language: this audio is in German, but Italian was picked. "
-      "Choose German and run it again.")
-check("…and stopped without a name when nothing gives the language away",
-      (_mismatch("it", ["Sì, soprattutto allora dovresti usare l'intervistatore "
-                        "per attivare gli enzimi nella tua labbra."], 0.46) or "")
-      .startswith("Wrong language: the words do not match this audio"), True)
-check("a few low-scored words are not enough to stop a run",
-      _mismatch("de", ["ja genau"], 0.2), None)
+_it = (0.0, 7.4, "Se l'esterno delle tue sopracciglia si assottiglia sempre di "
+                 "più, non è un caso.")
+_de = (140.9, 161.6, "Medizinisch ergibt das Sinn und die Anwendung ist einfach. "
+                     "Schon nach einer Woche beginnt die Leber wieder, falls du es "
+                     "noch nicht kennst.")
+check("a transcript that fits its audio gets no warning",
+      _notes("it", [_it], 0.84), [])
+check("a passage in another language is named, with its times",
+      _notes("it", [_it, _de], 0.84),
+      ["⚠ 140.9s–161.6s is spoken in German, not Italian — the captions there "
+       "are in German"])
+check("a poor fit overall is a warning, not a stop",
+      [l[:40] for l in _notes("it", [_it], 0.45)],
+      ["⚠ Many words fit the audio poorly — if t"])
+check("a few low-scored words are not enough to warn",
+      _notes("de", [(0, 1, "ja genau")], 0.2), [])
+check("the captioner has no wrong-language stop left in it",
+      hasattr(cap, "language_mismatch") or "Wrong language" in _cap_src, False)
 
 # ─── Gemini: what one call learns, the next ones keep ───────────────────────
 import io as _io, time as _time, urllib.error as _ue, urllib.request as _ur
