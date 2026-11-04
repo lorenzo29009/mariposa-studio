@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import ssl
 import subprocess
 import sys
 import tempfile
@@ -29,12 +28,13 @@ import zipfile
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtCore import QThread, QTimer, Signal, Qt
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton, QProgressDialog, QMessageBox,
 )
 
 from core import APP_DIR, IS_WINDOWS, VENV_PY
+from gemini import ssl_context
 
 # --- Release source (EDIT for your repo) ----------------------------------
 REPO_OWNER = "lorenzo29009"
@@ -47,6 +47,8 @@ VERSION_FILE = APP_DIR / "VERSION"
 # belt-and-suspenders in case a raw source zipball is used instead.)
 PRESERVE = {"venv", "exports", ".git", ".env", "__pycache__", ".DS_Store"}
 NET_TIMEOUT = 8  # seconds for the version check; downloads get longer below
+# An app left open for days never relaunches, so it asks again on this clock.
+RECHECK_MS = 3 * 60 * 60 * 1000
 
 
 # --- Pure logic (unit-testable without a display) -------------------------
@@ -88,8 +90,7 @@ def fetch_latest(timeout: int = NET_TIMEOUT) -> dict | None:
             "Accept": "application/vnd.github+json",
             "User-Agent": "MariposaStudio-Updater",
         })
-        ctx = ssl.create_default_context()
-        with urlopen(req, timeout=timeout, context=ctx) as resp:
+        with urlopen(req, timeout=timeout, context=ssl_context()) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         version = (data.get("tag_name") or "").strip()
         zip_url = _pick_zip_url(data)
@@ -101,14 +102,17 @@ def fetch_latest(timeout: int = NET_TIMEOUT) -> dict | None:
             "notes": (data.get("body") or "").strip(),
             "url": data.get("html_url", ""),
         }
-    except Exception:
+    except Exception as e:
+        # Silent on screen (offline is normal), but never silent in the launch
+        # log: Python's default certificates fail on some Windows installs, and
+        # "no update" was all that machine could ever say about it.
+        print(f"[updater] version check failed: {type(e).__name__}: {e}")
         return None
 
 
 def _download(url: str, dest: Path, timeout: int = 300) -> None:
     req = Request(url, headers={"User-Agent": "MariposaStudio-Updater"})
-    ctx = ssl.create_default_context()
-    with urlopen(req, timeout=timeout, context=ctx) as resp, open(dest, "wb") as f:
+    with urlopen(req, timeout=timeout, context=ssl_context()) as resp, open(dest, "wb") as f:
         shutil.copyfileobj(resp, f)
 
 
@@ -320,10 +324,21 @@ class UpdateBanner(QFrame):
 
 
 def attach_updater(main_window, banner: UpdateBanner) -> None:
-    """Kick off a background check; show the banner if a newer release exists.
-    Safe to call after the window is shown — failures are silent (offline etc.)."""
+    """Check now, then every `RECHECK_MS`; show the banner if a newer release
+    exists. Safe to call after the window is shown — failures are silent on
+    screen (offline etc.) and logged."""
     checker = _CheckThread(main_window)
     checker.found.connect(banner.present)
     # Keep a reference so the thread isn't garbage-collected mid-flight.
     main_window._update_checker = checker
-    checker.start()
+
+    def check() -> None:
+        if not checker.isRunning() and not banner.isVisible():
+            checker.start()
+
+    timer = QTimer(main_window)
+    timer.setInterval(RECHECK_MS)
+    timer.timeout.connect(check)
+    timer.start()
+    main_window._update_timer = timer
+    check()

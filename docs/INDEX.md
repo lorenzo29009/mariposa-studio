@@ -215,10 +215,10 @@ The app-wide QSS, built from the tokens in `design`.
 
 `RunProgress`:31 · `RunProgress.plan_run`:33 · `RunProgress.plan_batch`:38 · `RunProgress.progress_events`:44 · `RunProgress.on_progress`:50
 
-### `src/updater.py` — 329 lines
+### `src/updater.py` — 344 lines
 In-app auto-update for Mariposa Studio (Strategy A: source overlay).
 
-`current_version`:53 · `is_newer`:69 · `fetch_latest`:83 · `apply_update`:157 · `relaunch`:181 · `UpdateBanner`:234 · `UpdateBanner.is_busy`:273 · `UpdateBanner.present`:276 · `attach_updater`:322
+`current_version`:55 · `is_newer`:71 · `fetch_latest`:85 · `apply_update`:161 · `relaunch`:185 · `UpdateBanner`:238 · `UpdateBanner.is_busy`:277 · `UpdateBanner.present`:280 · `attach_updater`:326
 
 ### `src/widgets.py` — 891 lines
 Reusable UI widgets for Mariposa Studio (cards, drop zones, controls, console view, app bar). Shared by every page.
