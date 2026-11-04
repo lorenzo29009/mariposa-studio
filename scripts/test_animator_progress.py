@@ -56,9 +56,12 @@ import animator_plan                                                # noqa: E402
 import gemini                                                       # noqa: E402
 import jobs                                                         # noqa: E402
 from animator_page import AnimatorPage                              # noqa: E402
-from script_packer import pack_block                                # noqa: E402
+from script_packer import build_markdown, pack_block                # noqa: E402
 
 animator_page.log_save = lambda payload: None      # never the user's last session
+import animator_scenes                                              # noqa: E402
+animator_scenes.read_env_value = lambda k: ""      # never the real key, never the network
+animator_scenes.ENGLISH_MEMORY = Path(tempfile.mkdtemp()) / "translations.json"   # nor its memory
 animator_build.read_env_value = lambda key: "TEST-KEY"
 ENDINGS: list[tuple] = []
 jobs.finished = lambda title, ok, **kw: ENDINGS.append((title, ok, kw))
@@ -428,6 +431,203 @@ check("the read was answered", "read" in page._answered and "review" in page._an
       str(page._answered))
 check("the footer is back at rest", page._build_box.isHidden()
       and not page.build_progress.is_running() and page.build_btn.isEnabled())
+
+
+# ─── 2b. a 40-minute script: the read in parts ──────────────────────────────
+print("\na 40-minute script")
+PARA = ("Seit Monaten bist du müde, obwohl du genug schläfst. Deine Haare werden "
+        "dünner. Dein Arzt sagt, die Werte sind normal. Aber du fühlst dich nicht "
+        "normal. Und genau das ist der Punkt.")
+LONG = "\n\n".join(PARA for _ in range(180))              # ~36k characters
+long_blocks = [{"id": "H1", "kind": "hook", "text": HOOK},
+               {"id": "Body", "kind": "body", "text": LONG},
+               {"id": "C1", "kind": "cta", "text": CTA}]
+parts = animator_plan.read_parts(long_blocks)
+pieces = [pc for part in parts for pc in part]
+check("it is read in parts", len(parts) >= 8, str(len(parts)))
+check("...none over the budget",
+      all(sum(len(pc["text"]) for pc in part) <= animator_plan.READ_PART_CHARS
+          for part in parts), str([sum(len(pc["text"]) for pc in p) for p in parts]))
+check("...cut at paragraph breaks, nothing lost",
+      "\n\n".join(pc["text"] for pc in pieces if pc["of"] == "Body") == LONG)
+check("...and the blocks keep their order", [pc["of"] for pc in pieces][0] == "H1"
+      and [pc["of"] for pc in pieces][-1] == "C1")
+short = animator_plan.read_parts(blocks)
+check("a short script is still one call, ids untouched",
+      len(short) == 1 and [b["id"] for b in short[0]] == [b["id"] for b in blocks])
+one_call = animator_plan._call_prior(long_blocks, "German")
+check("the read is priced in parallel",
+      animator_plan.read_prior(long_blocks, "German") < one_call / 2,
+      "%.1f vs %.1f" % (animator_plan.read_prior(long_blocks, "German"), one_call))
+
+
+def fake_by_request(fail_part: int):
+    """Answers each read call from the ids in ITS prompt; one part refuses."""
+    from script_text import split_sentences
+    seen = {"n": 0}
+
+    def urlopen(req, timeout=None, context=None):
+        body = json.loads(req.data.decode("utf-8"))
+        schema = body["generationConfig"]["response_schema"]
+        if "merge" in schema["properties"]:
+            return _Resp({"merge": []})
+        prompt = body["contents"][0]["parts"][0]["text"]
+        asked = json.loads(prompt.split("BLOCKS:\n", 1)[1])
+        if any(b["id"] == "Body-p%d" % fail_part for b in asked):
+            raise urllib.error.HTTPError(req.full_url, 400, "bad", {},
+                                         io.BytesIO(b'{"error":"bad"}'))
+        seen["n"] += 1
+        return _Resp({"blocks": [{"id": b["id"], "fixes": [], "sentences": [
+            {"text": t, "action": "", "en": "", "link": 3 if i == 0 else 1,
+             "role": "none", "beat": "beat"}
+            for i, t in enumerate(split_sentences(b["text"]))]} for b in asked]})
+    return urlopen, seen
+
+
+real_open, real_engine = gemini.urllib.request.urlopen, speech_clock.available_engine
+fake, seen = fake_by_request(fail_part=3)
+gemini.urllib.request.urlopen = fake
+speech_clock.available_engine = lambda: None
+gemini._WORKING_MODEL = None
+got: dict = {}
+try:
+    worker = animator_pipeline.ScenePipelineWorker("KEY", long_blocks, "German")
+    worker.done.connect(lambda r: got.setdefault("done", r))
+    worker.failed.connect(lambda m: got.setdefault("failed", m))
+    frac_events = []
+    worker.route_event.connect(lambda e: frac_events.append(e.get("frac")))
+    worker.run()
+finally:
+    gemini.urllib.request.urlopen = real_open
+    speech_clock.available_engine = real_engine
+    gemini._WORKING_MODEL = None
+res = got.get("done") or {}
+check("the build finishes", "done" in got, str(got.get("failed")))
+check("...every part but the refused one was asked", seen["n"] == len(parts) - 1,
+      "%d of %d" % (seen["n"], len(parts)))
+spoken = " ".join(s["text"] for s in res.get("scenes", []) if s["block"] == "Body")
+check("...and no line of the body is lost",
+      spoken.count("Und genau das ist der Punkt.") == 180,
+      str(spoken.count("Und genau das ist der Punkt.")))
+check("...the refused part said so, by its line",
+      any("came back empty" in n for n in res.get("notes", [])), str(res.get("notes", [])[:3]))
+check("the read reported its parts", any(f == 1.0 for f in frac_events if f is not None))
+
+
+# ─── 2c. a scene file opened back onto the board ────────────────────────────
+print("\nopening an exported .md")
+page = new_page()
+md = Path(tempfile.mkdtemp()) / "scenes.md"
+md.write_text('H1-01 · 6s\n[H1-1] Voiceover: "Kennst du das?" short pause. Static shot. One take.\n\n'
+              'Body-01 · 8s\n[B1] Voiceover: "Ein Satz. Und noch einer." Static shot. One take.\n\n'
+              'Body-02 · 4s\n[B2] Voiceover: "Der dritte." Static shot. One take.\n\n'
+              'CTA1-01 · 6s\n[CTA1-1] Voiceover: "Klick jetzt." Static shot. One take.\n', encoding="utf-8")
+check("it opens", page._load_md(str(md)))
+check("...onto the scenes stage, every clip as written",
+      [(s["label"], s["duration"]) for s in page.scenes]
+      == [("H1-01", 6), ("Body-01", 8), ("Body-02", 4), ("CTA1-01", 6)])
+check("...the tail into the tail field", page.tail() == "Static shot. One take.", page.tail())
+check("...the copy into the editors",
+      page._hooks[0].value() == "Kennst du das?" and "Der dritte." in page.body_editor.value()
+      and page._ctas[0].value() == "Klick jetzt.")
+check("...and the export writes it back the same",
+      build_markdown(page.scenes, page.tail()) == md.read_text(encoding="utf-8"))
+import animator_panel                                        # noqa: E402
+animator_panel.make_nonactivating_panel = lambda w: None
+page.lock_labels.setChecked(True)
+page._generated = {0, 3}
+page._open_panel()
+page._panel.set_index(1)
+first_card, last_card = page._cards[0], page._cards[-1]
+page._panel.cut_requested.emit(1, 1)            # "Cut before “Und noch einer.”"
+check("...swapping only the card it cut — the rest keep their widgets",
+      page._cards[0] is first_card and page._cards[-1] is last_card
+      and [c.index for c in page._cards] == list(range(len(page.scenes)))
+      and [c.label_lbl.text() for c in page._cards] == [s["label"] for s in page.scenes])
+check("the floating window cuts, and the board follows",
+      [s["label"] for s in page.scenes] == ["H1-01", "Body-01-1", "Body-01-2", "Body-02", "CTA1-01"],
+      str([s["label"] for s in page.scenes]))
+check("...the marks follow their clips", page._generated == {0, 4}, str(page._generated))
+check("...and the window shows the first half, tagged",
+      page._panel.label_lbl.text() == "Body-01-1"
+      and page._panel.prompt_lbl.text().startswith("[B1-1] Voiceover:"))
+page._on_merge(1)
+check("merging the halves gives the scene back",
+      [s["label"] for s in page.scenes][1:3] == ["Body-01", "Body-02"])
+page._panel.dashes.jumped.emit(3)
+check("the strip moves the window", page._panel.label_lbl.text() == "CTA1-01")
+from PySide6.QtCore import Qt                                 # noqa: E402
+from PySide6.QtTest import QTest                              # noqa: E402
+gt = page._panel.goto
+# A real click: Qt focuses the field BEFORE it delivers the press, which is
+# exactly what left the keys untaken once.
+QTest.mouseClick(gt, Qt.LeftButton)
+check("a click on Go to takes the keyboard", page._panel._keys_taken)
+QTest.keyClicks(gt, "b2")
+check("Go to shows the clip as you type", page._panel.label_lbl.text() == "Body-02",
+      page._panel.label_lbl.text())
+QTest.keyClick(gt, Qt.Key_Return)
+check("...Enter keeps it and empties the field",
+      page._panel.label_lbl.text() == "Body-02" and gt.text() == "" and not page._panel._keys_taken)
+page._panel._take_keys()
+QTest.keyClicks(gt, "cta1-1")
+QTest.keyClick(gt, Qt.Key_Escape)
+check("...Escape goes back where you were", page._panel.label_lbl.text() == "Body-02")
+from animator_panel import parse_target                     # noqa: E402
+check("...it reads every way of writing a name",
+      [parse_target(t) for t in ("120", "b120", "Body-120", "h1-2", "CTA1-3")]
+      == [("B", "120")] * 3 + [("H", "1-2"), ("CTA", "1-3")])
+from animator_panel import find_scene                       # noqa: E402
+cut_up = [{"label": "Body-11-12"}, {"label": "Body-13-1"}, {"label": "Body-13-2"}, {"label": "H1-01"}]
+check("...a number finds its piece, or the merge that holds it",
+      (find_scene(cut_up, "B", "13"), find_scene(cut_up, "B", "12"),
+       find_scene(cut_up, "H", "1-1"), find_scene(cut_up, "B", "99")) == (1, 0, 3, -1))
+page._panel.close()
+# The file has no English: it is asked for, by the line, off the UI thread.
+asked: list = []
+
+
+def translator(req, timeout=None, context=None):
+    body = json.loads(req.data.decode("utf-8"))
+    lines = json.loads(body["contents"][0]["parts"][0]["text"].split("LINES:\n", 1)[1])
+    asked.extend(l["text"] for l in lines)
+    return _Resp({"lines": [{"i": l["i"], "en": "EN " + l["text"]} for l in lines]})
+
+
+real_open = gemini.urllib.request.urlopen
+gemini.urllib.request.urlopen = translator
+animator_scenes.read_env_value = lambda k: "KEY"
+try:
+    md.write_text('Body-01 · 8s\n[B1] Voiceover: "Ein Satz. Und noch einer." Static shot.\n',
+                  encoding="utf-8")
+    page._load_md(str(md))
+    t0 = time.monotonic()
+    while getattr(page, "_translating", None) is not None and time.monotonic() - t0 < 10:
+        app.processEvents()
+        time.sleep(0.01)
+finally:
+    gemini.urllib.request.urlopen = real_open
+    animator_scenes.read_env_value = lambda k: ""
+check("an opened file gets its English", page.scenes[0]["en"] == "EN Ein Satz. EN Und noch einer.",
+      repr(page.scenes[0].get("en")))
+check("...on the card too, not only in the session",
+      page._cards[0].en_lbl.text() == page.scenes[0]["en"] and not page._cards[0].en_lbl.isHidden())
+check("...asking only for the lines", sorted(asked) == ["Ein Satz.", "Und noch einer."], str(asked))
+asked.clear()
+page._load_md(str(md))
+check("...and reopening the same lines asks for nothing", not asked
+      and page.scenes[0]["en"].startswith("EN "))
+fresh = new_page()                                # a fresh launch: an empty board
+fresh._load_md(str(md))
+check("...not even on a fresh launch — the English is remembered",
+      not asked and fresh.scenes[0]["en"] == "EN Ein Satz. EN Und noch einer.",
+      repr(fresh.scenes[0].get("en")))
+
+md.write_text("not a scene file", encoding="utf-8")
+before = list(page.scenes)
+check("a file it can't read says so and changes nothing",
+      not page._load_md(str(md)) and page.scenes == before
+      and "Couldn't open" in page.status_lbl.text(), page.status_lbl.text())
 
 
 # ─── 3. quitting while Gemini is still thinking ─────────────────────────────

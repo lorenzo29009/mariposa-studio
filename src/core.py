@@ -9,7 +9,7 @@ import sys
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QProcessEnvironment
+from PySide6.QtCore import QProcessEnvironment, Qt
 from PySide6.QtGui import QGuiApplication, QIcon
 
 from design import (
@@ -137,13 +137,13 @@ CAPTION_MARKETS = [
 __all__ = [
     "IS_MAC", "IS_WINDOWS", "IS_LINUX",
     "APP_DIR", "TOOLS_DIR", "EXPORTS_DIR", "VENV_PY", "APP_VERSION",
-    "APP_USER_MODEL_ID",
+    "APP_USER_MODEL_ID", "panel_take_keys", "panel_give_back_keys",
     "FLOW_CROPPER_DIR", "CAPTIONS_DIR", "EXTRACT_DIR", "CAMERA_PROMPT_DIR",
     "WHISPERX_PY", "ENV_PATH", "CAPTION_MARKETS",
     "studio_python", "make_qprocess_env", "chevron_icon", "arrow_icon",
     "reveal_in_finder", "open_folder", "notify", "bring_back_main_window",
     "OSASCRIPT",
-    "read_env_value", "write_env_value",
+    "read_env_value", "write_env_value", "last_market", "remember_market",
     "gemini_model_override",
     "ensure_windows_shortcut", "make_nonactivating_panel",
 ]
@@ -394,6 +394,82 @@ def make_nonactivating_panel(widget) -> bool:
         return False
 
 
+
+def _objc_send():
+    """(send, sel, NSApp) for a few one-line Objective-C messages, or None off
+    the cocoa platform — where sending one would segfault the process."""
+    app = QGuiApplication.instance()
+    if not IS_MAC or app is None or app.platformName() != "cocoa":
+        return None
+    import ctypes
+    import ctypes.util
+    objc = ctypes.CDLL(ctypes.util.find_library("objc"))
+    objc.sel_registerName.restype = ctypes.c_void_p
+    objc.sel_registerName.argtypes = [ctypes.c_char_p]
+    objc.objc_getClass.restype = ctypes.c_void_p
+    objc.objc_getClass.argtypes = [ctypes.c_char_p]
+
+    def sel(name: bytes):
+        return ctypes.c_void_p(objc.sel_registerName(name))
+
+    def send(restype, argtypes, receiver, selector, *args):
+        fn = ctypes.CFUNCTYPE(restype, ctypes.c_void_p, ctypes.c_void_p, *argtypes)(
+            ("objc_msgSend", objc))
+        return fn(receiver, selector, *args)
+
+    nsapp = ctypes.c_void_p(send(ctypes.c_void_p, [], ctypes.c_void_p(
+        objc.objc_getClass(b"NSApplication")), sel(b"sharedApplication")))
+    return send, sel, nsapp
+
+
+def panel_take_keys(widget) -> bool:
+    """Let a non-activating panel take the keyboard, for one field, without
+    bringing the app forward: the browser stays the frontmost app and the
+    Studio window stays behind it. Returns whether the app was already active,
+    which `panel_give_back_keys` needs. Measured on macOS 26: with Finder in
+    front, the panel goes key, the field takes focus, Finder stays frontmost."""
+    import ctypes
+    handle = widget.windowHandle()
+    if handle is None:
+        return True
+    handle.setFlag(Qt.WindowDoesNotAcceptFocus, False)
+    tools = None
+    try:
+        tools = _objc_send()
+    except Exception:
+        tools = None
+    if tools is None:
+        widget.activateWindow()
+        return True
+    send, sel, nsapp = tools
+    was_active = bool(send(ctypes.c_bool, [], nsapp, sel(b"isActive")))
+    make_nonactivating_panel(widget)       # the flag change can reset the mask
+    view = ctypes.c_void_p(int(widget.winId()))
+    window = send(ctypes.c_void_p, [], view, sel(b"window"))
+    if window:
+        send(None, [], ctypes.c_void_p(window), sel(b"makeKeyWindow"))
+    return was_active
+
+
+def panel_give_back_keys(widget, was_active: bool) -> None:
+    """Undo `panel_take_keys`: the panel refuses focus again, and if another
+    app was in front, the keyboard goes back to it — so Copy and then ⌘V in
+    the browser still lands in the browser."""
+    handle = widget.windowHandle()
+    if handle is None:
+        return
+    handle.setFlag(Qt.WindowDoesNotAcceptFocus, True)
+    try:
+        tools = _objc_send()
+    except Exception:
+        tools = None
+    if tools is None:
+        return
+    make_nonactivating_panel(widget)
+    if not was_active:
+        send, sel, nsapp = tools
+        send(None, [], nsapp, sel(b"deactivate"))
+
 # --- Windows: ensure a taskbar-pinnable shortcut exists --------------------
 def ensure_windows_shortcut() -> None:
     """Create/refresh a Start-Menu + Desktop shortcut carrying our
@@ -446,6 +522,23 @@ def read_env_value(key: str) -> str:
         if line.startswith(f"{key}="):
             return line.split("=", 1)[1].strip().strip('"').strip("'")
     return ""
+
+
+#: The market last picked on any page that captions — Captions or Clip Cutter.
+#: A teammate who works in Italian works in Italian all day: opening on German
+#: every launch is how Italian audio got transcribed as German.
+KEY_MARKET = "MARIPOSA_MARKET"
+
+
+def last_market() -> str:
+    """The language code last picked (one of CAPTION_MARKETS), or "de"."""
+    code = read_env_value(KEY_MARKET).strip().lower()
+    return code if code in {c for _, c in CAPTION_MARKETS} else "de"
+
+
+def remember_market(code: str) -> None:
+    if code in {c for _, c in CAPTION_MARKETS} and code != read_env_value(KEY_MARKET).strip():
+        write_env_value(KEY_MARKET, code)
 
 
 def gemini_model_override() -> str:

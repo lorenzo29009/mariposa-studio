@@ -134,6 +134,8 @@ class MainWindow(QMainWindow):
             ("Captions",         "caption",    CaptionsPage,      (CAPTIONS_DIR / "caption.py").exists()),
             ("Clip Cutter",      "clipcutter", ClipCutterPage,    PIPELINE_AVAILABLE),
         ]
+        from plugins import installed_specs
+        specs.extend(installed_specs())
         self._settings_index = len(specs) + 1   # launcher=0, tools=1..N, settings=N+1
 
         self.launcher = LauncherPage(
@@ -148,7 +150,8 @@ class MainWindow(QMainWindow):
             page = cls(on_back=self._go_home)
             self.pages[key] = page
             self.stack.addWidget(page)
-        self.stack.addWidget(SettingsPage(on_back=self._go_home))
+        self.stack.addWidget(SettingsPage(on_back=self._go_home,
+            on_plugin_settings=self._plugin_settings, on_plugin_removed=self._plugin_removed))
 
         # First run: one field and a look at what installs itself, shown only
         # on a machine with neither a key nor a finished setup. It is the last
@@ -303,6 +306,17 @@ class MainWindow(QMainWindow):
         self._anim_busy = True
         self._anim = grp
         grp.start()
+
+    def _plugin_settings(self, plugin_id):
+        page = self.pages.get('plugin_' + plugin_id)
+        callback = getattr(page, 'open_settings', None)
+        if page is not None and page.isEnabled() and callable(callback):
+            callback()
+
+    def _plugin_removed(self, plugin_id):
+        page = self.pages.get('plugin_' + plugin_id)
+        if page is not None:
+            page.setEnabled(False)
 
     def _open_app(self, idx: int):
         if self.spotlight.isVisible():

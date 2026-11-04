@@ -299,9 +299,9 @@ class SceneCard(QFrame):
         self.dur_btn.setMenu(self._length_menu(self.dur_btn, scene))
         head.addWidget(self.dur_btn)
 
-        label = QLabel(scene["label"])
-        label.setObjectName("SceneLabel")
-        head.addWidget(label)
+        self.label_lbl = QLabel(scene["label"])
+        self.label_lbl.setObjectName("SceneLabel")
+        head.addWidget(self.label_lbl)
 
         beat = (scene.get("beat") or "").strip()
         if beat:
@@ -405,6 +405,11 @@ class SceneCard(QFrame):
         self.state_lbl.setText("✓ generated" if on else "")
         self.state_lbl.setVisible(bool(on))
 
+    def set_label(self, text: str) -> None:
+        """A clip renumbered by an edit elsewhere in its block."""
+        if self.label_lbl.text() != text:
+            self.label_lbl.setText(text)
+
     def offer_split(self, seconds: float, slot: int, at: int) -> None:
         """Show the over-length warning and wire the split to seam `at`.
 
@@ -420,9 +425,12 @@ class SceneCard(QFrame):
             if over else "")
         self.over_lbl.setVisible(over)
         self.split_btn.setVisible(over)
-        self.dur_btn.setProperty("over", over)
-        self.dur_btn.style().unpolish(self.dur_btn)
-        self.dur_btn.style().polish(self.dur_btn)
+        # Re-styled only when it changes: polishing 359 buttons on every
+        # refresh was a visible stall on a long script.
+        if bool(self.dur_btn.property("over")) != over:
+            self.dur_btn.setProperty("over", over)
+            self.dur_btn.style().unpolish(self.dur_btn)
+            self.dur_btn.style().polish(self.dur_btn)
         if over:
             # Rebind without disconnecting a connection that may never have
             # existed: PySide warns loudly about a no-op disconnect.
@@ -472,6 +480,11 @@ class SceneCard(QFrame):
         return menu
 
     # -- state --------------------------------------------------------------
+    def set_english(self, text: str) -> None:
+        """The gloss, arriving after the card was built (Open .md asks for it)."""
+        self.en_lbl.setText(text or "")
+        self.en_lbl.setVisible(bool(text))
+
     def _on_note(self, text: str):
         self.note_changed.emit(self.index, text.strip())
         self.refresh_prompt()

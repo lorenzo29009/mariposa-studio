@@ -1028,27 +1028,44 @@ def _rewrite_cache(json_path: Path, recovered: list) -> None:
 #: competitor, invented, on screen. Truncated is survivable; wrong is not.
 JUNK_SCORE = 0.15
 
-#: Words one letter long, per language. German has none, so the score above was
-#: calibrated on words that have acoustic substance. Spanish's "y", "o", "a" are
-#: a few milliseconds of vowel, and the Spanish aligner scores a real one 0.004 —
-#: below every invented word the threshold exists for — so it silently deleted
-#: the "y" of "siempre frías y la báscula". A word this short is only junk where
-#: junk lives: at the edge of a hole, not between two words of running speech.
-SHORT_WORDS_BY_LANG = {
-    "es": {"y", "e", "o", "u", "a"},
-}
-#: How close both neighbours must be for a short word to count as running speech.
+#: A low score alone does not make a word invented. Measured on every correct
+#: transcript on file (German and Italian): every word under JUNK_SCORE with a
+#: trusted word right before and right after it was real — "stell dir mal vor",
+#: "könnt ihr den", "gegen die Wand", "della tua terapia", "che è l'ormone" —
+#: and all of them were deleted. The aligner scores short unstressed words
+#: badly, the Italian one worse than the German. Invented words come in RUNS:
+#: the tail of a collapsed chunk ("L-Thyroxin zwei", 0.043 and 0.024 side by
+#: side), a hallucinated phrase in a hole ("Grazie a tutti"), residue at a
+#: hole's edge. So a low word is kept only when it stands alone between two
+#: trusted words, each within SHORT_WORD_NEIGHBOUR.
 SHORT_WORD_NEIGHBOUR = 1.0
 
+#: A ONE-letter token is a word only where the language has such words. German
+#: has none, so a lone low "a" there is a decoder sound and still goes. Spanish
+#: "y", "o", "a" and Italian "e", "è", "a", "i" are words (measured: real ones
+#: scored 0.001-0.057), as are the one-letter Polish prepositions.
+SHORT_WORDS_BY_LANG = {
+    "es": {"y", "e", "o", "u", "a"},
+    "it": {"e", "è", "a", "o", "i", "é"},
+    "fr": {"à", "a", "y", "ô"},
+    "pl": {"w", "z", "i", "a", "o", "u"},
+    "en": {"a", "i"},
+}
 
-def _in_running_speech(prev, w, nxt) -> bool:
-    """A short word flanked on both sides by words within SHORT_WORD_NEIGHBOUR."""
-    short = SHORT_WORDS_BY_LANG.get(ACTIVE_LANG, ())
-    if strip_punct(w.get("word", "")).lower() not in short:
+
+def _in_running_speech(timed: list, i: int) -> bool:
+    """True if word i stands alone between two trusted words (score >=
+    JUNK_SCORE), each within SHORT_WORD_NEIGHBOUR. A one-letter token
+    qualifies only if it is a word in ACTIVE_LANG."""
+    w = timed[i]
+    bare = strip_punct(w.get("word", "")).lower()
+    if len(bare) < 2 and bare not in SHORT_WORDS_BY_LANG.get(ACTIVE_LANG, ()):
         return False
-    if prev is None or nxt is None:
+    if i == 0 or i + 1 >= len(timed):
         return False
-    return (w["start"] - prev["end"] <= SHORT_WORD_NEIGHBOUR
+    prev, nxt = timed[i - 1], timed[i + 1]
+    return (prev.get("score", 1.0) >= JUNK_SCORE and nxt.get("score", 1.0) >= JUNK_SCORE
+            and w["start"] - prev["end"] <= SHORT_WORD_NEIGHBOUR
             and nxt["start"] - w["end"] <= SHORT_WORD_NEIGHBOUR)
 
 
@@ -1060,9 +1077,7 @@ def load_words(json_path: Path):
              if "start" in w and "end" in w]
     for i, w in enumerate(timed):
         if w.get("score", 1.0) < JUNK_SCORE:
-            prev = timed[i - 1] if i > 0 else None
-            nxt = timed[i + 1] if i + 1 < len(timed) else None
-            if not _in_running_speech(prev, w, nxt):
+            if not _in_running_speech(timed, i):
                 junk.append(w)
                 continue
         words.append(w)
@@ -1659,6 +1674,9 @@ BREAK_BEFORE_BY_LANG = {
     "de": BREAK_BEFORE,
     "es": {"y", "e", "o", "u", "ni", "pero", "sino", "porque", "aunque",
            "mientras", "pues", "si"},
+    # "che" left out for the reason Spanish leaves out "que".
+    "it": {"e", "ed", "ma", "o", "oppure", "però", "perché", "quando",
+           "mentre", "se", "quindi", "poi", "anche"},
 }
 
 
@@ -1861,10 +1879,15 @@ HOUSE_KEEP = {
     "de": {"ltyrosin", "tyrosin"},
     "en": {"ltyrosine", "tyrosine"},
     "fr": {"ltyrosine", "tyrosine"},
-    "it": {"ltirosina", "tirosina"},
+    "it": {"ltirosina", "tirosina",
+           # within two letters of "Conversol" and ordinary Italian
+           "conversa", "converse", "conversi", "converso", "conversò"},
     "es": {"ltirosina", "tirosina"},
+    # "conversion" is what the product does: a French script says it often.
     "pl": {"ltyrozyna", "tyrozyna"},
 }
+HOUSE_KEEP["fr"] |= {"conversion", "conversions", "converse", "converses",
+                     "converser", "conversa", "converti", "convertis"}
 
 
 def _kept(word: str) -> bool:
@@ -2019,6 +2042,13 @@ def apply_canonical_terms(text: str) -> str:
                 break  # already the canonical skeleton — keep Layer 1's result
             if core[0] != tcore[0]:
                 continue
+            if (core.startswith(tcore) and len(core) - len(tcore) <= 3
+                    and body.lower().startswith(term.lower())):
+                # The term with an ending: Polish declines the brand
+                # ("bez przetwornika"), and cutting the ending off broke the
+                # grammar. The spelling of the term part is still repaired.
+                pieces[idx] = prefix + term + body[len(term):] + suffix
+                break
             cap = _fuzz_cap(len(tcore))
             if _levenshtein(core, tcore, cap) <= cap:
                 pieces[idx] = prefix + term + suffix
@@ -2434,6 +2464,18 @@ MOVE_TRAILING_IT = {
     "al", "allo", "alla", "ai", "agli", "alle",
     "dal", "dallo", "dalla", "nel", "nella", "nei", "nelle",
     "sul", "sulla", "molto", "più", "meno", "troppo", "così", "non", "si",
+    "dai", "dagli", "dalle", "negli", "nello", "sui", "sugli", "sulle",
+    "sullo", "col", "coi",
+    # Articles and preverbal clitics. Unlike German "die", none of these can
+    # close an Italian clause — "che il mio corpo bloccava il | farmaco" and
+    # "nel peggiore dei casi ti | viene" both shipped. Not "uno"/"una" ("ne
+    # basta uno") nor stressed "me"/"te" ("secondo me", "per te"): those can.
+    "il", "lo", "la", "i", "gli", "le", "un",
+    "mi", "ti", "ci", "vi", "ne", "ce", "ve",
+    # A caption that ends on "e" reads as cut off ("di selenio e | 50
+    # milligrammi"); the conjunction opens what follows. Not "però", which
+    # can close a clause.
+    "e", "ed", "ma", "o", "oppure",
 }
 _DET_INTENS_IT = {
     "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
@@ -2443,6 +2485,11 @@ _DET_INTENS_IT = {
     "suo", "sua", "suoi", "sue", "nostro", "nostra", "nostri", "nostre",
     "vostro", "vostra", "loro", "ogni", "qualche", "alcuni", "alcune",
     "tanto", "poco", "quasi", "davvero", "proprio", "abbastanza",
+    # Spelled-out numbers bind to their noun like digits ("Ormai sono due |
+    # mesi" shipped). Not "sei", which is far more often "you are".
+    "due", "tre", "quattro", "cinque", "sette", "otto", "nove", "dieci",
+    "undici", "dodici", "quindici", "venti", "trenta", "quaranta",
+    "cinquanta", "cento", "mille",
 }
 
 # Polish — prepositions (including the one-letter w/z/o/u), subordinators and
@@ -2547,6 +2594,16 @@ _PRONOUNS_AUX_ES = {
 #: and ENGLISH_FUNCTION, used only to tell a function word from a content word.
 SPANISH_FUNCTION = MOVE_TRAILING_ES | _DET_INTENS_ES | _PRONOUNS_AUX_ES
 
+_PRONOUNS_AUX_IT = {
+    "io", "tu", "lui", "lei", "noi", "voi", "loro", "è", "sono", "sei",
+    "siamo", "siete", "era", "ho", "hai", "ha", "abbiamo", "avete", "hanno",
+    "e", "ed", "o", "ma", "però", "poi", "anche", "già", "qui", "qua", "lì",
+    "là", "ora", "adesso", "sempre", "mai", "bene", "sì", "no", "ok",
+    "allora", "quindi", "ecco",
+}
+#: The Italian counterpart of SPANISH_FUNCTION.
+ITALIAN_FUNCTION = MOVE_TRAILING_IT | _DET_INTENS_IT | _PRONOUNS_AUX_IT
+
 MOVE_TRAILING_BY_LANG = {
     "de": MOVE_TRAILING,
     "en": MOVE_TRAILING_EN,
@@ -2602,6 +2659,8 @@ def _function_words() -> set:
         return ENGLISH_FUNCTION
     if ACTIVE_LANG == "es":
         return SPANISH_FUNCTION
+    if ACTIVE_LANG == "it":
+        return ITALIAN_FUNCTION
     return set()
 
 
@@ -2613,6 +2672,15 @@ def _function_words() -> set:
 # ("sé" + "lo que quieres"). Keyed per language and per moved word, so no other
 # language's mover changes: German "fällt aus, weil" must never carry "aus".
 MOVE_CARRY_BY_LANG = {
+    # "i tuoi | ormoni": a possessive after its article goes WITH the article.
+    # Only then — "è tuo" and "a casa mia" end a clause.
+    "it": {p: {"il", "lo", "la", "i", "gli", "le", "un", "una", "del", "della",
+               "dei", "degli", "delle", "al", "alla", "ai", "agli", "alle",
+               "dal", "dalla", "dai", "nel", "nella", "nei", "nelle", "sul",
+               "sulla", "col", "coi", "per", "con", "di", "a", "da", "in", "su"}
+           for p in ("mio", "mia", "miei", "mie", "tuo", "tua", "tuoi", "tue",
+                     "suo", "sua", "suoi", "sue", "nostro", "nostra", "nostri",
+                     "nostre", "vostro", "vostra", "vostri", "vostre", "loro")},
     "es": {"que": {"lo", "el", "la", "los", "las", "así", "ya", "para", "sin",
                    "hasta", "de", "en", "con", "a", "antes", "después", "desde",
                    # "es que", "lo peor era que", and the periphrases of must
@@ -2628,38 +2696,52 @@ def _carried(prev_tok: str, moved_tok: str) -> bool:
 
 def move_trailing_binders(segments: list) -> list:
     """Never end a caption on a forward-binding word (subordinating conjunction,
-    a binding preposition, or "so"). Move the trailing one to the START of the
-    next caption so the bound pair stays together — but only when the next
-    caption still fits two lines afterwards, and never for a sentence-final
-    token (e.g. "oder?"). Word index ranges shift with it so timing stays
-    correct. See MOVE_CARRY_BY_LANG for the one case that moves two words."""
+    a binding preposition, "so", an Italian article or clitic), nor on the first
+    half of a bound pair ("è | successo", "no | lo pienses"). Move the trailing
+    word(s) to the START of the next caption so the bound unit stays together.
+    A whole chain goes ("tu dorma Se ti" -> "Se ti" moves); the caption keeps at
+    least one word of its own. Never for a sentence-final token ("oder?").
+    Word index ranges shift with it so timing stays correct.
+
+    It used to move only when the next caption still fitted two lines after:
+    a guard from before the width enforcement existed, and it left most
+    trailing binders where they were. enforce_single_line / enforce_two_lines
+    run afterwards and re-split anything too long — never after a binder."""
     segs = [dict(s) for s in segments]
     for i in range(len(segs) - 1):
         toks = _seg_tokens(segs[i])
-        last = toks[-1] if toks else ""
-        if not (len(toks) >= 2 and _norm_word(last) in _move_trailing()
-                and not re.search(r"[?!.]", last)):
-            continue
-        # How many trailing words go: the binder, plus the word it completes,
-        # as long as the caption keeps at least one word of its own.
-        n = 1
-        if _carried(toks[-2], last):
-            # The pair goes together or not at all: moving only the "que" of
-            # "así que" is the split this exists to prevent. It also needs a
-            # word of the caption to stay behind, and a word index to give up.
-            if len(toks) < 3 or segs[i]["end"] - 1 <= segs[i]["start"]:
-                continue
-            n = 2
         nxt = segs[i + 1]
-        candidate = " ".join(toks[-n:]) + " " + _flat_text(nxt)
-        if not _fits_two_lines(candidate):
-            continue  # moving it would overflow the next caption — leave as is
+        first = (_seg_tokens(nxt) or [""])[0]
+        n = 0
+        while n < 3 and len(toks) - n >= 2:
+            last = toks[-1 - n]
+            follow = toks[-n] if n else first
+            if re.search(r"[?!.]", last):
+                break
+            word = _norm_word(last)
+            if word in _move_trailing() or _binds_pair(last, follow):
+                if len(toks) - n >= 2 and _carried(toks[-2 - n], last):
+                    # "así que": the pair goes together or not at all, and a
+                    # word of the caption must stay behind.
+                    if len(toks) - n < 3:
+                        break
+                    n += 2
+                    continue
+                n += 1
+            elif (word in MOVE_CARRY_BY_LANG.get(ACTIVE_LANG, {})
+                  and len(toks) - n >= 3 and _carried(toks[-2 - n], last)):
+                n += 2       # "i tuoi": the possessive goes with its article
+            else:
+                break
+        n = min(n, len(toks) - 1)
+        if n <= 0 or segs[i]["end"] - n < segs[i]["start"]:
+            continue
         word_idx = segs[i]["end"] - (n - 1)
         segs[i]["text"] = " ".join(toks[:-n])
-        segs[i]["end"] = max(segs[i]["start"], word_idx - 1)
-        nxt["text"] = candidate
+        segs[i]["end"] = word_idx - 1
+        nxt["text"] = " ".join(toks[-n:]) + " " + _flat_text(nxt)
         nxt["start"] = word_idx
-    return segs
+    return [s for s in segs if _seg_tokens(s)]
 
 
 def split_emphasis_repeats(segments: list) -> list:
@@ -2920,8 +3002,32 @@ PAIR_BINDERS_BY_LANG = {
                     "las", "les"}),
 }
 
+#: Auxiliary + past participle, which the prompt calls inseparable and which
+#: the one-line splitter cut anyway: "Poi il dosaggio è | stato aumentato",
+#: "la mia vita è | migliorata". (auxiliaries, regular participle ending,
+#: irregular participles) per language.
+AUX_PARTICIPLE_BY_LANG = {
+    "it": ({"è", "sono", "sei", "siamo", "siete", "ero", "eri", "era", "eravamo",
+            "erano", "sia", "siano", "fosse", "sarà", "sarei", "sarebbe",
+            "ho", "hai", "ha", "abbiamo", "avete", "hanno", "avevo", "aveva",
+            "avevano", "avrei", "avrà", "avrebbe", "stato", "stata", "stati",
+            "state"},
+           re.compile(r"\w{2,}(at|it|ut)[oaie]$"),
+           {"fatto", "fatta", "fatti", "fatte", "detto", "detta", "scritto",
+            "preso", "presa", "presi", "messo", "messa", "visto", "vista",
+            "letto", "chiesto", "risposto", "rimasto", "rimasta", "successo",
+            "morto", "nato", "nata", "aperto", "chiuso", "deciso", "perso",
+            "persa", "persi", "vinto", "speso", "scelto", "accorto", "accorta",
+            "diventato", "diventata", "sceso", "salito", "messi", "tolto"}),
+}
+
 
 def _binds_pair(tok: str, nxt: str) -> bool:
+    aux = AUX_PARTICIPLE_BY_LANG.get(ACTIVE_LANG)
+    if aux and _norm_word(tok) in aux[0]:
+        part = _norm_word(nxt)
+        if part in aux[2] or aux[1].fullmatch(part):
+            return True
     first, second = PAIR_BINDERS_BY_LANG.get(ACTIVE_LANG, ((), ()))
     if _norm_word(tok) not in first or _norm_word(nxt) not in second:
         return False
@@ -2954,8 +3060,17 @@ def _binds_forward(tok: str, nxt: str = "", prev: str = "") -> bool:
     if _unbound(prev, tok):
         return False
     w = _norm_word(tok)
+    if (ACTIVE_LANG == "de" and w in _PRONOUN_OR_POSSESSIVE_DE and nxt
+            and _norm_word(nxt) in GERMAN_LOWERCASE and not nxt[:1].isupper()):
+        return False  # "seid ihr | mit eurer…": the pronoun, not "ihr Arzt"
     return (w in _no_line_end() or bool(re.fullmatch(r"\d+([.,]\d+)?", w))
             or bool(nxt and _binds_pair(tok, nxt)))
+
+
+#: German words that are a pronoun as often as a possessive. As a possessive
+#: they bind to a noun; followed by a function word ("ihr mit", "ihr den")
+#: they are the pronoun, and a break after them is fine.
+_PRONOUN_OR_POSSESSIVE_DE = {"ihr"}
 
 
 def _split_one_line(tokens: list) -> list:
@@ -3399,6 +3514,9 @@ def main():
     segments = split_emphasis_repeats(segments)
     segments = merge_orphans(segments)
     segments = merge_short_durations(segments, words)
+    # The merges can put a binder back at a caption's end ("tu dorma Se" after
+    # a brief "Se ti" folds into it); hand it forward once more.
+    segments = move_trailing_binders(segments)
     # Deterministically break any still-too-wide caption into pieces (timing
     # re-derived), so we don't rely on the model to count: one-line pieces in
     # single-line mode, two-line pieces otherwise. Without this a caption the

@@ -25,6 +25,7 @@ speech_clock ← script_text ← script_packer ← animator_pipeline ← animato
 | `animator_runtime.py` | `RuntimeColumn` (mixin): the spoken length while you write — the runtime column and the per-row chips. |
 | `animator_build.py` | `BuildRunner` (mixin): starting a build, its progress in the footer, the ending (`jobs.finished`), and quitting mid-build. |
 | `animator_scenes.py` | `ScenesStage` (mixin): stage two — the block rail, the cards, the corrections, the export. |
+| `animator_translate.py` | The English line for copy opened without one (Open .md, Restore). No Qt. |
 | `animator_page.py` | `AnimatorPage` — the two stages and everything that wires them. |
 | `script_packer.py` | Every cut: the DP, `ceiling()`, the beat layer, hook collapsing, merge/split/pin, the `overruns()` invariant, prompt/markdown output. No Qt, no network. |
 | `script_text.py` | The language layer: syllables, sentence splitting, seams, the pronunciation maps, the copy guards. One table per concept, keyed by language — see "Languages" below. No Qt, no network. |
@@ -316,6 +317,12 @@ with eSpeak's own voice (Spanish: `es`, which is Spain's) against the pooled
 constant, and `engine_note()` says so on the build button ("none of them
 Spanish"). Add a row to `docs/clock_reference.csv` the day one is shot.
 
+**English does not inherit it.** The pooled constant is the German talent's pace;
+on English it cut scenes at 3.2 words a second, too full to say. Until an English
+clip is confirmed, `speech_clock.UNCONFIRMED_SCALE` sets English to 2.7 words a
+second (1.18 on both engines), and `RATE_BASE["English"]` was re-fitted to match.
+A fitted `languages.English` entry overrides it.
+
 **Spanish writes two marks German has no word for.** A question opens with `¿`
 and an exclamation with `¡`, so the comma→full-stop tidy cannot close a cut with
 a full stop when the sentence it cuts is a question: the first clip would carry
@@ -355,7 +362,46 @@ copy is missing punctuation there), as is a scene whose speech overruns its
 clip. The exported `.md` holds **prompts only** — runtimes and warnings stay in
 the app, never in the file.
 
-The prompt is `Voiceover: "<VO>" [action] <TAIL>`. The **tail is copied
+**Open .md** reads that file back (`script_packer.parse_markdown`, the exact
+inverse — a file round-trips byte for byte). The tail is the suffix every prompt
+shares, whatever sits before it is the scene's action, and the clip length
+written in the file is kept (locked when it differs from the measured one):
+clips may already be generated at it. The copy also lands in the editors, so
+the session saves whole and Rebuild works on what was opened. The file has no
+English (prompts only), so the lines this session already knew keep theirs and
+the rest are asked for in the background (`animator_translate.py`, parts of 60
+lines, the read's three at a time), matched back by the line — a cut made
+while it runs loses nothing. Restore does the same for a session with gaps.
+Each part lands on the board and in the window as it arrives, and every
+English line the app has had is kept in `<exports>/.translations.json` (per
+language, by the line, written as each part lands): the session log is
+replaced by every build and open, and an open on a fresh launch used to wipe
+the English the session had and wait ~45 s to ask for it again.
+
+**Lock scene numbers** (the switch on the Scenes bar, saved with the session):
+clips already generated are named after their scene, so with it on a cut makes
+`13-1` / `13-2`, cutting a piece again renumbers that scene's pieces in order
+(`13-1`, `13-2`, `13-3` — never `13-1-1`), a merge of two scenes is `13-14`,
+merging pieces renumbers them and the last two give `13` back. Nothing outside
+the edit is renumbered. Off, every edit relabels the block as before. Either
+way the generated marks follow their clips — a cut or merged clip is new copy
+and starts unmarked.
+
+The floating window moves by Prev/Next, by clicking, dragging or scrolling over
+the strip (past 36 clips it shows the ones around you, with a hairline for the
+whole script), and by **Go to**, typed (`B120`, `120`, `h1-2`, `cta1-3`; the clip follows each
+keystroke, Enter keeps it, Escape goes back). The panel never takes key focus
+— that is what keeps Flow's prompt box focused when you press Copy — so the
+field takes it for itself on the click and hands it back on Enter
+(`core.panel_take_keys` / `panel_give_back_keys`). Measured on macOS 26 with
+Finder in front: the panel goes key, Finder stays frontmost and the Studio
+window stays behind; after Enter the panel is no longer key, so ⌘V lands in
+the browser again. **Cut in two** asks where, one
+entry per sentence end, exactly like the card, through the same handler.
+
+The prompt is `[B12] Voiceover: "<VO>" [action] <TAIL>` — the tag
+(`script_packer.prompt_tag`) names the scene, so a generated clip can be
+matched back to it. The **tail is copied
 verbatim** and is user-editable (the "Shot style" card): the reference image
 owns the talent's appearance, and repeating looks/camera in the prompt causes
 drift.
@@ -418,6 +464,15 @@ accent, never from more boxes:
   Housekeeping notes (the respelling log) are dropped from the screen entirely
   and only stay in the session file. Do not reintroduce a wall of prose: if a
   finding can't be attached to a block or a clip, the user can't act on it.
+
+**A long script is the case to keep fast** (a 40-minute VSL is ~360 clips).
+An edit swaps only the cards it changed (`_patch_cards`) and renumbers the rest
+in place; selecting touches two cards, not all; a duration button is re-styled
+only when its over-length state flips; and the live spoken length times a long
+block in runs of 40 lines, each remembered by its text (`_timed_cut`) — the
+DP over the whole body was 2.4 s on the UI thread per pause in typing. Measured
+on a real display with 359 clips: open 0.8 s, cut/merge ≤ 0.1 s, a step in the
+floating window 5 ms.
 
 ## Qt traps this design walks into
 

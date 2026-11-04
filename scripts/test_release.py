@@ -225,6 +225,12 @@ def main() -> None:
     leaked = sorted(n for n in shipped
                     if n.endswith(".env") or n.split("/")[-1] == ".env")
     check("no .env in the zip", not leaked, ", ".join(leaked) or "none")
+    private = sorted(n for n in shipped if n.endswith('.mariposa-plugin')
+                     or n.split('/')[-1] == 'plugin.json'
+                     or any(part in ('private-plugins', 'plugins') for part in n.split('/')))
+    check("no external plugin packages or manifests in the zip", not private,
+          ", ".join(private) or "none")
+
 
     print("\n%d checks, %d failed" % (len(OK) + len(FAIL), len(FAIL)))
     if FAIL:

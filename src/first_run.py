@@ -64,7 +64,8 @@ def mark_done() -> None:
 # The three real dependencies
 
 def _ffmpeg_ok() -> bool:
-    return shutil.which("ffmpeg") is not None
+    from dependencies import media_binary
+    return media_binary("ffmpeg") is not None
 
 
 def _espeak_ok() -> bool:

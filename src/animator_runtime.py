@@ -164,7 +164,7 @@ class RuntimeColumn:
             if not text:
                 return []
             try:
-                return pack_block(block_id, text, lang, kind)
+                return self._timed_cut(block_id, text, lang, kind)
             except Exception:
                 # A half-typed sentence must never take the page down; the
                 # numbers simply wait for the next keystroke.
@@ -206,6 +206,33 @@ class RuntimeColumn:
         # paid that again on the next launch. Writing is a no-op when nothing
         # new was measured.
         flush_cache()
+
+    #: Lines of copy timed as one piece when a block is long.
+    TIMING_CHUNK_LINES = 40
+
+    def _timed_cut(self, block_id: str, text: str, lang: str, kind: str) -> list[dict]:
+        """`pack_block`, remembered. A short block is cut whole, as always. A
+        long one — a 40-minute body opened from a file — is cut in runs of
+        lines, each remembered by its text: packing all of it took 2.4 s on the
+        UI thread after every pause in typing, and now an edit re-cuts only the
+        run it is in. The lines are where the copy was typed apart, so a run
+        boundary is never a seam the editor would have kept together."""
+        memo = getattr(self, "_timing_memo", None)
+        if memo is None or len(memo) > 4000:
+            memo = self._timing_memo = {}
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        if len(lines) <= self.TIMING_CHUNK_LINES:
+            runs = [text]
+        else:
+            runs = ["\n".join(lines[k:k + self.TIMING_CHUNK_LINES])
+                    for k in range(0, len(lines), self.TIMING_CHUNK_LINES)]
+        scenes: list[dict] = []
+        for run in runs:
+            key = (lang, kind, block_id, run)
+            if key not in memo:
+                memo[key] = pack_block(block_id, run, lang, kind)
+            scenes.extend(memo[key])
+        return scenes
 
     @staticmethod
     def _count_text(rows: list, ceiling: int) -> str:

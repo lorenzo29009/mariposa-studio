@@ -34,20 +34,35 @@ packer's dynamic program is ~1 ms on a warm cache, and what costs is rendering
 the pieces of sentences too long for one clip; the review's answer is a few
 tokens, so it is the first byte plus reading the clips back (1.5–4 s).
 
+**A long script is read in parts.** One call for a 40-minute VSL is ~45k tokens
+of answer — minutes of silence on one socket, which ran into the timeout and
+the output cap together. `read_parts()` cuts the copy into calls of about
+`READ_PART_CHARS` (at paragraph breaks, else between sentences; a short script
+is still one call, untouched), `READ_WORKERS` of them in flight at once, and
+`read_prior()` prices the read as the longest worker's queue, so the factor the
+history learns means the same thing for one call and for twelve.
+
 No Qt and no network — `scripts/test_animator_progress.py` reads it directly.
 """
 from __future__ import annotations
 
+import re
+
 from script_text import split_sentences
 
 __all__ = [
-    "LEGS", "read_prior", "timing_prior", "cut_prior", "review_prior",
+    "LEGS", "READ_PART_CHARS", "READ_WORKERS", "read_parts", "read_prior",
+    "part_prior", "timing_prior", "cut_prior", "review_prior",
     "count_sentences", "leg", "plan",
 ]
 
 READ_FIRST_BYTE_S = 1.5
 READ_S_PER_CHAR = 0.0018
 READ_JSON_CHARS_PER_SENTENCE = 80
+#: Copy per read call: ~50 sentences, ~20 s of answer. Well inside the timeout
+#: and the output cap, and few enough calls for a free-tier minute.
+READ_PART_CHARS = 4000
+READ_WORKERS = 3
 
 TIMING_S_PER_LINE = 0.023
 
@@ -77,12 +92,80 @@ def count_sentences(blocks: list[dict]) -> int:
     return sum(len(split_sentences(b.get("text", ""))) for b in blocks)
 
 
-def read_prior(blocks: list[dict], language: str) -> float:
-    """Seconds for the read call: a + b × the characters of its answer."""
+def _pieces(block: dict) -> list[dict]:
+    """One block as the pieces it is read in: itself when it fits a call, else
+    runs of paragraphs (or of sentences, for a paragraph that won't fit) of up
+    to `READ_PART_CHARS`. `seam` is how a piece meets the one before it."""
+    text = block.get("text", "")
+    if len(text) <= READ_PART_CHARS:
+        return [dict(block, of=block["id"], nth=0, seam="")]
+    units: list[tuple[str, str]] = []        # (text, how it meets the one before)
+    for para in re.split(r"\n\s*\n", text):
+        para = para.strip()
+        if not para:
+            continue
+        if len(para) <= READ_PART_CHARS:
+            units.append((para, "para"))
+            continue
+        for i, line in enumerate(split_sentences(para)):
+            units.append((line, "para" if i == 0 else "sentence"))
+    pieces: list[dict] = []
+    buf: list[str] = []
+    seam = ""
+    size = 0
+    for unit, how in units:
+        if buf and size + len(unit) > READ_PART_CHARS:
+            pieces.append({"text": "\n\n".join(buf), "seam": seam})
+            buf, size, seam = [], 0, how
+        buf.append(unit)
+        size += len(unit) + 2
+    if buf:
+        pieces.append({"text": "\n\n".join(buf), "seam": seam})
+    return [dict(block, id=f"{block['id']}-p{n + 1}", text=pc["text"],
+                 of=block["id"], nth=n, seam=pc["seam"] if n else "")
+            for n, pc in enumerate(pieces)]
+
+
+def read_parts(blocks: list[dict]) -> list[list[dict]]:
+    """The read, as the calls it is made in: each a list of pieces (blocks, or
+    pieces of one, carrying `of` — the block they belong to — and `nth`).
+
+    A script that fits one call comes back as one part holding the blocks
+    themselves, ids unchanged."""
+    parts: list[list[dict]] = []
+    size = 0
+    for block in blocks:
+        for piece in _pieces(block):
+            n = len(piece.get("text", ""))
+            if not parts or size + n > READ_PART_CHARS:
+                parts.append([])
+                size = 0
+            parts[-1].append(piece)
+            size += n
+    return parts
+
+
+def _call_prior(blocks: list[dict], language: str) -> float:
+    """Seconds for one read call: a + b × the characters of its answer."""
     chars = sum(len(b.get("text", "")) for b in blocks)
     gloss = 1 if language == "English" else 2        # the "en" field doubles it
     answer = chars * gloss + READ_JSON_CHARS_PER_SENTENCE * count_sentences(blocks)
     return READ_FIRST_BYTE_S + READ_S_PER_CHAR * answer
+
+
+def read_prior(blocks: list[dict], language: str) -> float:
+    """Seconds for the whole read: its parts, `READ_WORKERS` at a time, each
+    given to whichever worker frees up first — the longest queue is the leg."""
+    queues = [0.0] * READ_WORKERS
+    for part in read_parts(blocks):
+        i = queues.index(min(queues))
+        queues[i] += _call_prior(part, language)
+    return max(queues)
+
+
+def part_prior(part: list[dict], language: str) -> float:
+    """Seconds for one part of the read, on its own."""
+    return _call_prior(part, language)
 
 
 def timing_prior(lines: int) -> float:

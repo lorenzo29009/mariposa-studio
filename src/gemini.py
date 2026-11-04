@@ -62,6 +62,12 @@ _WORKING_MODEL: "str | None" = None
 RETRY_CODES = (429, 500, 502, 503, 504)
 BACKOFF_S = (2, 5, 10)
 
+# A non-streamed call sends nothing until the whole answer exists, so a socket
+# timeout means "still writing" as often as "gone". It is asked once more —
+# never walked down the chain, since a request too big for one model is too big
+# for the next — and then said in words, not as "The read operation timed out".
+TIMEOUT_CODE = -1
+
 # What the transport is doing while the caller waits — the waits and fallbacks
 # above used to be invisible: the Animator's status sat on "Reading the copy…"
 # through 17 s of backoff, and its countdown said a few seconds were left.
@@ -315,8 +321,28 @@ def _post_one(api_key: str, model: str, body: dict, timeout: int, *,
                                         "seconds": backoff[attempt],
                                         "code": e.code})
             time.sleep(backoff[attempt])
+        except (TimeoutError, urllib.error.URLError) as e:
+            if not _is_timeout(e):
+                raise
+            if retries and attempt == 0:
+                _tell(on_event, "backoff", {"model": model, "seconds": 0,
+                                            "code": TIMEOUT_CODE})
+                continue
+            raise GeminiError(
+                "Gemini didn't answer within %d seconds%s. Google may be slow "
+                "right now — try again in a few minutes."
+                % (timeout, ", twice" if retries else ""), TIMEOUT_CODE) from e
 
     raise GeminiError("No response from Gemini.")
+
+
+def _is_timeout(e: BaseException) -> bool:
+    """A socket timeout, raw or wrapped by urllib (it wraps one raised while
+    connecting, not one raised while reading the answer)."""
+    if isinstance(e, TimeoutError):
+        return True
+    reason = getattr(e, "reason", None)
+    return isinstance(reason, TimeoutError) or "timed out" in str(reason or "")
 
 
 def _http_error(e: urllib.error.HTTPError, model: str = "",
@@ -346,7 +372,7 @@ def _http_error(e: urllib.error.HTTPError, model: str = "",
             return GeminiError(
                 "Gemini's free daily quota for this key is used up. It resets "
                 "tomorrow — or add billing to the Google project. A build costs "
-                "two requests.", 429)
+                "two requests, more for a long script.", 429)
         # Not a daily cap. Either the per-minute allowance (clears in a minute)
         # or a key with NO free-tier quota on these models at all (never clears
         # by waiting) — and the two are told apart by when it happens, which is

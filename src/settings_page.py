@@ -28,7 +28,7 @@ from typing import Callable
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QScrollArea, QVBoxLayout, QWidget,
+    QScrollArea, QStackedWidget, QVBoxLayout, QGridLayout, QWidget,
 )
 
 import session
@@ -37,7 +37,7 @@ from core import (
     APP_VERSION, EXPORTS_DIR, open_folder, read_env_value, write_env_value,
 )
 from gemini import clean_key
-from widgets import AppBar, SettingRow, Switch, ask_confirm, _panel
+from widgets import AppBar, SettingRow, Switch, Segmented, ask_confirm, _panel
 
 #: Preference keys, stored in the same .env everything else uses.
 KEY_NOTIFY = "MARIPOSA_NOTIFY_ON_FINISH"
@@ -140,8 +140,10 @@ class SettingsPage(QWidget):
     subtitle = ""
     tool_key = "settings"
 
-    def __init__(self, on_back: Callable[[], None]):
+    def __init__(self, on_back: Callable[[], None], on_plugin_settings=None, on_plugin_removed=None):
         super().__init__()
+        self.on_plugin_settings = on_plugin_settings
+        self.on_plugin_removed = on_plugin_removed
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -152,34 +154,156 @@ class SettingsPage(QWidget):
         self.app_bar.add_right(self.health)
         outer.addWidget(self.app_bar)
 
-        scroll = QScrollArea()
-        scroll.setObjectName("BodyScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         wrap = QWidget()
         wrap.setObjectName("TransparentPanel")
         v = QVBoxLayout(wrap)
-        v.setContentsMargins(28, 30, 28, 36)
-        v.setSpacing(26)
-        v.setAlignment(Qt.AlignTop)
-        scroll.setWidget(wrap)
-        outer.addWidget(scroll, 1)
+        v.setContentsMargins(28, 24, 28, 28)
+        v.setSpacing(24)
+        outer.addWidget(wrap, 1)
 
-        v.addWidget(self._key_section())
-        v.addWidget(self._exports_section())
-        v.addWidget(self._while_running_section())
-        v.addWidget(self._trouble_section())
-        v.addStretch(1)
-
-        # Everything is capped so a wide window doesn't stretch a form across
-        # 1200px of cream.
-        wrap.setMaximumWidth(820)
+        self.settings_tabs = Segmented(["General", "Plugins"])
+        v.addWidget(self.settings_tabs)
+        self.settings_stack = QStackedWidget()
+        general = QWidget()
+        general_layout = QGridLayout(general)
+        general_layout.setContentsMargins(0, 0, 0, 0)
+        general_layout.setHorizontalSpacing(28)
+        general_layout.setVerticalSpacing(24)
+        general_layout.addWidget(self._key_section(), 0, 0, Qt.AlignTop)
+        general_layout.addWidget(self._exports_section(), 1, 0, Qt.AlignTop)
+        general_layout.addWidget(self._while_running_section(), 0, 1, Qt.AlignTop)
+        general_layout.addWidget(self._trouble_section(), 1, 1, Qt.AlignTop)
+        general_layout.setColumnStretch(0, 1)
+        general_layout.setColumnStretch(1, 1)
+        general_layout.setRowStretch(2, 1)
+        self.settings_stack.addWidget(general)
+        # Only a growing plugin list scrolls; General always uses the canvas.
+        plugins_scroll = QScrollArea()
+        plugins_scroll.setObjectName("BodyScroll")
+        plugins_scroll.setWidgetResizable(True)
+        plugins_scroll.setFrameShape(QFrame.NoFrame)
+        plugins_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        plugins_scroll.setWidget(self._plugins_section())
+        self.settings_stack.addWidget(plugins_scroll)
+        self.settings_tabs.currentChanged.connect(self.settings_stack.setCurrentIndex)
+        v.addWidget(self.settings_stack, 1)
 
         self._refresh_key_state()
         self._refresh_health()
 
+    def _plugins_section(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(16)
+        header = QHBoxLayout()
+        self.plugin_count = QLabel()
+        self.plugin_count.setObjectName("SectionHeading")
+        header.addWidget(self.plugin_count, 1)
+        add = QPushButton("Add plugin")
+        add.setObjectName("SecondaryBtn")
+        add.setIcon(svg_icon("plus", WINE, 16))
+        add.clicked.connect(self._add_plugin)
+        header.addWidget(add)
+        layout.addLayout(header)
+        self.plugin_list = QVBoxLayout()
+        self.plugin_list.setSpacing(12)
+        layout.addLayout(self.plugin_list)
+        self.plugin_status = QLabel("")
+        self.plugin_status.setObjectName("Meta")
+        self.plugin_status.setWordWrap(True)
+        layout.addWidget(self.plugin_status)
+        layout.addStretch(1)
+        self._refresh_plugins()
+        return page
+
+    def _refresh_plugins(self):
+        from plugins import installed_manifests
+        while self.plugin_list.count():
+            item = self.plugin_list.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        manifests = installed_manifests()
+        self.plugin_count.setText(f"Installed plugins ({len(manifests)})")
+        if not manifests:
+            empty = QLabel("No plugins installed")
+            empty.setObjectName("Meta")
+            self.plugin_list.addWidget(empty)
+        for manifest in manifests:
+            card = QFrame()
+            card.setObjectName("Card")
+            row = QHBoxLayout(card)
+            row.setContentsMargins(22, 20, 22, 20)
+            row.setSpacing(16)
+            icon = QLabel()
+            icon.setPixmap(svg_icon(manifest.get("icon", "circle-check"), WINE, 24).pixmap(24, 24))
+            row.addWidget(icon, 0, Qt.AlignTop)
+            text = QVBoxLayout()
+            text.setSpacing(4)
+            name = QLabel(manifest["name"])
+            name.setTextFormat(Qt.PlainText)
+            name.setObjectName("SectionHeading")
+            text.addWidget(name)
+            description = QLabel(str(manifest.get("description", ""))[:240])
+            description.setTextFormat(Qt.PlainText)
+            description.setObjectName("Meta")
+            description.setWordWrap(True)
+            text.addWidget(description)
+            row.addLayout(text, 1)
+            version = QLabel(str(manifest.get("version", ""))[:30])
+            version.setTextFormat(Qt.PlainText)
+            version.setObjectName("Meta")
+            row.addWidget(version, 0, Qt.AlignTop)
+            if manifest.get('settings') and self.on_plugin_settings:
+                settings = QPushButton('Settings')
+                settings.setObjectName('OnCardBtn')
+                settings.setIcon(svg_icon('settings', WINE, 16))
+                settings.clicked.connect(lambda checked=False, ident=manifest['id']: self.on_plugin_settings(ident))
+                row.addWidget(settings)
+            remove = QPushButton('Remove')
+            remove.setObjectName('GhostBtn')
+            remove.clicked.connect(lambda checked=False, item=manifest: self._remove_plugin(item))
+            row.addWidget(remove)
+            self.plugin_list.addWidget(card)
+
+    def _remove_plugin(self, manifest):
+        import jobs
+        from plugins import remove_package
+        if jobs.busy():
+            self.plugin_status.setText('Wait for the current job to finish before removing a plugin.')
+            return
+        if not ask_confirm(self, 'Remove ' + manifest['name'] + '?',
+                           'Saved keys and connections are kept. Restart Mariposa to update the tool list.',
+                           ok_label='Remove plugin'):
+            return
+        try:
+            remove_package(manifest['id'])
+            if self.on_plugin_removed:
+                self.on_plugin_removed(manifest['id'])
+            self._refresh_plugins()
+            self.plugin_status.setText('Plugin removed. Restart Mariposa to update the tool list.')
+        except (OSError, ValueError):
+            self.plugin_status.setText('Could not remove this plugin.')
+
     # ---- 1. the key ---------------------------------------------------
+    def _add_plugin(self):
+        from PySide6.QtWidgets import QFileDialog
+        from plugins import inspect_package, install_package
+        path, _ = QFileDialog.getOpenFileName(self, "Add a plugin", "", "Mariposa plugin (*.mariposa-plugin)")
+        if not path:
+            return
+        try:
+            manifest = inspect_package(path)
+            if not ask_confirm(self, "Install " + manifest['name'] + "?",
+                               "Plugins run code with access to your files and credentials. Install only packages from someone you trust.",
+                               ok_label="Install plugin"):
+                return
+            install_package(path)
+            self._refresh_plugins()
+            self.plugin_status.setText("Installed. Restart Mariposa Studio.")
+        except Exception:
+            self.plugin_status.setText("Could not install this plugin. Check the package or existing installation.")
+
     def _key_section(self) -> QWidget:
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
@@ -259,8 +383,7 @@ class SettingsPage(QWidget):
         if note:
             colour, text = DONE, note
         elif key:
-            colour, text = TXT_META, ("Saved. Nothing has used it yet this "
-                                      "session, so it hasn't been proven.")
+            colour, text = TXT_META, ("Saved · not used this session")
         else:
             colour, text = STOP, ("Not set — Camera Prompts and Script Animator "
                                   "need it, and refining captions does too.")
@@ -320,7 +443,7 @@ class SettingsPage(QWidget):
         self.size_lbl.setObjectName("Meta")
         self.size_lbl.setWordWrap(True)
         bottom.addWidget(self.size_lbl, 1)
-        self.clear_btn = QPushButton(f"Clear anything older than {STALE_DAYS} days")
+        self.clear_btn = QPushButton(f"Clear older than {STALE_DAYS} days")
         self.clear_btn.setObjectName("LinkBtn")
         self.clear_btn.setCursor(Qt.PointingHandCursor)
         self.clear_btn.clicked.connect(self._clear_old)
@@ -414,14 +537,13 @@ class SettingsPage(QWidget):
         card = QFrame()
         card.setObjectName("Card")
         cv = QVBoxLayout(card)
-        cv.setContentsMargins(22, 8, 22, 8)
-        cv.setSpacing(0)
+        cv.setContentsMargins(22, 22, 22, 22)
+        cv.setSpacing(20)
 
         self.notify = Switch(pref(KEY_NOTIFY, True))
         self.notify.toggled.connect(lambda on: set_pref(KEY_NOTIFY, on))
-        cv.addWidget(SettingRow("Notify me when something finishes",
-                                "a system notification, so you can go and do "
-                                "something else", self.notify, label_width=420))
+        cv.addWidget(SettingRow("Notify when finished",
+                                "System notifications", self.notify, label_width=240))
         rule = QFrame()
         rule.setObjectName("RuleSoft")
         rule.setFixedHeight(1)
@@ -429,9 +551,9 @@ class SettingsPage(QWidget):
 
         self.autoquit = Switch(pref(KEY_AUTOQUIT, False))
         self.autoquit.toggled.connect(lambda on: set_pref(KEY_AUTOQUIT, on))
-        cv.addWidget(SettingRow("Quit automatically once the last job is done",
-                                "the session is four minutes; some jobs are six",
-                                self.autoquit, label_width=420))
+        cv.addWidget(SettingRow("Quit when finished",
+                                "After the last job completes",
+                                self.autoquit, label_width=240))
         col.addWidget(card)
         return _panel(col)
 
@@ -446,7 +568,7 @@ class SettingsPage(QWidget):
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(13)
-        head = QLabel("If something goes wrong")
+        head = QLabel("Support")
         head.setObjectName("SectionHeading")
         col.addWidget(head)
 
@@ -455,14 +577,6 @@ class SettingsPage(QWidget):
         cv = QVBoxLayout(card)
         cv.setContentsMargins(22, 20, 22, 20)
         cv.setSpacing(12)
-
-        blurb = QLabel(
-            "The report describes this machine, every tool Mariposa depends on "
-            "and where it found them, and the last few hundred lines of output. "
-            "Your API key is removed from it before you get it.")
-        blurb.setObjectName("Meta")
-        blurb.setWordWrap(True)
-        cv.addWidget(blurb)
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -507,7 +621,8 @@ class SettingsPage(QWidget):
         from speech_clock import available_engine
         bits = [APP_VERSION]
         missing = []
-        if shutil.which("ffmpeg") is None:
+        from dependencies import media_binary
+        if media_binary("ffmpeg") is None:
             missing.append("ffmpeg")
         if available_engine() is None:
             missing.append("eSpeak")
@@ -532,10 +647,12 @@ class SettingsPage(QWidget):
         self.health.setText(" · ".join(bits))
 
     def showEvent(self, e):
-        # These are the two things that go stale while the app is open.
+        # Refresh settings and installed metadata when returning.
         super().showEvent(e)
         self._refresh_key_state()
         self._refresh_exports()
+        self._refresh_health()
+        self._refresh_plugins()
 
 
 def _tilde(p: Path) -> str:

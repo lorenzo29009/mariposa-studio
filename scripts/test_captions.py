@@ -612,6 +612,90 @@ check("a few low-scored words are not enough to warn",
 check("the captioner has no wrong-language stop left in it",
       hasattr(cap, "language_mismatch") or "Wrong language" in _cap_src, False)
 
+# ─── Italian, as it really came out of C119 / AI152 ─────────────────────────
+cap.ACTIVE_LANG = "it"
+
+
+def _moved_it(*caps):
+    segs, i = [], 0
+    for c in caps:
+        n = len(c.split()); segs.append({"start": i, "end": i + n - 1, "text": c}); i += n
+    return [s["text"] for s in cap.move_trailing_binders(segs)]
+
+
+check("it: an article never ends a caption (“bloccava il | farmaco” shipped)",
+      _moved_it("che il mio corpo bloccava il", "farmaco che stavo assumendo"),
+      ["che il mio corpo bloccava", "il farmaco che stavo assumendo"])
+check("it: a clitic goes with its verb (“dei casi ti | viene”)",
+      _moved_it("e nel peggiore dei casi ti", "viene pure la tachicardia"),
+      ["e nel peggiore dei casi", "ti viene pure la tachicardia"])
+check("it: an article + possessive go together (“i tuoi | ormoni”)",
+      _moved_it("Dopo due o tre mesi i tuoi", "ormoni torneranno in equilibrio"),
+      ["Dopo due o tre mesi", "i tuoi ormoni torneranno in equilibrio"])
+check("it: …but a possessive that closes the clause stays (“è tuo”)",
+      _moved_it("questo è tuo", "e basta così"), ["questo è tuo", "e basta così"])
+check("it: an auxiliary goes with its participle (“è | successo”)",
+      _moved_it("proprio come è", "successo a queste donne"),
+      ["proprio come", "è successo a queste donne"])
+check("it: a whole chain of binders moves (“tu dorma Se ti”)",
+      _moved_it("per quanto tu dorma Se ti", "ci riconosci allora devi dare"),
+      ["per quanto tu dorma", "Se ti ci riconosci allora devi dare"])
+check("it: “e” opens what follows (“di selenio e | 50 milligrammi”)",
+      _moved_it("di selenio e", "50 milligrammi di glutatione"),
+      ["di selenio", "e 50 milligrammi di glutatione"])
+check("it: the splitter never cuts “è | stato”",
+      [" ".join(c) for c in cap._split_one_line("Poi il dosaggio è stato aumentato".split())],
+      ["Poi il dosaggio", "è stato aumentato"])
+check("it: …nor a spelled-out number from its noun (“due | mesi”)",
+      [" ".join(c) for c in cap._split_one_line("Ormai sono due mesi che lo assumo".split())],
+      ["Ormai sono due mesi", "che lo assumo"])
+check("it: stressed pronouns can end a line (“secondo me”, “per te”)",
+      [cap._binds_forward("me"), cap._binds_forward("te")], [False, False])
+check("it: the no-Gemini fallback breaks before Italian conjunctions",
+      "ma" in cap._break_before() and "che" not in cap._break_before(), True)
+
+# Real words the aligner scores near zero. Every such word measured between two
+# trusted words was real, in German too; invented words come in runs.
+with _tempfile_mod.TemporaryDirectory() as _tmp:
+    _p = Path(_tmp) / "x.it.json"
+    _p.write_text(_json_mod.dumps({"segments": [{"words": [
+        {"word": "la", "start": 46.0, "end": 46.1, "score": 0.8},
+        {"word": "dose", "start": 46.1, "end": 46.3, "score": 0.9},
+        {"word": "della", "start": 46.3, "end": 46.4, "score": 0.7},
+        {"word": "tua", "start": 46.4, "end": 46.46, "score": 0.0},
+        {"word": "terapia", "start": 46.5, "end": 46.9, "score": 0.9},
+        {"word": "che", "start": 47.0, "end": 47.1, "score": 0.8},
+        {"word": "è", "start": 47.12, "end": 47.14, "score": 0.01},
+        {"word": "l'ormone", "start": 47.2, "end": 47.6, "score": 0.9},
+        {"word": "Grazie", "start": 60.0, "end": 60.2, "score": 0.04},
+        {"word": "a", "start": 60.2, "end": 60.25, "score": 0.08},
+        {"word": "tutti.", "start": 60.3, "end": 60.5, "score": 0.04},
+    ]}]}), encoding="utf-8")
+    check("it: a quiet real word between two trusted ones survives; a "
+          "hallucinated run in a hole does not",
+          [w["word"] for w in cap.load_words(_p)],
+          ["la", "dose", "della", "tua", "terapia", "che", "è", "l'ormone"])
+
+# The brand repair must not eat real words, in any market.
+_saved = {k: os.environ.pop(k, None) for k in ("CAPTION_BRAND", "CAPTION_TERMS")}
+for _lang, _text, _want in [
+        ("fr", "la conversion de la T4", "la conversion de la T4"),
+        ("it", "conversa con il medico", "conversa con il medico"),
+        ("it", "Conservol di miavola", "Conversol di miavola"),
+        ("pl", "bez przetwornika", "bez Przetwornika")]:
+    cap.ACTIVE_LANG = _lang
+    check(f"{_lang}: brand repair — {_text!r}", cap.apply_canonical_terms(_text), _want)
+for _k, _v in _saved.items():
+    if _v is not None:
+        os.environ[_k] = _v
+
+# German "ihr" is the pronoun as often as the possessive.
+cap.ACTIVE_LANG = "de"
+check("de: “seid ihr | mit eurer…” may break after the pronoun",
+      cap._binds_forward("ihr", "mit"), False)
+check("de: …“ihr | Arzt” may not",
+      cap._binds_forward("ihr", "Arzt"), True)
+
 # ─── Gemini: what one call learns, the next ones keep ───────────────────────
 import io as _io, time as _time, urllib.error as _ue, urllib.request as _ur
 _hits, _real = [], (_ur.urlopen, _time.sleep, os.environ.get("GEMINI_API_KEY"),

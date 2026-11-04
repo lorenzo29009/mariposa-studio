@@ -365,6 +365,55 @@ def main():
           "x-goog-api-key" in csrc and "?key=" not in csrc,
           "an AQ. key is not accepted as a ?key= parameter")
 
+    print("\na timeout — a non-streamed answer still being written")
+    calls: list[str] = []
+
+    def slow(n_timeouts):
+        def urlopen(req, timeout=None, context=None):
+            calls.append(req.full_url.split("/models/")[1].split(":")[0])
+            if len(calls) <= n_timeouts:
+                raise TimeoutError("The read operation timed out")
+            return _Resp('{"candidates":[{"content":{"parts":[{"text":'
+                         '"{\\"ok\\":true}"}]},"finishReason":"STOP"}]}')
+        return urlopen
+
+    real_open = gemini.urllib.request.urlopen
+    try:
+        for n_timeouts, wrapped in ((1, False), (9, False), (9, True)):
+            calls.clear()
+            events: list = []
+            opener = slow(n_timeouts)
+            if wrapped:                 # urllib wraps a timeout while connecting
+                def opener(req, timeout=None, context=None, _o=opener):
+                    try:
+                        return _o(req, timeout, context)
+                    except TimeoutError as e:
+                        raise urllib.error.URLError(e)
+            gemini.urllib.request.urlopen = opener
+            gemini._WORKING_MODEL = None
+            try:
+                out, err = gemini.generate_json(
+                    "KEY", "p", SCHEMA, timeout=77,
+                    on_event=lambda k, i: events.append((k, i.get("code")))), None
+            except Exception as e:
+                out, err = None, e
+            if n_timeouts == 1:
+                check("one timeout is asked again, and answers", out == {"ok": True},
+                      repr(err))
+                check("...on the same model, with no wait",
+                      calls == [first, first] and ("backoff", gemini.TIMEOUT_CODE) in events,
+                      "%s %s" % (calls, events))
+            else:
+                tag = " (wrapped in URLError)" if wrapped else ""
+                check("two timeouts end in a sentence" + tag,
+                      isinstance(err, gemini.GeminiError) and "77 seconds" in str(err)
+                      and "read operation" not in str(err), repr(err))
+                check("...without walking the chain" + tag, calls == [first, first],
+                      str(calls))
+    finally:
+        gemini.urllib.request.urlopen = real_open
+        gemini._WORKING_MODEL = None
+
     print()
     if FAILURES:
         print("FAILED: %s" % ", ".join(FAILURES))

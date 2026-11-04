@@ -71,12 +71,14 @@ __all__ = [
     "STUB_SECONDS", "W_FILL", "W_HOOK_SCENE", "W_LIST_CROWD",
     "W_LIST_INTRO", "W_OVERFLOW", "W_OVER_CAP", "W_SCENE", "W_STUB",
     "analytic_seconds", "apply_pronunciation", "assign_duration",
-    "build_markdown", "build_prompt", "ceiling", "collapse_to_one",
+    "block_kind", "build_markdown", "build_prompt", "ceiling", "collapse_to_one",
     "count_syllables", "ends_mid_sentence", "estimate_seconds",
     "finalise_block", "flag_for", "format_runtime", "fragment_sentence",
-    "infer_link", "leftover_symbols", "merge_scenes", "nearest_slot",
-    "overruns", "pack_block", "pack_sentences", "parse_pronunciation",
-    "pause_between", "performance_beats", "relabel", "set_duration",
+    "infer_link", "leftover_symbols", "merge_label", "merge_scenes",
+    "nearest_slot", "overruns", "pack_block", "pack_sentences",
+    "parse_markdown", "parse_pronunciation", "pause_between",
+    "performance_beats", "prompt_tag", "relabel", "set_duration",
+    "split_labels",
     "best_seam", "split_long_sentence", "split_scene", "split_sentences",
     "timing_source", "verbatim_gaps",
 ]
@@ -175,8 +177,12 @@ PAUSE_EMPHASIS = 0.15    # a SHOUTED word is landed, then left to sit
 # Over-predicting only costs air. Fixing it properly means a silent-vowel rule in
 # `count_syllables`, and it needs a French clip confirmed before that is worth
 # doing blind.
+#
+# English moved from 4.1 to 2.7 when the clock stopped borrowing German's pace for
+# it (`speech_clock.UNCONFIRMED_SCALE`): 4.1 was fitted to that borrowed pace and
+# would have kept a machine without eSpeak cutting scenes too full to say.
 RATE_BASE: dict[str, float] = {
-    "German": 4.2, "English": 4.1, "Spanish": 4.9, "French": 4.2,
+    "German": 4.2, "English": 2.7, "Spanish": 4.9, "French": 4.2,
     "Italian": 4.9, "Polish": 3.4,
 }
 RATE_PER_SYL_PER_WORD: dict[str, float] = {
@@ -539,6 +545,70 @@ def relabel(scenes: list[dict]) -> list[dict]:
     return scenes
 
 
+# Locked numbering. A scene number is two digits or more ("07", "113"); a cut
+# piece is ONE digit after it ("13-1", "13-2"), numbered in order across all
+# the pieces of that scene — cutting 13-1 again gives 13-1, 13-2, 13-3, never
+# 13-1-1; a merge is a range of scene numbers ("13-14"). Clips already
+# generated keep their names whatever is cut or merged around them.
+
+def _num(label: str) -> list[str]:
+    return label.split("-")[1:] if "-" in label else []
+
+
+def _parent(label: str) -> str:
+    """The scene a piece was cut from (Body-13-2 → Body-13); a scene is its own."""
+    tokens = label.split("-")
+    if len(tokens) >= 3 and len(tokens[-1]) == 1:
+        return "-".join(tokens[:-1])
+    return label
+
+
+def _renumber_pieces(scenes: list[dict], parent: str) -> None:
+    """Number the pieces of one scene 1, 2, 3 in order; one piece left is the
+    scene again."""
+    pieces = [sc for sc in scenes
+              if sc.get("label") != parent and _parent(sc.get("label", "")) == parent]
+    if len(pieces) == 1:
+        pieces[0]["label"] = parent
+        return
+    for k, sc in enumerate(pieces, 1):
+        sc["label"] = f"{parent}-{k}"
+
+
+def split_labels(label: str) -> "tuple[str, str]":
+    """The names of the two halves of a cut: Body-13 → Body-13-1, Body-13-2.
+    A piece cut again is renumbered with its siblings by `split_scene`."""
+    parent = _parent(label)
+    return f"{parent}-1", f"{parent}-2"
+
+
+def merge_label(first: str, second: str) -> str:
+    """The name of two neighbours merged: Body-13 + Body-14 → Body-13-14, and
+    the two halves of a cut back to the scene they came from."""
+    block = first.split("-")[0]
+    a, b = _num(first), _num(second)
+    if not a or not b:
+        return first
+    if (a[:-1] == b[:-1] and len(a[-1]) == 1 and len(b[-1]) == 1
+            and (a[-1], b[-1]) == ("1", "2")):
+        return "-".join([block] + a[:-1])
+    start = a[0]
+    end = [t for t in b if len(t) > 1][-1]
+    return f"{block}-{start}" if start == end else f"{block}-{start}-{end}"
+
+
+def prompt_tag(label: str) -> str:
+    """The tag a prompt opens with, so the generated clip carries its scene:
+    Body-12 → [B12], Body-13-1 → [B13-1], H1-01 → [H1-1]."""
+    if not label or "-" not in label:
+        return ""
+    block, *num = label.split("-")
+    num = [t.lstrip("0") or "0" for t in num]
+    head = "B" if block == "Body" else block
+    sep = "-" if head[-1:].isdigit() else ""
+    return f"[{head}{sep}{'-'.join(num)}]"
+
+
 def _refresh(scene: dict, language: str = "German") -> dict:
     """Recompute a scene's text and length from its sentences, keeping a clip
     length the user set by hand."""
@@ -553,9 +623,10 @@ def _refresh(scene: dict, language: str = "German") -> dict:
 
 
 def merge_scenes(scenes: list[dict], index: int,
-                 language: str = "German") -> list[dict]:
+                 language: str = "German", keep_labels: bool = False) -> list[dict]:
     """Fold scene ``index`` into the one after it. Refuses across a block
-    boundary — a hook and the body are never one shot."""
+    boundary — a hook and the body are never one shot. ``keep_labels`` names
+    the result after both (13-14) and renumbers nothing else."""
     if not 0 <= index < len(scenes) - 1:
         return scenes
     first, second = scenes[index], scenes[index + 1]
@@ -570,13 +641,23 @@ def merge_scenes(scenes: list[dict], index: int,
         merged["locked"] = True
         _set_slot(merged, max(pinned, nearest_slot(merged["est"])))
     out = scenes[:index] + [merged] + scenes[index + 2:]
+    if keep_labels:
+        a, b = first.get("label", ""), second.get("label", "")
+        parent = _parent(a)
+        if parent != a and parent == _parent(b):          # two pieces of one scene
+            merged["label"] = f"{parent}-1"
+            _renumber_pieces(out, parent)
+        else:
+            merged["label"] = merge_label(a, b)
+        return out
     return relabel(out)
 
 
 def split_scene(scenes: list[dict], index: int, at: int,
-                language: str = "German") -> list[dict]:
+                language: str = "German", keep_labels: bool = False) -> list[dict]:
     """Cut scene ``index`` in two before its sentence ``at`` (1-based within the
-    scene). A scene of one sentence can't be split — the copy has no seam."""
+    scene). A scene of one sentence can't be split — the copy has no seam.
+    ``keep_labels`` names the halves 13-1 and 13-2 and renumbers nothing else."""
     if not 0 <= index < len(scenes):
         return scenes
     sentences = scenes[index]["sentences"]
@@ -587,6 +668,10 @@ def split_scene(scenes: list[dict], index: int, at: int,
     tail = _scene_from(sentences[at:], language)
     head["block"] = tail["block"] = block
     out = scenes[:index] + [head, tail] + scenes[index + 1:]
+    if keep_labels:
+        head["label"], tail["label"] = split_labels(scenes[index].get("label", ""))
+        _renumber_pieces(out, _parent(head["label"]))
+        return out
     return relabel(out)
 
 
@@ -854,6 +939,9 @@ def build_prompt(scene: dict, tail: str = "") -> str:
     The tail is copied verbatim, never reworded: the reference image owns the
     talent's appearance and repeating it in the prompt causes drift."""
     parts = [f'Voiceover: "{(scene.get("text") or "").strip()}"']
+    tag = prompt_tag(scene.get("label", ""))
+    if tag:
+        parts.insert(0, tag)
     action = (scene.get("action") or "").strip()
     if action:
         parts.append(action if action.endswith((".", "!", "?")) else action + ".")
@@ -870,6 +958,102 @@ def build_markdown(scenes: list[dict], tail: str = "") -> str:
     for s in scenes:
         blocks.append(f"{s['label']} · {s['duration']}s\n{build_prompt(s, tail)}")
     return "\n\n".join(blocks) + "\n"
+
+
+_MD_HEAD_RE = re.compile(
+    r"^(?P<block>[^\s-]+)-(?P<n>\d+(?:-\d+)*)\s*·\s*(?P<secs>\d+)\s*s\s*$")
+_MD_VOICE_RE = re.compile(
+    r'^(?:\[[^\]]*\]\s*)?Voiceover:\s*"(?P<text>.*)"(?P<rest>[^"]*)$', re.S)
+
+
+def block_kind(block: str) -> str:
+    """hook / body / cta, from a block id as the export writes it."""
+    if re.fullmatch(r"H\d+", block):
+        return "hook"
+    if re.fullmatch(r"CTA\d+", block):
+        return "cta"
+    return "body"
+
+
+def _common_tail(rests: list[str]) -> str:
+    """What every prompt ends with, from a sentence start: the tail. Whatever
+    comes before it in one prompt is that scene's action ("short pause.")."""
+    words = [r.split() for r in rests if r.strip()]
+    if not words or len(words) < len(rests):
+        return ""
+    n = 0
+    shortest = min(len(w) for w in words)
+    while n < shortest and len({w[-1 - n] for w in words}) == 1:
+        n += 1
+    tail = words[0][len(words[0]) - n:] if n else []
+    # Start it at a sentence: "pause. Static shot." shared by every scene would
+    # otherwise take half an action with it.
+    while tail and len(words[0]) > n and not words[0][len(words[0]) - n - 1].endswith(
+            (".", "!", "?")):
+        tail = tail[1:]
+        n -= 1
+    return " ".join(tail)
+
+
+def parse_markdown(text: str, language: str = "German",
+                   tail: str = "") -> "tuple[list[dict], str]":
+    """The inverse of `build_markdown`: an exported file back into scenes, and
+    the tail every prompt ends with.
+
+    The clip length written in the file is kept — it is a decision someone may
+    have made by hand, and the clips already generated were made at it — and
+    so is each scene's name, numbered or not (Body-13-1, Body-13-14). `tail`
+    is the one the page has now; it is used when the file alone can't say
+    (a single scene). Raises ValueError naming the first line it can't read."""
+    entries: list[tuple[str, str, int, list[str], int]] = []
+    for no, line in enumerate((text or "").splitlines(), 1):
+        stripped = line.strip()
+        m = _MD_HEAD_RE.match(stripped)
+        if m:
+            entries.append((m.group("block"), m.group("n"),
+                            int(m.group("secs")), [], no))
+        elif stripped:
+            if not entries:
+                raise ValueError(f"line {no} comes before the first scene heading")
+            entries[-1][3].append(stripped)
+    if not entries:
+        raise ValueError("no scene headings like “Body-01 · 8s” in it")
+
+    parsed = []
+    for block, n, secs, lines, no in entries:
+        m = _MD_VOICE_RE.match(" ".join(lines))
+        if not m:
+            raise ValueError(f"the scene on line {no} has no Voiceover: \"…\"")
+        if secs not in SLOTS:
+            raise ValueError(f"the scene on line {no} is {secs}s — clips are "
+                             f"{', '.join(map(str, SLOTS))}s")
+        parsed.append((block, n, secs, m.group("text").strip(),
+                       m.group("rest").strip()))
+
+    rests = [rest for *_, rest in parsed]
+    found = _common_tail(rests) if len(parsed) > 1 else ""
+    if not found and tail.strip() and all(r.endswith(tail.strip()) for r in rests):
+        found = tail.strip()
+    if not found and len(parsed) == 1:
+        found = rests[0]
+
+    scenes: list[dict] = []
+    for block, n, secs, spoken, rest in parsed:
+        action = rest[: len(rest) - len(found)].strip() if found and rest.endswith(found) else rest
+        lines = split_sentences(spoken) or [spoken]
+        sentences = [{"text": line,
+                      "link": LINK_NEW_SECTION if i == 0 else infer_link(line, language),
+                      "action": action if i == len(lines) - 1 else ""}
+                     for i, line in enumerate(lines)]
+        scene = _scene_from(sentences, language)
+        scene["block"] = block
+        # The name as written: clips may already be generated under it.
+        scene["label"] = f"{block}-{n}"
+        if secs != scene["duration"]:
+            scene["locked"] = True
+        _set_slot(scene, secs)
+        scenes.append(scene)
+    return scenes, found
 
 
 def format_runtime(seconds: int) -> str:

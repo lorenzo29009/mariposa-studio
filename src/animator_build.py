@@ -240,7 +240,10 @@ class BuildRunner:
         if kind == "attempt":
             # One call's worth, before any retry re-prices the leg.
             self._call_expected.setdefault(leg.key, leg.expected or 0.0)
-            self._call_attempt[leg.key] = at
+            # A long script is read in parts: once one has answered, the leg
+            # is timed from its first attempt, not restarted by the next part.
+            if leg.key not in self._answered:
+                self._call_attempt[leg.key] = at
             if self._retry_until is not None:
                 self._retry_until = None
                 self._retry_timer.stop()
@@ -252,7 +255,8 @@ class BuildRunner:
             # wait, plus one more call. Re-priced, not padded.
             wait = float(info.get("seconds") or 0) if kind == "backoff" else 0.0
             spent = max(0.0, now - leg.started) if leg.started is not None else 0.0
-            call = self._call_expected.get(leg.key) or leg.expected or 0.0
+            call = (info.get("call") if isinstance(info.get("call"), (int, float))
+                    else None) or self._call_expected.get(leg.key) or leg.expected or 0.0
             self._route.replan(leg.key, expected=spent + wait + call)
             if kind == "backoff" and wait > 0:
                 self._retry_until = now + wait
@@ -261,7 +265,8 @@ class BuildRunner:
             else:
                 self._retry_until = None
                 self._retry_timer.stop()
-                self.build_sentence.setText("Trying another model")
+                self.build_sentence.setText("Trying another model"
+                                            if kind == "fallback" else "Asking again")
 
     def _tick_retry(self):
         if self._retry_until is None:

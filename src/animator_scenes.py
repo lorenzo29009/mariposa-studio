@@ -16,22 +16,38 @@ builds — `self.scenes`, `self._cards`, `self._generated`, `self._notes`.
 from __future__ import annotations
 
 import datetime as _dt
+import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QObject, Signal
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFrame, QScrollArea, QFileDialog,
 )
 
 from design import TEXT_DIM, svg_icon
-from core import EXPORTS_DIR, reveal_in_finder
-from script_packer import (
-    best_seam, build_markdown, build_prompt, flag_for, format_runtime,
-    merge_scenes, overruns, set_duration, split_scene,
+from core import (
+    EXPORTS_DIR, gemini_model_override, read_env_value, reveal_in_finder,
 )
+from script_packer import (
+    best_seam, block_kind, build_markdown, build_prompt, flag_for,
+    format_runtime, merge_scenes, overruns, parse_markdown, set_duration,
+    split_scene,
+)
+from widgets import Switch
 from animator_widgets import SceneCard
 from animator_panel import AnimatorFloatPanel
+from animator_translate import memory, remember, translate
+
+#: Every English line the app has had, by language — see animator_translate.
+ENGLISH_MEMORY = EXPORTS_DIR / ".translations.json"
+
+
+class _Translated(QObject):
+    """The translation thread's reports: each part's {line: English} as it
+    lands, then the end — None, or the error."""
+    part = Signal(object)
+    done = Signal(object)
 
 
 class ScenesStage:
@@ -66,6 +82,15 @@ class ScenesStage:
         self.scenes_meta.setObjectName("StageMeta")
         bl.addWidget(self.scenes_meta)
         bl.addStretch(1)
+        # Clips already generated are named after their scene. Locked, a cut
+        # makes 13-1 and 13-2 and a merge 13-14, and nothing else moves.
+        lock_lbl = QLabel("Lock scene numbers")
+        lock_lbl.setObjectName("StageMeta")
+        bl.addWidget(lock_lbl)
+        self.lock_labels = Switch(False)
+        self.lock_labels.toggled.connect(lambda _on: self._save_session())
+        bl.addWidget(self.lock_labels)
+        bl.addSpacing(6)
         self.export_btn = QPushButton("  Export .md")
         self.export_btn.setObjectName("GhostBtn")
         self.export_btn.setIcon(svg_icon("download", TEXT_DIM, 14))
@@ -208,6 +233,7 @@ class ScenesStage:
     def _render_scenes(self):
         self._clear_scene_cards()
         self._selected = -1
+        self._group_meta: dict[str, QLabel] = {}
 
         current_block = None
         for i, scene in enumerate(self.scenes):
@@ -219,13 +245,7 @@ class ScenesStage:
 
             can_merge = (i + 1 < len(self.scenes)
                          and self.scenes[i + 1]["block"] == scene["block"])
-            card = SceneCard(i, scene, lambda idx=i: self._prompt_for(idx), can_merge)
-            card.activated.connect(self._on_card_activated)
-            card.note_changed.connect(self._on_note_changed)
-            card.copy_requested.connect(self._copy_scene)
-            card.duration_changed.connect(self._on_duration_changed)
-            card.merge_requested.connect(self._on_merge)
-            card.split_requested.connect(self._on_split)
+            card = self._make_card(i)
             self._cards.append(card)
             self._scenes_layout.insertWidget(self._scenes_layout.count() - 1, card)
 
@@ -240,6 +260,54 @@ class ScenesStage:
         self.scenes_meta.style().polish(self.scenes_meta)
         self.export_btn.setEnabled(True)
         self.open_panel_btn.setEnabled(True)
+        self._sync_scrolls()
+
+    def _make_card(self, i: int) -> SceneCard:
+        scene = self.scenes[i]
+        can_merge = (i + 1 < len(self.scenes)
+                     and self.scenes[i + 1]["block"] == scene["block"])
+        card = SceneCard(i, scene, lambda: "", can_merge)
+        # Read the index when asked, not when built: an edit elsewhere moves it.
+        card._prompt_fn = lambda c=card: self._prompt_for(c.index)
+        card.activated.connect(self._on_card_activated)
+        card.note_changed.connect(self._on_note_changed)
+        card.copy_requested.connect(self._copy_scene)
+        card.duration_changed.connect(self._on_duration_changed)
+        card.merge_requested.connect(self._on_merge)
+        card.split_requested.connect(self._on_split)
+        return card
+
+    def _patch_cards(self, start: int, removed: int, added: int) -> None:
+        """An edit, on the board: the `removed` cards at `start` give way to
+        cards for the `added` scenes now there, and every other card keeps its
+        widget and is only renumbered. Rebuilding all of them took most of a
+        second per cut on a 359-clip script."""
+        old = self._cards[start:start + removed]
+        at = self._scenes_layout.indexOf(old[0]) if old else -1
+        for card in old:
+            self._scenes_layout.removeWidget(card)
+            card.setParent(None)
+            card.deleteLater()
+        fresh = [self._make_card(start + k) for k in range(added)]
+        for k, card in enumerate(fresh):
+            self._scenes_layout.insertWidget(at + k, card)
+        self._cards[start:start + removed] = fresh
+        for i, (card, scene) in enumerate(zip(self._cards, self.scenes)):
+            card.index = i
+            card.set_label(scene["label"])
+            card.set_generated(i in self._generated)
+        for k, card in enumerate(fresh):
+            scene = self.scenes[start + k]
+            card.offer_split(float(scene.get("est") or 0.0),
+                             int(scene.get("duration") or 0), best_seam(scene))
+        if self._selected >= start:
+            self._selected = -1
+        for block, meta in self._group_meta.items():
+            runtime = sum(s["duration"] for s in self.scenes if s["block"] == block)
+            count = sum(1 for s in self.scenes if s["block"] == block)
+            meta.setText(f"{count} clip{'s' if count != 1 else ''} · "
+                         f"{format_runtime(runtime)}")
+        self._refresh_rail_counts()
         self._sync_scrolls()
 
     def _group_header(self, block_id: str, first: bool) -> QWidget:
@@ -258,6 +326,7 @@ class ScenesStage:
                       f"{format_runtime(runtime)}")
         meta.setObjectName("GroupRuntime")
         hl.addWidget(meta)
+        self._group_meta[block_id] = meta
         warnings = self._block_notes.get(block_id) or []
         if warnings:
             dot = QLabel()
@@ -300,8 +369,11 @@ class ScenesStage:
     def _select(self, index: int):
         if self._selected == index:
             return
-        for card in self._cards:
-            card.set_selected(card.index == index)
+        # Only the two cards that change: re-styling all 359 on every step of
+        # the floating window was felt as lag.
+        for i in (self._selected, index):
+            if 0 <= i < len(self._cards):
+                self._cards[i].set_selected(i == index)
         self._selected = index
 
     def _on_note_changed(self, index: int, note: str):
@@ -310,7 +382,10 @@ class ScenesStage:
             if self._panel is not None:
                 self._panel.update_scenes(self.scenes, self.tail())
 
-    def _after_edit(self, message: str):
+    def _after_edit(self, message: str,
+                    patch: "tuple[int, int, int] | None" = None):
+        """`patch` is (start, cards removed, cards added): the board then swaps
+        just those cards instead of being built again."""
         # A clip pinned shorter than its copy, or merged past what it can hold,
         # has to say so — the same warning the build puts on it.
         for scene in self.scenes:
@@ -319,31 +394,52 @@ class ScenesStage:
                 scene["flag"] = flag
             else:
                 scene.pop("flag", None)
-        self._render_scenes()
+        if patch is not None and len(self._cards) == len(self.scenes) - patch[2] + patch[1]:
+            self._patch_cards(*patch)
+            flagged = sum(1 for s in self.scenes if s.get("flag"))
+            meta = self._summary()
+            self.scenes_meta.setText(f"{meta} · {flagged} to check" if flagged else meta)
+        else:
+            self._render_scenes()
         self._set_status(f"{self._summary()} · {message}", ok=True)
         self._save_session()
         if self._panel is not None:
             self._panel.update_scenes(self.scenes, self.tail())
+            self._panel.set_generated(self._generated)
 
     def _on_duration_changed(self, index: int, seconds: int):
         if not 0 <= index < len(self.scenes):
             return
         set_duration(self.scenes, index, seconds)
-        self._after_edit(f"{self.scenes[index]['label']} set to {seconds}s")
+        self._after_edit(f"{self.scenes[index]['label']} set to {seconds}s",
+                         patch=(index, 1, 1))
 
     def _on_merge(self, index: int):
         before = len(self.scenes)
-        self.scenes = merge_scenes(self.scenes, index, self.language_name())
+        self.scenes = merge_scenes(self.scenes, index, self.language_name(),
+                                   keep_labels=self.lock_labels.isChecked())
         if len(self.scenes) == before:
             return
-        self._after_edit(f"merged into {self.scenes[index]['label']}")
+        # The marks follow their clips. The merged clip is new copy, so it is
+        # done only if both halves were.
+        g = self._generated
+        self._generated = ({i for i in g if i < index}
+                           | ({index} if {index, index + 1} <= g else set())
+                           | {i - 1 for i in g if i > index + 1})
+        self._after_edit(f"merged into {self.scenes[index]['label']}",
+                         patch=(index, 2, 1))
 
     def _on_split(self, index: int, at: int):
         before = len(self.scenes)
-        self.scenes = split_scene(self.scenes, index, at, self.language_name())
+        self.scenes = split_scene(self.scenes, index, at, self.language_name(),
+                                  keep_labels=self.lock_labels.isChecked())
         if len(self.scenes) == before:
             return
-        self._after_edit(f"split at {self.scenes[index + 1]['label']}")
+        g = self._generated
+        self._generated = ({i for i in g if i < index}
+                           | {i + 1 for i in g if i > index})
+        self._after_edit(f"cut into {self.scenes[index]['label']} and "
+                         f"{self.scenes[index + 1]['label']}", patch=(index, 1, 2))
 
     def _copy_scene(self, index: int):
         self._mark_generated(index)
@@ -352,6 +448,124 @@ class ScenesStage:
                 build_prompt(self.scenes[index], self.tail())
             )
             self._toast_message(f"{self.scenes[index]['label']} copied")
+
+    def _open_md(self):
+        """An exported scene file back on the board — edited by hand, re-paced,
+        or from another machine. Its clip lengths are kept as written."""
+        if self._build is not None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open scene prompts", str(EXPORTS_DIR), "Markdown (*.md)")
+        if path:
+            self._load_md(path)
+
+    def _load_md(self, path: str) -> bool:
+        name = Path(path).name
+        try:
+            text = Path(path).read_text(encoding="utf-8-sig")
+            scenes, tail = parse_markdown(text, self.language_name(), self.tail())
+        except (OSError, UnicodeDecodeError, ValueError) as e:
+            self._set_status(f"Couldn't open {name} — {e}", err=True)
+            return False
+        # The script editors get the copy too, so the session saves whole and
+        # Rebuild works on what was opened.
+        blocks: dict[str, list[str]] = {}
+        for scene in scenes:
+            blocks.setdefault(scene["block"], []).append(scene["text"])
+        self._set_blocks([{"id": bid, "kind": block_kind(bid), "text": "\n".join(texts)}
+                          for bid, texts in blocks.items()])
+        # The file has no English. Whatever this session already knew about the
+        # same lines is kept; the rest is asked for once the board is up.
+        known = memory(ENGLISH_MEMORY, self.language_name())
+        known.update({sn["text"]: sn["en"] for sc in self.scenes
+                      for sn in sc.get("sentences", []) if sn.get("en")})
+        _fill_english(scenes, known)
+        if tail:
+            self.tail_input.setPlainText(tail)
+        self.scenes = scenes
+        self._notes = []
+        self._generated = set()
+        self._block_notes = {}
+        self._render_scenes()
+        self._save_session()
+        self.restore_btn.setVisible(False)
+        self.to_scenes_btn.setVisible(True)
+        self.build_btn.setText("Rebuild scenes")
+        self._schedule_timing()
+        if self._panel is not None:
+            self._panel.update_scenes(self.scenes, self.tail())
+        self._set_status(f"{name} · {self._summary()}", ok=True)
+        self._show_stage(self.STAGE_SCENES)
+        self._translate_missing()
+        return True
+
+    def _remember_english(self) -> None:
+        remember(ENGLISH_MEMORY, self.language_name(),
+                 {sn["text"]: sn["en"] for sc in self.scenes
+                  for sn in sc.get("sentences", []) if sn.get("en")})
+
+    def _translate_missing(self) -> None:
+        """Ask for the English of every line that has none, off this thread."""
+        language = self.language_name()
+        if language == "English" or getattr(self, "_translating", None) is not None:
+            return
+        _fill_english(self.scenes, memory(ENGLISH_MEMORY, language))
+        lines = sorted({sn["text"] for sc in self.scenes
+                        for sn in sc.get("sentences", []) if not sn.get("en")})
+        key = read_env_value("GEMINI_API_KEY")
+        if not lines or not key:
+            return
+        bridge = _Translated()
+        bridge.part.connect(self._on_translated_part, Qt.QueuedConnection)
+        bridge.done.connect(self._on_translated, Qt.QueuedConnection)
+        self._translating = bridge
+        self._set_status(f"{self._summary()} · translating {len(lines)} lines")
+        model = gemini_model_override()
+
+        def part(english: dict) -> None:
+            # Kept on disk as it lands, so quitting halfway loses nothing.
+            remember(ENGLISH_MEMORY, language, english)
+            try:
+                bridge.part.emit(english)
+            except RuntimeError:
+                pass                    # the page is gone: the app is leaving
+
+        def run():
+            try:
+                translate(key, lines, language, model=model, on_part=part)
+                result = None
+            except Exception as e:
+                print(f"[animator] translation failed: {e}", flush=True)
+                result = e
+            try:
+                bridge.done.emit(result)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=run, name="animator-translate", daemon=True).start()
+
+    def _on_translated_part(self, english: dict) -> None:
+        """One part's English, on the board and in the window as it lands.
+        Matched by the line, not by position: the board may have been cut or
+        merged while the answer was on its way."""
+        _fill_english(self.scenes, english)
+        for card, scene in zip(self._cards, self.scenes):
+            card.set_english(scene.get("en", ""))
+        if self._panel is not None:
+            self._panel.update_scenes(self.scenes, self.tail())
+        left = sum(1 for sc in self.scenes for sn in sc.get("sentences", [])
+                   if not sn.get("en"))
+        if left:
+            self._set_status(f"{self._summary()} · translating, {left} lines to go")
+
+    def _on_translated(self, result) -> None:
+        self._translating = None
+        self._save_session()
+        if isinstance(result, Exception):
+            self._set_status(f"{self._summary()} · translations didn't come back "
+                             f"({str(result)[:80]})", warn=True)
+            return
+        self._set_status(f"{self._summary()} · English added", ok=True)
 
     def _export_md(self):
         if not self.scenes:
@@ -410,7 +624,19 @@ class ScenesStage:
         # Copying in the panel marks the clip here too — one set of marks, two
         # views of it.
         self._panel.generated_changed.connect(self._mark_generated)
+        self._panel.cut_requested.connect(self._on_split)
         self._panel.show()
 
     def _on_panel_closed(self):
         self._panel = None
+
+
+def _fill_english(scenes: list[dict], english: dict) -> None:
+    """Give every sentence without English the line `english` has for it, and
+    each scene the English of its sentences."""
+    for scene in scenes:
+        for sentence in scene.get("sentences", []):
+            if not sentence.get("en") and english.get(sentence.get("text")):
+                sentence["en"] = english[sentence["text"]]
+        scene["en"] = " ".join(sn["en"] for sn in scene.get("sentences", [])
+                               if sn.get("en")).strip()

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json as _json
 import time as _time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PySide6.QtCore import Signal, QObject, Slot
 
@@ -17,7 +18,8 @@ from script_packer import (
     finalise_block, infer_link, pack_block, split_sentences,
 )
 from animator_plan import (
-    cut_prior, leg, plan as plan_build, review_prior, timing_prior,
+    READ_WORKERS, cut_prior, leg, part_prior, plan as plan_build, read_parts,
+    review_prior, timing_prior,
 )
 import gemini
 
@@ -377,7 +379,8 @@ class ScenePipelineWorker(QObject):
     and a build the user can't run is worse than a build with one less opinion
     in it. Everything the model returns is a judgement about one sentence or one
     clip. Nothing it returns is a scene boundary or a clip length — those come
-    out of the packer.
+    out of the packer. A long script's read is several calls, in parallel
+    (`animator_plan.read_parts`): one call for a 40-minute VSL timed out.
 
     It runs on a plain daemon thread, not a `QThread` (see `animator_build`):
     the page connects every signal queued, and once `abandon()` is called — the
@@ -423,17 +426,23 @@ class ScenePipelineWorker(QObject):
     def _route(self, **event) -> None:
         self._send(self.route_event, event)
 
-    def _on_call(self, kind: str, info: dict) -> None:
-        self._send(self.call_event, kind, dict(info, at=_time.monotonic()))
+    def _on_call(self, kind: str, info: dict, call: "float | None" = None) -> None:
+        info = dict(info, at=_time.monotonic())
+        if call is not None:
+            info["call"] = call             # what one retry of THIS call costs
+        self._send(self.call_event, kind, info)
 
     # -- transport ----------------------------------------------------------
-    def _call(self, prompt: str, schema: dict) -> dict:
+    def _call(self, prompt: str, schema: dict, *, call: "float | None" = None,
+              timeout: int = 120) -> dict:
         """One schema-constrained Gemini call. Transport lives in `gemini`;
-        its retries and fallbacks are forwarded, so the page can price them."""
-        data = gemini.generate_json(self.api_key, prompt, schema,
-                                    model=self.model or gemini.DEFAULT_MODEL,
-                                    on_event=self._on_call)
-        self._on_call("answer", {})
+        its retries and fallbacks are forwarded, so the page can price them.
+        `call` is this call's own prior, when it is one of several in a leg."""
+        data = gemini.generate_json(
+            self.api_key, prompt, schema,
+            model=self.model or gemini.DEFAULT_MODEL, timeout=timeout,
+            on_event=lambda kind, info: self._on_call(kind, info, call))
+        self._on_call("answer", {}, call)
         return data
 
 
@@ -504,55 +513,130 @@ class ScenePipelineWorker(QObject):
         its median bias because the absolute numbers ran a fifth long. All of
         that is gone — `speech_clock` measures the line instead. What the model
         is good at is the language, and that is all it is asked."""
-        data = self._call(_read_prompt(self.blocks, self.language), _READ_SCHEMA)
+        parts = read_parts(self.blocks)
+        answers, errors = self._read_parts(parts)
+        if not answers and errors:
+            raise errors[0]
         got: dict[str, dict] = {}
-        for blk in (data.get("blocks") or []):
-            if not isinstance(blk, dict):
-                continue
-            bid = str(blk.get("id", "")).strip()
-            if not bid:
-                continue
-            sentences = []
-            for i, s in enumerate(blk.get("sentences") or []):
-                if not isinstance(s, dict):
+        for data in answers:
+            for blk in (data.get("blocks") or []):
+                if not isinstance(blk, dict):
                     continue
-                line = str(s.get("text", "")).strip()
-                if not line:
-                    continue
-                try:
-                    link = int(s["link"])
-                except (KeyError, TypeError, ValueError):
-                    link = (LINK_NEW_SECTION if not sentences
-                            else infer_link(line, self.language))
-                role = str(s.get("role", "") or "").strip()
-                sentences.append({
-                    "text": line,
-                    "action": str(s.get("action", "") or "").strip(),
-                    "en": str(s.get("en", "") or "").strip(),
-                    "link": link,
-                    "role": "" if role == "none" else role,
-                    "beat": str(s.get("beat", "") or "").strip(),
-                })
-            _sanity_check_roles(sentences)
-            got[bid] = {
-                "sentences": sentences,
-                "fixes": [str(f).strip() for f in (blk.get("fixes") or [])
-                          if str(f).strip()],
-            }
+                bid = str(blk.get("id", "")).strip()
+                if bid:
+                    got[bid] = self._parse_block(blk)
+
+        pieces: dict[str, list[dict]] = {}
+        for part in parts:
+            for piece in part:
+                pieces.setdefault(piece["of"], []).append(piece)
         out: list[dict] = []
         for block in self.blocks:
-            hit = got.get(block["id"]) or {}
+            sentences: list[dict] = []
+            fixes: list[str] = []
+            notes: list[str] = []
+            mine = pieces.get(block["id"], [])
+            read = [got.get(pc["id"]) for pc in mine]
+            for piece, hit in zip(mine, read):
+                lines = (hit or {}).get("sentences") or []
+                if not lines and any(read) and len(mine) > 1:
+                    # One piece of a long block lost. The rest is the model's;
+                    # this piece is the local split, and the note says where.
+                    lines = [{"text": t, "action": "", "en": "", "role": "",
+                              "beat": "", "link": infer_link(t, self.language)}
+                             for t in split_sentences(piece["text"])]
+                    if lines:
+                        notes.append(
+                            f"{block['id']}: “{lines[0]['text'][:44]}…” and the "
+                            f"lines after it came back empty — cut locally. Check "
+                            f"the numbers and abbreviations there by hand.")
+                if lines and piece["nth"]:
+                    # The model was told this is the first line of a block and
+                    # graded it 3; it is only where the copy was split to read.
+                    lines[0] = dict(lines[0], link=2 if piece["seam"] == "para" else 1)
+                sentences.extend(lines)
+                fixes.extend((hit or {}).get("fixes") or [])
+            if len(mine) > 1:
+                _sanity_check_roles(sentences)
             out.append({
                 "id": block["id"],
                 "kind": block.get("kind", "body"),
                 "raw": block["text"],
-                "sentences": hit.get("sentences") or [],
-                "fixes": hit.get("fixes") or [],
-                "dropped": not hit.get("sentences"),
+                "sentences": sentences,
+                "fixes": fixes,
+                "notes": notes,
+                "dropped": not sentences,
             })
         if all(b["dropped"] for b in out):
+            if errors:
+                raise errors[0]
             raise RuntimeError("Gemini returned no usable blocks.")
         return out
+
+    def _read_parts(self, parts: list[list[dict]]
+                    ) -> "tuple[list[dict], list[Exception]]":
+        """Every part of the read, `READ_WORKERS` in flight at once. A part that
+        fails is left out — its pieces fall back to the local split — unless
+        every part fails, which the caller raises."""
+        priors = [part_prior(part, self.language) for part in parts]
+        total = sum(priors) or 1.0
+
+        def one(i: int) -> dict:
+            prompt = _read_prompt(parts[i], self.language)
+            return self._call(prompt, _READ_SCHEMA, call=priors[i],
+                              timeout=max(120, int(3 * priors[i])))
+
+        if len(parts) == 1:
+            try:
+                return [one(0)], []
+            except Exception as e:
+                return [], [e]
+        answers: list[dict] = []
+        errors: list[Exception] = []
+        done = 0.0
+        with ThreadPoolExecutor(max_workers=min(READ_WORKERS, len(parts))) as pool:
+            jobs = {pool.submit(one, i): i for i in range(len(parts))}
+            for n, job in enumerate(as_completed(jobs), 1):
+                try:
+                    answers.append(job.result())
+                except Exception as e:
+                    errors.append(e)
+                done += priors[jobs[job]]
+                self._route(frac=done / total)
+                self._send(self.progress,
+                           f"Reading the copy and the beats… {n}/{len(parts)}")
+        return answers, errors
+
+    def _parse_block(self, blk: dict) -> dict:
+        """One block of the model's answer, defended: a sentence with no text
+        is dropped, a missing link is guessed locally."""
+        sentences = []
+        for s in blk.get("sentences") or []:
+            if not isinstance(s, dict):
+                continue
+            line = str(s.get("text", "")).strip()
+            if not line:
+                continue
+            try:
+                link = int(s["link"])
+            except (KeyError, TypeError, ValueError):
+                link = (LINK_NEW_SECTION if not sentences
+                        else infer_link(line, self.language))
+            role = str(s.get("role", "") or "").strip()
+            sentences.append({
+                "text": line,
+                "action": str(s.get("action", "") or "").strip(),
+                "en": str(s.get("en", "") or "").strip(),
+                "link": link,
+                "role": "" if role == "none" else role,
+                "beat": str(s.get("beat", "") or "").strip(),
+            })
+        _sanity_check_roles(sentences)
+        return {
+            "sentences": sentences,
+            "fixes": [str(f).strip() for f in (blk.get("fixes") or [])
+                      if str(f).strip()],
+        }
 
     def _respell(self, blocks: list[dict]) -> None:
         """Apply the pronunciation map before anything is timed or cut.
@@ -638,6 +722,7 @@ class ScenePipelineWorker(QObject):
                 bid, sentences, block["kind"], self.language)
             for fix in block["fixes"]:
                 notes.append(f"{bid}: typo fixed — {fix}")
+            notes.extend(block.get("notes") or [])
             notes.extend(block_notes)
             scenes.extend(block_scenes)
             self._route(frac=nth / len(blocks))
@@ -650,7 +735,8 @@ class ScenePipelineWorker(QObject):
         A clip named here is glued to the one before it by making its first
         sentence uncuttable — never by concatenating, which is how a merge ends
         up over-running its clip."""
-        data = self._call(_review_prompt(scenes, self.language), _REVIEW_SCHEMA)
+        data = self._call(_review_prompt(scenes, self.language), _REVIEW_SCHEMA,
+                          timeout=max(120, int(3 * review_prior(len(scenes)))))
         wanted = {str(m.get("label", "")).strip()
                   for m in (data.get("merge") or []) if isinstance(m, dict)}
         if not wanted:

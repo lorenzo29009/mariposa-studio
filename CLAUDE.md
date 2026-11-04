@@ -15,6 +15,7 @@ This file is loaded into every session, so it stays short. The depth lives in
 | Finding a symbol / which file holds what | `docs/INDEX.md` (generated) |
 | Look, tokens, QSS, spacing | `docs/DESIGN.md` |
 | Logos, colours, voice | `docs/BRAND.md` |
+| External plugins, installation or plugin UI | `docs/PLUGINS.md` |
 | Cutting a release, the updater | `docs/SHIP.md` |
 
 ## Release notes & commit messages — keep them vague (MANDATORY)
@@ -108,7 +109,7 @@ progress ← widgets_status          jobs ← every page that runs a job, studio
 | `caption_compare.py` | `ComparePanel` — the hidden, EXPERIMENTAL "Compare .srt" QA overlay, opened from the Captions page. |
 | `camera_page.py` · `camera_widgets.py` | Searchable shot/angle gallery that composes a Gemini prompt; the cards and `FlowLayout` are next door. |
 | `clip_cutter_page.py` · `clip_cutter_widgets.py` · `clip_cutter_progress.py` | Clip Cutter: the board, its chips, and its progress — two caption lanes priced by audio length (`CaptionLanes`, no Qt) feeding one route. |
-| `animator_*.py` (9 files) | The Script Animator — see `docs/ANIMATOR.md`. `animator_page` is stage one (writing, with spoken length live); `animator_scenes` is stage two (the block rail, the cards) and `animator_build` a build's footer progress, both mixins on it; `animator_plan` prices a build's legs (no Qt). |
+| `animator_*.py` (10 files) | The Script Animator — see `docs/ANIMATOR.md`. `animator_page` is stage one (writing, with spoken length live); `animator_scenes` is stage two (the block rail, the cards) and `animator_build` a build's footer progress, both mixins on it; `animator_plan` prices a build's legs (no Qt). |
 | `script_packer.py` | Every cut: the DP, `ceiling()`, hook collapsing, merge/split/pin, the `overruns()` invariant, prompt/markdown output. Deterministic. |
 | `script_text.py` | The language layer: syllables, sentence splitting, seams, pronunciation map, copy guards. |
 | `speech_clock.py` | How long a line takes to say, **measured** via an offline synthesiser. Must NOT import `core` (that would drag PySide6 into the offline tests). |

@@ -92,6 +92,26 @@ def two_line_pieces(text):
     return [" ".join(p) for p in split(flat.split())] if split else [flat]
 
 
+def safe_cut(tokens, n):
+    """The cut nearest to `tokens[:n] | tokens[n:]` that does not end the left
+    piece on a word bound to what follows (an article, a preposition, an
+    auxiliary before its participle). `n` itself when it is already safe, or
+    when no safe cut exists."""
+    m = _load()
+    binds = getattr(m, "_binds_forward", None)
+    if not binds:
+        return n
+
+    def ok(k):
+        return 0 < k < len(tokens) and not binds(
+            tokens[k - 1], tokens[k], tokens[k - 2] if k >= 2 else "")
+    for d in range(len(tokens)):
+        for k in (n - d, n + d):
+            if ok(k):
+                return k
+    return n
+
+
 def set_language(lang):
     """The project's caption language. Compound hyphenation, soft-hyphen joins
     and the words a line may not end on are all per language; left at the

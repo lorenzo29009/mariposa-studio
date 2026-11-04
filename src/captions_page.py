@@ -30,7 +30,8 @@ from PySide6.QtWidgets import (
 from design import TXT_HI, TXT_META, svg_icon
 from core import (
     IS_MAC, IS_WINDOWS, CAPTION_MARKETS, CAPTIONS_DIR, WHISPERX_PY,
-    studio_python, reveal_in_finder, read_env_value,
+    studio_python, reveal_in_finder, read_env_value, last_market,
+    remember_market,
 )
 from widgets import DropZone, Segmented, SettingRow, Switch
 from caption_compare import ComparePanel, gemini_busy
@@ -163,6 +164,9 @@ class CaptionsPage(ToolPage):
 
         # Three real controls, each with a second line saying what it does.
         self.language = Segmented(self.LANG_LABELS)
+        self.language.setCurrentIndex(self.LANG_CODES.index(last_market()))
+        self.language.currentChanged.connect(
+            lambda i: remember_market(self.LANG_CODES[i]))
         lay.addWidget(SettingRow("Market", "the language spoken in the clip",
                                  self.language))
         lay.addWidget(self.divider())

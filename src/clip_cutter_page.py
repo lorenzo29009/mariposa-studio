@@ -27,8 +27,8 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, Q
                                QVBoxLayout, QWidget)
 
 import failures
-from core import (EXPORTS_DIR, IS_MAC, IS_WINDOWS, TOOLS_DIR,
-                  studio_python)
+from core import (CAPTION_MARKETS, EXPORTS_DIR, IS_MAC, IS_WINDOWS, TOOLS_DIR,
+                  last_market, remember_market, studio_python)
 from design import (
     PAPER_LINE, PAPER_LINE2, PAPER_PANEL, R_FULL, R_MD, SPACE, TXT_DIM,
     TXT_HI, TYPE, WINE_FG, svg_icon,
@@ -238,9 +238,10 @@ class ClipCutterPage(ClipCutterProgress, ToolPage):
     START_HOOKS = 3          # the board opens with three empty hooks to fill
     MAX_HOOK_SLOTS = 12      # beyond this, honouring the numbers is a wall of empty rows
     START_CTAS = 1           # ...and the one ending every ad has
-    LANGUAGES = ["German", "English", "Italiano", "Français", "Español"]
-    LANG_CODES = {"German": "de", "English": "en", "Italiano": "it", "Français": "fr",
-                  "Español": "es"}
+    # The same markets, in the same words, as the Captions page — Polish was
+    # missing here although the captioner has spoken it all along.
+    LANGUAGES = [name for name, _ in CAPTION_MARKETS]
+    LANG_CODES = {name: code for name, code in CAPTION_MARKETS}
 
     def __init__(self, on_back):
         super().__init__(on_back)
@@ -364,6 +365,10 @@ class ClipCutterPage(ClipCutterProgress, ToolPage):
 
         self.language = Select()
         self.language.addItems(self.LANGUAGES)
+        self.language.setCurrentIndex(
+            [c for _, c in CAPTION_MARKETS].index(last_market()))
+        self.language.currentIndexChanged.connect(
+            lambda i: remember_market(CAPTION_MARKETS[i][1]) if i >= 0 else None)
         self.language.setFixedWidth(200)
         self.app_bar.add_right(self.language)
 

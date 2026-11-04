@@ -35,7 +35,7 @@ from script_packer import (  # noqa: E402
     LINK_INSEPARABLE, LINK_NEW_POINT,
     LINK_NEW_SECTION, LINK_SAME_THOUGHT, MAX_SLOT, ROLE_LIST_INTRO,
     ROLE_LIST_ITEM, SLOTS, apply_pronunciation, assign_duration,
-    build_markdown, build_prompt, ceiling, collapse_to_one, count_syllables,
+    build_markdown, build_prompt, ceiling, merge_label, prompt_tag, split_labels, collapse_to_one, count_syllables,
     ends_mid_sentence, estimate_seconds, finalise_block, format_runtime,
     fragment_sentence, infer_link,
     leftover_symbols, merge_scenes, nearest_slot, overruns, pack_block,
@@ -771,7 +771,8 @@ one, _ = finalise_block("H1", [
 one[0]["action"] = "He points at the label."
 one[0]["en"] = "First sentence."
 p = build_prompt(one[0], tail)
-check("prompt starts with the voiceover", p.startswith('Voiceover: "'), p)
+check("prompt opens with the scene's tag, then the voiceover",
+      p.startswith(prompt_tag(one[0]["label"]) + ' Voiceover: "'), p)
 check("prompt ends with the tail verbatim", p.endswith(tail), p)
 check("action sits between VO and tail", "He points at the label." in p, p)
 check("no action → VO + tail only",
@@ -799,6 +800,79 @@ check("verbatim catches a dropped word",
 check("verbatim caps the list",
       len(verbatim_gaps("eins zwei drei vier fünf sechs sieben acht", "nichts")) <= 6)
 
+print("\n— an exported file, opened again —")
+from script_packer import build_markdown, parse_markdown   # noqa: E402
+TAIL = "Static shot. Single shot. No cuts."
+cut = [dict(sc) for sc in scenes]
+cut[0] = dict(cut[0], action="short pause")
+exported = build_markdown(cut, TAIL)
+back, tail = parse_markdown(exported, "German")
+check("the tail is found from the file", tail == TAIL, repr(tail))
+check("...and the file round-trips byte for byte", build_markdown(back, tail) == exported)
+check("...labels, lengths and text as written",
+      [(b["label"], b["duration"], b["text"]) for b in back]
+      == [(c["label"], c["duration"], c["text"]) for c in cut])
+check("...an action is the action, not the tail", back[0]["action"] == "short pause."
+      and all(not b["action"] for b in back[1:]), repr(back[0]["action"]))
+hand = exported.replace(f"{cut[1]['label']} · {cut[1]['duration']}s",
+                        f"{cut[1]['label']} · 10s", 1)
+check("a length set by hand survives, locked",
+      parse_markdown(hand, "German")[0][1]["duration"] == 10
+      and (cut[1]["duration"] == 10 or parse_markdown(hand, "German")[0][1]["locked"]))
+one = 'Body-01 · 6s\nVoiceover: "Ein Satz. Noch einer." pause. Static shot.\n'
+check("a single scene takes the tail the page has",
+      parse_markdown(one, "German", "Static shot.")[0][0]["action"] == "pause.")
+for bad, why in (("nothing here", "no heading"),
+                 ("Body-01 · 7s\nVoiceover: \"x.\"", "7s"),
+                 ("Body-01 · 6s\nno voiceover", "no Voiceover")):
+    try:
+        parse_markdown(bad, "German")
+        check(f"refuses {why}", False)
+    except ValueError as e:
+        check(f"refuses {why}, in words", bool(str(e)), str(e))
+ALL_BACK = back
+
+print("\n— locked scene numbers —")
+check("the tag names the scene", (prompt_tag("Body-07"), prompt_tag("Body-13-1"),
+      prompt_tag("H1-01"), prompt_tag("CTA1-03")) == ("[B7]", "[B13-1]", "[H1-1]", "[CTA1-3]"))
+check("a cut is 13-1 and 13-2", split_labels("Body-13") == ("Body-13-1", "Body-13-2"))
+check("a merge is 13-14", merge_label("Body-13", "Body-14") == "Body-13-14")
+check("...and keeps growing", merge_label("Body-13-14", "Body-15") == "Body-13-15")
+check("the two halves of a cut merge back", merge_label("Body-13-1", "Body-13-2") == "Body-13")
+locked = [dict(sc) for sc in scenes]
+names = [sc["label"] for sc in locked]
+at = next(i for i, sc in enumerate(locked) if len(sc["sentences"]) > 1)
+cut2 = split_scene(locked, at, 1, "German", keep_labels=True)
+check("a locked cut renumbers nothing else",
+      [sc["label"] for sc in cut2] == names[:at] + list(split_labels(names[at])) + names[at + 1:],
+      str([sc["label"] for sc in cut2]))
+if at + 1 < len(locked) and locked[at]["block"] == locked[at + 1]["block"]:
+    joined = merge_scenes(locked, at, "German", keep_labels=True)
+    check("a locked merge renumbers nothing else",
+          [sc["label"] for sc in joined]
+          == names[:at] + [merge_label(names[at], names[at + 1])] + names[at + 2:])
+two = [dict(sc) for sc in locked]
+two = split_scene(two, at, 1, "German", keep_labels=True)
+if len(two[at]["sentences"]) > 1 or len(two[at + 1]["sentences"]) > 1:
+    k = at if len(two[at]["sentences"]) > 1 else at + 1
+    three = split_scene(two, k, 1, "German", keep_labels=True)
+    base = names[at]
+    check("a piece cut again is numbered with its siblings, not 13-1-1",
+          [sc["label"] for sc in three][at:at + 3] == [f"{base}-1", f"{base}-2", f"{base}-3"],
+          str([sc["label"] for sc in three][at:at + 3]))
+    back2 = merge_scenes(three, at, "German", keep_labels=True)
+    check("...merging two of three renumbers the rest",
+          [sc["label"] for sc in back2][at:at + 2] == [f"{base}-1", f"{base}-2"])
+    back1 = merge_scenes(back2, at, "German", keep_labels=True)
+    check("...and the last two merge back to the scene", back1[at]["label"] == base)
+check("unlocked, a cut still renumbers",
+      [sc["label"] for sc in split_scene(locked, at, 1, "German")][at + 1] != split_labels(names[at])[1])
+odd = 'Body-13-1 · 6s\n[B13-1] Voiceover: "Ein Satz." Static shot.\n\nBody-13-14 · 4s\n[B13-14] Voiceover: "Zwei." Static shot.\n'
+got, _ = parse_markdown(odd, "German")
+check("a file's own names are kept, tags read past",
+      [g["label"] for g in got] == ["Body-13-1", "Body-13-14"] and got[0]["text"] == "Ein Satz."
+      and build_markdown(got, "Static shot.") == odd, str([g["label"] for g in got]))
+
 print("\n— the invariant, over every cut this file produced —")
 # The promise the tool makes to an editor, checked once over everything above
 # rather than trusted per-test: no clip anywhere holds more speech than a clip of
@@ -808,7 +882,7 @@ ALL_CUTS = [("the reference body", scenes), ("the list", list_scenes),
             ("the hook", hook_scenes), ("the split hook", long_hook_scenes),
             ("the repacked broken clip", broken_scenes),
             ("the over-long sentence", long_scenes),
-            ("the fallback packer", fb)]
+            ("the fallback packer", fb), ("the reopened file", ALL_BACK)]
 for name, group in ALL_CUTS:
     check(f"no clip overruns in {name}", not overruns(group),
           [(s["label"], s["duration"], round(s["est"], 2)) for s in group])

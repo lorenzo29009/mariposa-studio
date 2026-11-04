@@ -79,6 +79,7 @@ class AnimatorPage(RuntimeColumn, BuildRunner, ScenesStage, QWidget):
         super().__init__()
         self.scenes: list[dict] = []
         self._cards: list[SceneCard] = []
+        self._group_meta: dict = {}
         self._notes: list[str] = []
         self._block_notes: dict[str, list[str]] = {}
         self._panel: Optional[AnimatorFloatPanel] = None
@@ -224,6 +225,11 @@ class AnimatorPage(RuntimeColumn, BuildRunner, ScenesStage, QWidget):
         self.clear_btn.setCursor(Qt.PointingHandCursor)
         self.clear_btn.clicked.connect(self._reset)
         fl.addWidget(self.clear_btn)
+        self.open_md_btn = QPushButton("Open .md")
+        self.open_md_btn.setObjectName("GhostBtn")
+        self.open_md_btn.setCursor(Qt.PointingHandCursor)
+        self.open_md_btn.clicked.connect(self._open_md)
+        fl.addWidget(self.open_md_btn)
         # While a build runs, the dot, its sentence and the moving bar take the
         # footer's free width (stretch 1); at rest they are hidden and the
         # spacer (stretch 0, so it yields to them) pushes the rest right.
@@ -543,6 +549,9 @@ class AnimatorPage(RuntimeColumn, BuildRunner, ScenesStage, QWidget):
     # ── Session ──────────────────────────────────────────────────────────────
 
     def _save_session(self):
+        # Every English line this session has outlives the log, which the next
+        # build or open replaces.
+        self._remember_english()
         log_save({
             "language": self.language_name(),
             "tail": self.tail(),
@@ -553,6 +562,7 @@ class AnimatorPage(RuntimeColumn, BuildRunner, ScenesStage, QWidget):
             # Which clips are marked generated. Restoring a session should put
             # you back where you were in Flow, not at the start of it.
             "generated": sorted(self._generated),
+            "lock_labels": self.lock_labels.isChecked(),
         })
 
     def _restore_log(self):
@@ -566,10 +576,34 @@ class AnimatorPage(RuntimeColumn, BuildRunner, ScenesStage, QWidget):
         if lang in names:
             self.language.setCurrentIndex(names.index(lang))
         self.tail_input.setPlainText(log.get("tail", DEFAULT_TAIL))
+        self._set_blocks(log["blocks"])
 
-        hooks = [b for b in log["blocks"] if b.get("kind") == "hook"]
-        ctas = [b for b in log["blocks"] if b.get("kind") == "cta"]
-        body = next((b for b in log["blocks"] if b.get("kind") == "body"), None)
+        self.lock_labels.blockSignals(True)     # a toggle saves; this is a restore
+        self.lock_labels.setChecked(bool(log.get("lock_labels")))
+        self.lock_labels.blockSignals(False)
+        self.scenes = log.get("scenes") or []
+        self._notes = log.get("notes") or []
+        self._generated = {i for i in (log.get("generated") or [])
+                           if isinstance(i, int) and 0 <= i < len(self.scenes)}
+        self._block_notes = self._attach_notes(self._notes, self.scenes)
+        if self.scenes:
+            self._render_scenes()
+            self.to_scenes_btn.setVisible(True)
+            self._set_status(
+                f"Restored {self._summary()} from "
+                f"{log.get('timestamp', 'the last session')}.", ok=True
+            )
+        self.restore_btn.setVisible(False)
+        self.build_btn.setText("Rebuild scenes")
+        self._schedule_timing()
+        if self.scenes:
+            self._translate_missing()       # a session opened from a .md has none
+
+    def _set_blocks(self, blocks: list[dict]) -> None:
+        """Put hooks, body and CTAs into the editors, adding or removing rows."""
+        hooks = [b for b in blocks if b.get("kind") == "hook"]
+        ctas = [b for b in blocks if b.get("kind") == "cta"]
+        body = next((b for b in blocks if b.get("kind") == "body"), None)
 
         while len(self._hooks) > max(len(hooks), 1):
             self._remove_hook(self._hooks[-1])
@@ -592,22 +626,6 @@ class AnimatorPage(RuntimeColumn, BuildRunner, ScenesStage, QWidget):
         if not ctas:
             for ed in self._ctas:
                 ed.set_value("")
-
-        self.scenes = log.get("scenes") or []
-        self._notes = log.get("notes") or []
-        self._generated = {i for i in (log.get("generated") or [])
-                           if isinstance(i, int) and 0 <= i < len(self.scenes)}
-        self._block_notes = self._attach_notes(self._notes, self.scenes)
-        if self.scenes:
-            self._render_scenes()
-            self.to_scenes_btn.setVisible(True)
-            self._set_status(
-                f"Restored {self._summary()} from "
-                f"{log.get('timestamp', 'the last session')}.", ok=True
-            )
-        self.restore_btn.setVisible(False)
-        self.build_btn.setText("Rebuild scenes")
-        self._schedule_timing()
 
     # ── Reset ────────────────────────────────────────────────────────────────
 

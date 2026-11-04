@@ -179,11 +179,12 @@ def _tool_facts() -> list[tuple[str, str]]:
     """Every dependency, where it was found, and what version answered."""
     facts: list[tuple[str, str]] = []
 
-    ff = shutil.which("ffmpeg")
+    from dependencies import media_binary
+    ff = media_binary("ffmpeg")
     facts.append(("ffmpeg", f"{ff}  ({_run([ff, '-version'])})" if ff
-                  else "NOT FOUND on PATH"))
-    fp = shutil.which("ffprobe")
-    facts.append(("ffprobe", fp or "NOT FOUND on PATH"))
+                  else "NOT FOUND"))
+    fp = media_binary("ffprobe")
+    facts.append(("ffprobe", fp or "NOT FOUND"))
 
     espeak = shutil.which("espeak-ng") or shutil.which("espeak")
     facts.append(("eSpeak NG", espeak or "not installed (clip lengths are estimated)"))

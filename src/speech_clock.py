@@ -55,7 +55,7 @@ __all__ = [
     "available_engine", "engine_named", "engine_note",
     "calibration_for", "load_calibration",
     "measure", "measure_raw", "duration_of", "clear_cache", "flush_cache",
-    "wav_speech_seconds",
+    "wav_speech_seconds", "UNCONFIRMED_SCALE",
 ]
 
 # Modules live in src/, so the repo root is one level up (mirrors core.APP_DIR).
@@ -226,7 +226,9 @@ def engine_note(language: "str | None" = None) -> str:
         fitted = f", fitted on {hits}/{rows} confirmed {language} clips"
     elif hits and rows:
         fitted = f", fitted on {hits}/{rows} confirmed clips"
-        if language:
+        if language in UNCONFIRMED_SCALE:
+            fitted = f", {language} paced from a typical delivery (no confirmed clip)"
+        elif language:
             fitted += f" (none of them {language})"
     else:
         fitted = " (uncalibrated — run scripts/fit_clock.py)"
@@ -252,6 +254,16 @@ def engine_note(language: "str | None" = None) -> str:
 # which is the honest default and is what `engine_note()` says out loud.
 _FALLBACK_CALIBRATION = {"scale": 1.0, "offset": 0.0}
 
+# A pace for a language with no confirmed clip, where inheriting the engine's
+# constant is known to be wrong. That constant is the German talent's distance
+# from eSpeak's German voice; carried over to English it cut a 268-scene script at
+# 3.2 words a second (~195 wpm), and every scene came back too full to say.
+# English is set to a delivered American talking head, 2.7 words a second
+# (~160 wpm): both engines read English at 3.18–3.19 words a second raw, so
+# 3.18 / 2.7 = 1.18. Lives in code, not the JSON, because the fitter rewrites the
+# JSON from confirmed rows only. A fitted per-language entry always wins.
+UNCONFIRMED_SCALE: dict[str, float] = {"English": 1.18}
+
 _calibration: "dict | None" = None
 
 
@@ -276,7 +288,10 @@ def calibration_for(engine: "Engine | str",
     out = dict(_FALLBACK_CALIBRATION)
     per_lang = (entry.get("languages") or {}).get(language) \
         if language and isinstance(entry.get("languages"), dict) else None
-    for source in (entry, per_lang if isinstance(per_lang, dict) else {}):
+    unconfirmed = ({"scale": UNCONFIRMED_SCALE[language]}
+                   if language in UNCONFIRMED_SCALE else {})
+    for source in (entry, unconfirmed,
+                   per_lang if isinstance(per_lang, dict) else {}):
         for key in ("scale", "offset"):
             try:
                 out[key] = float(source[key])

@@ -387,6 +387,14 @@ def _split_cue_at(cue, at_ms, words):
         frac = float(at_ms - cue["start"]) / max(1, cue["end"] - cue["start"])
         n = int(round(frac * len(toks)))
     n = max(1, min(len(toks) - 1, n))
+    try:
+        import caption_tool
+        if caption_tool.available():
+            # Where the time says to cut, unless that ends the left piece on
+            # "il" or splits "è | stato": then the nearest cut that does not.
+            n = caption_tool.safe_cut(toks, n)
+    except Exception:
+        pass
     left = {"start": cue["start"], "end": at_ms, "text": rewrap(" ".join(toks[:n]))}
     right = {"start": at_ms, "end": cue["end"], "text": rewrap(" ".join(toks[n:]))}
     return left, right
