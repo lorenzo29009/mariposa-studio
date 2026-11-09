@@ -24,14 +24,22 @@ from difflib import SequenceMatcher
 
 
 def whisperx_words(path, model, lang):
-    wx = os.path.expanduser("~/whisperx/bin/whisperx")
+    # The venv's interpreter running the captioner's whisperx_run.py: Silero
+    # from disk, not from GitHub (see that file), and a path that exists on
+    # Windows too — "~/whisperx/bin/whisperx" only ever existed on a Mac.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import portable
+    py = portable.whisperx_python()
+    if not py:
+        sys.exit("Error: WhisperX isn't installed (~/whisperx).")
+    runner = os.path.join(os.path.dirname(portable.caption_tool()), "whisperx_run.py")
     outdir = tempfile.mkdtemp()
-    cmd = [wx, path, "--model", model, "--language", lang, "--device", "cpu",
+    cmd = [py, runner, path, "--model", model, "--language", lang, "--device", "cpu",
            "--compute_type", "int8", "--vad_method", "silero",
            "--output_format", "json", "--output_dir", outdir]
     if sys.platform == "darwin":
         cmd = ["arch", "-arm64", *cmd]
-    subprocess.run(cmd, check=True, capture_output=True)
+    subprocess.run(cmd, check=True, capture_output=True, **portable.no_window_kwargs())
     stem = os.path.splitext(os.path.basename(path))[0]
     j = os.path.join(outdir, stem + ".json")
     data = json.load(open(j, encoding="utf-8"))

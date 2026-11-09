@@ -794,6 +794,11 @@ def _run_relayed(cmd: list, stages: bool, tail: float) -> None:
         raise subprocess.CalledProcessError(code, cmd)
 
 
+#: whisperx_run.py's exit code for "Silero isn't here and GitHub wouldn't
+#: hand it over" — the one failure that is neither the machine nor the clip.
+WHISPERX_EXIT_VAD = 75
+
+
 def run_whisperx(video_path: Path, model: str, output_dir: Path,
                   language: str = "de", stages: bool = True) -> Path:
     """`stages` is False for a gap re-ask: its load, decode and alignment
@@ -813,8 +818,17 @@ def run_whisperx(video_path: Path, model: str, output_dir: Path,
     print(f"Transcribing {video_path.name} with WhisperX ({model}, lang={language})...")
     if stages:
         _enter("load")
+    # Through whisperx_run.py, with the venv's own interpreter, when it is
+    # there: it loads the voice-activity model (Silero) from disk. Launched
+    # directly, torch.hub asks GitHub about it on every job, cached or not, and
+    # one 504 from GitHub failed every caption on two Windows machines.
+    runner = Path(__file__).with_name("whisperx_run.py")
+    wx_python = Path(whisperx_bin).parent / (
+        "python.exe" if sys.platform == "win32" else "python")
+    head = ([str(wx_python), str(runner)]
+            if runner.exists() and wx_python.exists() else [whisperx_bin])
     cmd = [
-        whisperx_bin, str(video_path),
+        *head, str(video_path),
         "--model", model,
         "--language", language,
         "--device", "cpu",
@@ -852,7 +866,12 @@ def run_whisperx(video_path: Path, model: str, output_dir: Path,
             _run_relayed(cmd, stages=stages, tail=tail)
         else:
             subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
+        if e.returncode == WHISPERX_EXIT_VAD:
+            sys.exit(
+                "Error: couldn't download WhisperX's voice-activity model from "
+                "GitHub — GitHub didn't answer. It is a one-time download: try "
+                "again in a few minutes.")
         sys.exit(
             "Error: WhisperX failed to load the model. If the log above shows "
             "'mkl_malloc: failed to allocate memory', the machine ran out of "

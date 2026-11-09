@@ -136,6 +136,7 @@ QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_animator_progress.py  #
 ./venv/bin/python scripts/test_clock.py     # after speech_clock
 ./venv/bin/python scripts/test_failures.py  # after failures.py
 ./venv/bin/python scripts/test_captions.py  # after tools/captions-de/caption.py — the language layer
+./venv/bin/python scripts/test_whisperx_run.py  # after whisperx_run.py — Silero from disk, never GitHub per job
 ./venv/bin/python scripts/test_flow_cropper.py  # after tools/flow-cropper/crop.py — the folder layouts
 QT_QPA_PLATFORM=offscreen ./venv/bin/python scripts/test_toolpage.py  # after tool_page/ResultCard — the job runner's end states
 ./venv/bin/python scripts/test_gemini.py    # after gemini.py — model chain, 429/404 text

@@ -162,6 +162,7 @@ def main() -> None:
     spawned = [
         "tools/flow-cropper/crop.py",
         "tools/captions-de/caption.py",
+        "tools/captions-de/whisperx_run.py",   # caption.py starts WhisperX through it
         "tools/captions-de/install.py",
         "tools/extract-frame/extract_last_frame.py",
         "tools/camera-prompts/prompts.json",
